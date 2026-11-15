@@ -36,17 +36,51 @@ export function Modal({
 
     previouslyFocusedElementRef.current = document.activeElement as HTMLElement | null;
 
-    const timer = setTimeout(() => {
-      if (!modalRef.current) return;
-      const focusables = modalRef.current.querySelectorAll<HTMLElement>(
-        'input:not([disabled]), select:not([disabled]), textarea:not([disabled]), button:not([disabled]), [href], [tabindex]:not([tabindex="-1"])'
-      );
-      if (focusables.length > 0) {
-        focusables[0].focus();
-      } else {
-        modalRef.current.focus();
+    const focusInitialElement = () => {
+      const container = modalRef.current;
+      if (!container) return;
+      const active = document.activeElement as HTMLElement | null;
+      if (active && container.contains(active) && active !== container) {
+        return;
       }
-    }, 30);
+
+      const formControls = Array.from(
+        container.querySelectorAll<HTMLElement>(
+          'input:not([disabled]):not([type="hidden"]), textarea:not([disabled]), select:not([disabled])'
+        )
+      );
+      const preferredForm = formControls.find(el => el.offsetParent !== null) || formControls[0];
+      if (preferredForm) {
+        preferredForm.focus();
+        return;
+      }
+
+      const nonCloseControls = Array.from(
+        container.querySelectorAll<HTMLElement>(
+          'button:not([disabled]):not([aria-label^="Close"]), [href], [tabindex]:not([tabindex="-1"])'
+        )
+      );
+      const preferredAction =
+        nonCloseControls.find(el => el.offsetParent !== null) || nonCloseControls[0];
+      if (preferredAction) {
+        preferredAction.focus();
+        return;
+      }
+
+      const allFocusables = Array.from(
+        container.querySelectorAll<HTMLElement>(
+          'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+        )
+      );
+      const fallback = allFocusables.find(el => el.offsetParent !== null) || allFocusables[0];
+      if (fallback) {
+        fallback.focus();
+      } else {
+        container.focus();
+      }
+    };
+
+    focusInitialElement();
 
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
@@ -89,7 +123,6 @@ export function Modal({
 
     window.addEventListener('keydown', handleKeyDown, true);
     return () => {
-      clearTimeout(timer);
       window.removeEventListener('keydown', handleKeyDown, true);
       previouslyFocusedElementRef.current?.focus?.();
     };

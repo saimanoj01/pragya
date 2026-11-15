@@ -99,13 +99,13 @@ All milestones enforce the contracts in [`SPEC.md`](./SPEC.md), zero AI/voice co
    - Extend M1 keyboard handling in `App.tsx` (`⌘K`, `G S/N/P`, `N`, `R`, `Escape`) and `NotesView.tsx` (`J/K/Enter/Space`) into unified shortcut support covering `J/K + Enter` across `BookDetailView` and `PracticeView`, `Space` (`BookDetailView` spoiler reveal + `NoteDetailView` `ImageLightbox`), `O` (open primary Doc/link), `D` (`DeepenNoteModal`), `E` (`EditNoteModal` / `EditBookModal`), `1/2/3` (`PracticeView` check-ins), and strict layered `Escape` (`ImageLightbox` / `[data-popover="true"]` → topmost modal → detail back-navigation) with `isEditableElement` focus guard.
 
 ### Acceptance Criteria (Done)
-- [ ] `BridgeViews.tsx` previews are fully replaced by `BookDetailView.tsx`, `NoteDetailView.tsx`, and `PracticeView.tsx` in `src/App.tsx`.
-- [ ] `BookDetailView` refuses backward bookmark movement unless `manual-pos-override-checkbox` is checked; `Mark as Finished` unlocks predictions and removes spoilers.
-- [ ] `NoteDetailView` displays persisted `socraticQuestions` for `in-reflection` notes, renders clean single `WHEN`/`DO` prefixes (zero `WHEN WHEN` or `DO DO`), opens `<DriveImage />` lightbox, resolves clickable `[[wikilinks]]`, and computes Backlinks excluding self-links.
-- [ ] Typing `[[` in `DeepenNoteModal` / `EditNoteModal` opens `wikilink-autocomplete` and inserts `[[selected-slug]]`.
-- [ ] `PracticeView` enforces `<= 5` Active Behavioral Deltas cap across activation, deepening, and reactivation (backed by `PragyaContext.updateNote` guard); logs `DeltaLogs` via buttons or keys `1/2/3`; inline-edits `deltaTrigger` on Missed Trigger; renders deterministic Takeaway Shuffle excluding spoilers, sealed predictions, and reviewed-today notes; displays Unlocked Fiction Predictions when a fiction book finishes.
-- [ ] JSON Snapshot Export → Import validates schema (`validateSnapshotPayload` in `src/utils/snapshot.ts`) and restores full workspace via `ImportConfirmModal`.
-- [ ] Typing `n`, `d`, `e`, `1`, `2`, `3`, `r`, `g` inside any input/textarea never triggers global shortcuts; `Escape` closes popovers/lightboxes before modals before detail back-navigation.
+- [x] `BridgeViews.tsx` previews are fully replaced by `BookDetailView.tsx`, `NoteDetailView.tsx`, and `PracticeView.tsx` in `src/App.tsx`.
+- [x] `BookDetailView` refuses backward bookmark movement unless `manual-pos-override-checkbox` is checked; `Mark as Finished` unlocks predictions and removes spoilers.
+- [x] `NoteDetailView` displays persisted `socraticQuestions` for `in-reflection` notes, renders clean single `WHEN`/`DO` prefixes (zero `WHEN WHEN` or `DO DO`), opens `<DriveImage />` lightbox, resolves clickable `[[wikilinks]]`, and computes Backlinks excluding self-links.
+- [x] Typing `[[` in `DeepenNoteModal` / `EditNoteModal` opens `wikilink-autocomplete` and inserts `[[selected-slug]]`.
+- [x] `PracticeView` enforces `<= 5` Active Behavioral Deltas cap across activation, deepening, and reactivation (backed by `PragyaContext.updateNote` guard); logs `DeltaLogs` via buttons or keys `1/2/3`; inline-edits `deltaTrigger` on Missed Trigger; renders deterministic Takeaway Shuffle excluding spoilers, sealed predictions, and reviewed-today notes; displays Unlocked Fiction Predictions when a fiction book finishes.
+- [x] JSON Snapshot Export → Import validates schema (`validateSnapshotPayload` in `src/utils/snapshot.ts`) and restores full workspace via `ImportConfirmModal`.
+- [x] Typing `n`, `d`, `e`, `1`, `2`, `3`, `r`, `g` inside any input/textarea never triggers global shortcuts; `Escape` closes popovers/lightboxes before modals before detail back-navigation.
 
 ### Required Automated Tests
 - **Unit (`tests/unit/m2PracticeAndLinks.test.mjs`):**
@@ -119,8 +119,10 @@ All milestones enforce the contracts in [`SPEC.md`](./SPEC.md), zero AI/voice co
   - `PracticeView`: `1/2/3` keyboard & button check-ins, Missed Trigger inline trigger edit, attempt 6th active delta → cap warning enforced, Graduate + Reactivate, Takeaway Shuffle `Mark Reviewed` removes card for today, Export/Import JSON snapshot roundtrip via `ImportConfirmModal`.
   - Keyboard focus guard test: typing `"ndeg123r"` inside Quick Capture / Deepen / Edit inputs must not open modals or navigate.
 
-### Checkpoint Gate
+### Checkpoint Gate & Status
 - `npm run build`, `npm run lint`, `npm run test:unit`, and full M1 + M2 `npm run test:e2e` pass → commit & push M2 checkpoint.
+- **M2 Checkpoint Status: PASSED** — `reviewer` (`APPROVE`, including audit of `WikilinkAutocomplete.tsx`, `Modal.tsx`, `ImageLightbox.tsx`, `CommandPalette.tsx`, `ImportConfirmModal.tsx`, `NoteDetailView.tsx`, `EditNoteModal.tsx`, `takeawayShuffle.ts`), `qa` (`PASS`: `npm run build` and `VITE_BASE_PATH='/pragya/' npm run build` exit 0, `npm run lint` 0 errors/0 warnings, `npm run test:unit` 14/14 passed, `npm run test:e2e` 12/12 passed across Tier 1/2/3 desktop & mobile `390×844`, 0 legacy brand leaks).
+- **Ready Handoff for Milestone 3:** Complete Pragya PWA (`src/utils/snapshot.ts` v1 JSON schema, `Books!A:L` / `Notes!A:R` / `Sessions!A:G` / `DeltaLogs!A:E` codecs, normalized `WHEN`/`DO` delta formatting, `<= 5` active delta cap, and `VITE_BASE_PATH='/pragya/'` build) is verified and ready for `pragya-companion` (`SKILL.md` + `scripts/pragya_cli.py`), `.github/workflows/deploy.yml`, `README.md`, Tier 4 E2E + Python `unittest` suites, and final desktop/mobile screenshot verification.
 
 ---
 

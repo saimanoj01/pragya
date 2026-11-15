@@ -1,11 +1,12 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Loader2 } from 'lucide-react';
 import { MotionConfig } from 'framer-motion';
-import type { Book } from './types/pragya';
+import type { Book, Note } from './types/pragya';
 import { dur, ease } from './theme/motion';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { PragyaProvider, usePragya } from './context/PragyaContext';
 import { ThemeProvider, useTheme } from './context/ThemeContext';
+import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
 import { isOAuthCallbackHash, navigateTo, parseHash, type PragyaRoute } from './utils/navigation';
 import { AppLayout } from './components/layout/AppLayout';
 import { Sidebar } from './components/layout/Sidebar';
@@ -16,18 +17,14 @@ import { LoginView } from './components/views/LoginView';
 import { ShelfView } from './components/views/ShelfView';
 import { NotesView } from './components/views/NotesView';
 import { SettingsView } from './components/views/SettingsView';
-import { BookDetailPreview, NoteDetailPreview, PracticePreview } from './components/views/BridgeViews';
+import { BookDetailView } from './components/views/BookDetailView';
+import { NoteDetailView } from './components/views/NoteDetailView';
+import { PracticeView } from './components/views/PracticeView';
 import { AddBookModal } from './components/modals/AddBookModal';
 import { EditBookModal } from './components/modals/EditBookModal';
 import { QuickCaptureModal } from './components/modals/QuickCaptureModal';
-
-function isEditableElement(target: EventTarget | null): boolean {
-  if (!(target instanceof HTMLElement)) return false;
-  const tag = target.tagName;
-  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true;
-  if (target.isContentEditable) return true;
-  return Boolean(target.closest('[contenteditable="true"]'));
-}
+import { DeepenNoteModal } from './components/modals/DeepenNoteModal';
+import { EditNoteModal } from './components/modals/EditNoteModal';
 
 function PragyaShell() {
   const {
@@ -48,10 +45,9 @@ function PragyaShell() {
   const [captureBookId, setCaptureBookId] = useState<string | null>(null);
   const [showAddBookModal, setShowAddBookModal] = useState(false);
   const [editingBook, setEditingBook] = useState<Book | null>(null);
+  const [deepeningNote, setDeepeningNote] = useState<Note | null>(null);
+  const [editingNote, setEditingNote] = useState<Note | null>(null);
   const [showCommandPalette, setShowCommandPalette] = useState(false);
-
-  const gChordTimerRef = useRef<number | null>(null);
-  const awaitingGTargetRef = useRef(false);
 
   useEffect(() => {
     const onHashChange = () => {
@@ -64,110 +60,37 @@ function PragyaShell() {
     return () => window.removeEventListener('hashchange', onHashChange);
   }, []);
 
-  // Global keyboard map with input focus guard
-  useEffect(() => {
-    if (!isAuthenticated) return;
+  const hasOpenOverlay = Boolean(
+    showCommandPalette ||
+      showCaptureModal ||
+      showAddBookModal ||
+      editingBook ||
+      deepeningNote ||
+      editingNote
+  );
 
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
-        if (showSessionExpiredModal) return;
-        e.preventDefault();
-        setShowCommandPalette(prev => !prev);
-        return;
-      }
-
-      if (e.key === 'Escape') {
-        if (document.querySelector('[data-popover="true"]')) return;
-        if (
-          showCommandPalette ||
-          showCaptureModal ||
-          showAddBookModal ||
-          editingBook ||
-          showSessionExpiredModal
-        ) {
-          return;
-        }
-        if (route.view === 'book') {
-          navigateTo('#/shelf');
-        } else if (route.view === 'note') {
-          navigateTo('#/notes');
-        }
-        return;
-      }
-
-      if (e.metaKey || e.ctrlKey || e.altKey) return;
-      if (isEditableElement(e.target)) return;
-      if (showCommandPalette || showCaptureModal || showAddBookModal || editingBook || showSessionExpiredModal) {
-        return;
-      }
-
-      const key = e.key.toLowerCase();
-
-      if (awaitingGTargetRef.current) {
-        awaitingGTargetRef.current = false;
-        if (gChordTimerRef.current) {
-          window.clearTimeout(gChordTimerRef.current);
-          gChordTimerRef.current = null;
-        }
-        if (key === 's') {
-          e.preventDefault();
-          navigateTo('#/shelf');
-          return;
-        }
-        if (key === 'n') {
-          e.preventDefault();
-          navigateTo('#/notes');
-          return;
-        }
-        if (key === 'p') {
-          e.preventDefault();
-          navigateTo('#/practice');
-          return;
-        }
-      }
-
-      if (key === 'g') {
-        awaitingGTargetRef.current = true;
-        if (gChordTimerRef.current) window.clearTimeout(gChordTimerRef.current);
-        gChordTimerRef.current = window.setTimeout(() => {
-          awaitingGTargetRef.current = false;
-        }, 1000);
-        return;
-      }
-
-      if (key === 'n') {
-        e.preventDefault();
-        setCaptureBookId(route.view === 'book' ? route.bookId || null : null);
-        setShowCaptureModal(true);
-        return;
-      }
-
-      if (key === 'r') {
-        e.preventDefault();
-        void syncNow(true);
-      }
-    };
-
-    window.addEventListener('keydown', handleKeyDown);
-    return () => {
-      window.removeEventListener('keydown', handleKeyDown);
-      if (gChordTimerRef.current) window.clearTimeout(gChordTimerRef.current);
-    };
-  }, [
-    editingBook,
+  useKeyboardShortcuts({
     isAuthenticated,
-    route.bookId,
-    route.view,
-    showAddBookModal,
-    showCaptureModal,
-    showCommandPalette,
-    showSessionExpiredModal,
-    syncNow,
-  ]);
+    route,
+    hasOpenOverlay,
+    isSessionExpiredOpen: showSessionExpiredModal,
+    onToggleCommandPalette: () => setShowCommandPalette(prev => !prev),
+    onOpenCapture: bookId => {
+      setCaptureBookId(bookId);
+      setShowCaptureModal(true);
+    },
+    onSyncNow: () => void syncNow(true),
+  });
 
   const openQuickCapture = (bookId: string | null = null) => {
     setCaptureBookId(bookId);
     setShowCaptureModal(true);
+  };
+
+  const handleNoteSaved = (saved: Note) => {
+    if (route.view === 'note' && route.noteSlug !== saved.slug) {
+      navigateTo(`#/note/${encodeURIComponent(saved.slug)}`);
+    }
   };
 
   let mainContent: React.ReactNode;
@@ -178,21 +101,34 @@ function PragyaShell() {
       </div>
     );
   } else if (route.view === 'notes') {
-    mainContent = <NotesView onOpenCapture={() => openQuickCapture(null)} />;
+    mainContent = (
+      <NotesView
+        onOpenCapture={() => openQuickCapture(null)}
+        onEditNote={n => setEditingNote(n)}
+        onDeepenNote={n => setDeepeningNote(n)}
+      />
+    );
   } else if (route.view === 'settings') {
     mainContent = <SettingsView />;
   } else if (route.view === 'book' && route.bookId) {
     mainContent = (
-      <BookDetailPreview
+      <BookDetailView
         bookId={route.bookId}
         onEditBook={b => setEditingBook(b)}
         onOpenCaptureForBook={id => openQuickCapture(id)}
       />
     );
   } else if (route.view === 'note' && route.noteSlug) {
-    mainContent = <NoteDetailPreview noteSlug={route.noteSlug} />;
+    mainContent = (
+      <NoteDetailView
+        noteSlug={route.noteSlug}
+        onOpenEdit={n => setEditingNote(n)}
+        onOpenDeepen={n => setDeepeningNote(n)}
+        onOpenCapture={() => openQuickCapture(null)}
+      />
+    );
   } else if (route.view === 'practice') {
-    mainContent = <PracticePreview />;
+    mainContent = <PracticeView />;
   } else {
     mainContent = (
       <ShelfView
@@ -251,6 +187,20 @@ function PragyaShell() {
           <EditBookModal
             book={editingBook}
             onClose={() => setEditingBook(null)}
+          />
+
+          <DeepenNoteModal
+            note={deepeningNote}
+            isOpen={Boolean(deepeningNote)}
+            onClose={() => setDeepeningNote(null)}
+            onSaved={handleNoteSaved}
+          />
+
+          <EditNoteModal
+            note={editingNote}
+            isOpen={Boolean(editingNote)}
+            onClose={() => setEditingNote(null)}
+            onSaved={handleNoteSaved}
           />
 
           <CommandPalette

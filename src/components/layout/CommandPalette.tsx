@@ -56,7 +56,12 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
     if (!isOpen) return;
     setQuery('');
     setSelectedIndex(0);
-    const raf = requestAnimationFrame(() => inputRef.current?.focus());
+    if (
+      inputRef.current &&
+      (!dialogRef.current || !dialogRef.current.contains(document.activeElement))
+    ) {
+      inputRef.current.focus();
+    }
     const handleEsc = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         const dialogs = document.querySelectorAll('[role="dialog"]');
@@ -73,7 +78,6 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
     };
     window.addEventListener('keydown', handleEsc, true);
     return () => {
-      cancelAnimationFrame(raf);
       window.removeEventListener('keydown', handleEsc, true);
     };
   }, [isOpen]);

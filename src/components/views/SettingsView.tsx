@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import {
   Cloud,
   Download,
@@ -9,12 +9,15 @@ import {
   RefreshCw,
   RotateCcw,
   Sun,
+  Upload,
 } from 'lucide-react';
+import type { PragyaSnapshot } from '../../types/pragya';
 import { useAuth } from '../../context/AuthContext';
 import { usePragya } from '../../context/PragyaContext';
 import { useTheme } from '../../context/ThemeContext';
-import { buildSnapshot } from '../../utils/snapshot';
+import { buildSnapshot, validateSnapshotPayload } from '../../utils/snapshot';
 import { showToast } from '../../utils/toast';
+import { ImportConfirmModal } from '../modals/ImportConfirmModal';
 
 export const SettingsView: React.FC = () => {
   const {
@@ -34,11 +37,14 @@ export const SettingsView: React.FC = () => {
     spreadsheetId,
     mediaFolderId,
     syncNow,
+    replaceWorkspaceFromSnapshot,
     resetDemoWorkspace,
   } = usePragya();
   const { theme, toggleTheme } = useTheme();
 
   const [clientIdDraft, setClientIdDraft] = useState(googleClientId || '');
+  const [pendingSnapshot, setPendingSnapshot] = useState<PragyaSnapshot | null>(null);
+  const importInputRef = useRef<HTMLInputElement>(null);
 
   const handleSaveClientId = (e: React.FormEvent) => {
     e.preventDefault();
@@ -58,6 +64,23 @@ export const SettingsView: React.FC = () => {
     a.click();
     URL.revokeObjectURL(url);
     showToast('Exported Pragya JSON snapshot', 'success');
+  };
+
+  const handleImportFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const result = validateSnapshotPayload(text);
+      if (!result.ok) {
+        showToast(`Invalid snapshot JSON: ${result.error}`, 'error');
+        return;
+      }
+      setPendingSnapshot(result.snapshot);
+    } catch {
+      showToast('Failed to read JSON file', 'error');
+    }
   };
 
   return (
@@ -195,6 +218,22 @@ export const SettingsView: React.FC = () => {
             <span>Export JSON Snapshot</span>
           </button>
 
+          <input
+            ref={importInputRef}
+            type="file"
+            accept=".json,application/json"
+            onChange={e => void handleImportFileChange(e)}
+            className="hidden"
+          />
+          <button
+            type="button"
+            onClick={() => importInputRef.current?.click()}
+            className="h-10 px-4 rounded-[10px] bg-surface2 hover:bg-secondary border border-border text-body font-medium text-foreground inline-flex items-center gap-2"
+          >
+            <Upload className="w-4 h-4" />
+            <span>Import JSON Snapshot</span>
+          </button>
+
           {isMockMode && (
             <button
               type="button"
@@ -217,6 +256,15 @@ export const SettingsView: React.FC = () => {
           </button>
         </div>
       </section>
+
+      <ImportConfirmModal
+        snapshot={pendingSnapshot}
+        onClose={() => setPendingSnapshot(null)}
+        onConfirm={async snap => {
+          await replaceWorkspaceFromSnapshot(snap);
+          showToast('Workspace restored from snapshot', 'success');
+        }}
+      />
     </div>
   );
 };

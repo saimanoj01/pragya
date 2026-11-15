@@ -30,6 +30,7 @@ import {
   getLocalDateString,
   upsertCoalescedSession,
 } from '../utils/sessionCoalesce';
+import { normalizeDeltaAction, normalizeDeltaTrigger } from '../utils/deltaFormat';
 import { normalizeTagList } from '../utils/sheetCodecs';
 import { computeNormalizedPos } from '../utils/spoilerMath';
 import { generateUniqueSlug } from '../utils/wikilinks';
@@ -441,9 +442,44 @@ export const PragyaProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   const updateNote = useCallback(
     (note: Note): Promise<Note> =>
       enqueueMutation(async () => {
+        if (note.deltaStatus === 'active') {
+          const otherActiveCount = notesRef.current.filter(
+            n => n.id !== note.id && n.deltaStatus === 'active'
+          ).length;
+          if (otherActiveCount >= 5) {
+            throw new Error(
+              'Active Behavioral Delta cap (5/5) reached. Graduate or pause an active delta first.'
+            );
+          }
+        }
+
+        const existingNote = notesRef.current.find(n => n.id === note.id);
+        const attachments = (note.meta?.attachments || []).slice(0, 3);
+        const newAttachmentUrls = attachments
+          .filter((a): a is Extract<Attachment, { type: 'link' | 'doc' }> => a.type !== 'image')
+          .map(a => a.url);
+        const oldAttachmentUrls = new Set(
+          (existingNote?.meta?.attachments || [])
+            .filter((a): a is Extract<Attachment, { type: 'link' | 'doc' }> => a.type !== 'image')
+            .map(a => a.url)
+        );
+        const newAttachmentUrlSet = new Set(newAttachmentUrls);
+        const preservedStandaloneLinks = (note.meta?.links || []).filter(
+          url => !oldAttachmentUrls.has(url) || newAttachmentUrlSet.has(url)
+        );
+        const mergedLinks = Array.from(new Set([...preservedStandaloneLinks, ...newAttachmentUrls]));
+
         const nowIso = new Date().toISOString();
         const updated: Note = {
           ...note,
+          tags: normalizeTagList(note.tags || []),
+          deltaTrigger: normalizeDeltaTrigger(note.deltaTrigger),
+          deltaAction: normalizeDeltaAction(note.deltaAction),
+          meta: {
+            ...note.meta,
+            attachments,
+            links: mergedLinks,
+          },
           updatedAt: nowIso,
         };
         const saved = await adapter.saveNote(updated);

@@ -21,9 +21,15 @@ type NotesFilter = 'all' | 'to-spar' | 'atomic' | 'media' | 'concepts';
 
 export interface NotesViewProps {
   onOpenCapture: () => void;
+  onEditNote?: (note: Note) => void;
+  onDeepenNote?: (note: Note) => void;
 }
 
-export const NotesView: React.FC<NotesViewProps> = ({ onOpenCapture }) => {
+export const NotesView: React.FC<NotesViewProps> = ({
+  onOpenCapture,
+  onEditNote,
+  onDeepenNote,
+}) => {
   const { books, notes } = usePragya();
 
   const [query, setQuery] = useState('');
@@ -152,12 +158,37 @@ export const NotesView: React.FC<NotesViewProps> = ({ onOpenCapture }) => {
           e.preventDefault();
           navigateTo(`#/note/${encodeURIComponent(active.slug)}`);
         }
+      } else if (key === 'd' && onDeepenNote) {
+        const active = filteredNotes[focusedIndex];
+        if (active && !(isNoteSpoiler(active, bookMap.get(active.bookId)) && !revealedSlugs.has(active.slug))) {
+          e.preventDefault();
+          onDeepenNote(active);
+        }
+      } else if (key === 'e' && onEditNote) {
+        const active = filteredNotes[focusedIndex];
+        if (active && !(isNoteSpoiler(active, bookMap.get(active.bookId)) && !revealedSlugs.has(active.slug))) {
+          e.preventDefault();
+          onEditNote(active);
+        }
+      } else if (key === 'o') {
+        const active = filteredNotes[focusedIndex];
+        if (active && !(isNoteSpoiler(active, bookMap.get(active.bookId)) && !revealedSlugs.has(active.slug))) {
+          const docOrLink = active.meta?.attachments?.find(
+            (a): a is Extract<typeof a, { type: 'doc' | 'link' }> =>
+              a.type !== 'image' && isSafeHttpUrl(a.url)
+          );
+          const url = docOrLink?.url || active.meta?.links?.find(l => isSafeHttpUrl(l));
+          if (url && isSafeHttpUrl(url)) {
+            e.preventDefault();
+            window.open(url.trim(), '_blank', 'noopener,noreferrer');
+          }
+        }
       }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [bookMap, filteredNotes, focusedIndex, revealedSlugs]);
+  }, [bookMap, filteredNotes, focusedIndex, onDeepenNote, onEditNote, revealedSlugs]);
 
   const renderStatusBadge = (note: Note, book?: Book) => {
     if (isSealedPrediction(note, book)) {
