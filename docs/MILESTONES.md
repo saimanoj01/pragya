@@ -144,14 +144,16 @@ All milestones enforce the contracts in [`SPEC.md`](./SPEC.md), zero AI/voice co
    - Live Playwright visual screenshots across Desktop (`1440×900` dark & light) and Mobile (`390×844`), inspected visually to confirm defect fixes.
 
 ### Acceptance Criteria (Done)
-- [ ] `python3 -m unittest discover -s tests/unit` passes 100%, verifying all 6 `pragya-companion` CLI commands, idempotency of `export-md`, UUID-safe updates, `Math.max` ceiling, 30-min coalescing, and `ocr-backfill`.
-- [ ] `npm run build` succeeds with `VITE_BASE_PATH=/pragya/` cleanly.
-- [ ] `npm run lint`, `npm run test:unit`, and `npm run test:e2e` pass 100% across Chromium desktop and mobile viewports.
-- [ ] Visual inspection of live screenshots confirms:
+- [x] `python3 -m unittest discover -s tests/unit` passes 100%, verifying all 6 `pragya-companion` CLI commands, idempotency of `export-md`, UUID-safe updates, `Math.max` ceiling, 30-min coalescing, and `ocr-backfill`.
+- [x] `npm run build` succeeds with `VITE_BASE_PATH=/pragya/` cleanly.
+- [x] `npm run lint`, `npm run test:unit`, and `npm run test:e2e` pass 100% across Chromium desktop and mobile viewports.
+- [x] Visual inspection of live screenshots confirms:
   - Clean single `WHEN` / `DO` labels (zero `WHEN WHEN` / `DO DO`).
   - Clean 30-day activity dots on `390×844` mobile with zero clipping or horizontal overflow.
   - Strict Pragya branding in code, UI, skills, and docs (zero legacy brand leaks).
-- [ ] `.github/workflows/deploy.yml` ready for GitHub Pages deployment on `main`.
+- [x] `.github/workflows/deploy.yml` ready for GitHub Pages deployment on `main`.
 
 ### Final Ship Gate
 - Clean working tree, all M1–M3 checks green, final commit pushed to `origin/main` (or current branch per orchestrator instructions).
+- **M3 Checkpoint & Final Ship Status: PASSED** — `reviewer` (`APPROVE`, including verification of all 4 security/port/AST blockers and 6 hardening nits across `scripts/pragya_cli.py`, `README.md`, `.agents/skills/pragya-companion/`, `.github/workflows/deploy.yml`, `tests/unit/test_pragya_cli.py`, and `tests/specs/tier4_companion_and_regression.spec.ts`), `qa` (`PASS` across all M1–M3 gates: `python3 -m unittest discover -s tests/unit -v` `7/7` passed; `npm run build` & `VITE_BASE_PATH='/pragya/' npm run build` exit `0`; `npm run lint` `0` errors / `0` warnings; `npm run test:unit` `14/14` passed; `npm run test:e2e` `14/14` passed across Tiers 1–4 Desktop & Mobile `390×844` Dark/Light; `~/.gemini/skills/pragya-companion/SKILL.md` installed; `0` legacy brand leaks; live Light/Dark/Mobile/CLI-synced screenshots visually verified).
+
