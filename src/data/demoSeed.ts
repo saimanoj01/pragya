@@ -1,0 +1,466 @@
+import type { Book, DeltaLog, Note, ReadingSession, WorkspaceState } from '../types/pragya';
+import { getLocalDateString } from '../utils/sessionCoalesce';
+
+function daysAgo(now: Date, days: number): Date {
+  const d = new Date(now);
+  d.setDate(d.getDate() - days);
+  return d;
+}
+
+function isoDaysAgo(now: Date, days: number, hour = 19): string {
+  const d = daysAgo(now, days);
+  d.setHours(hour, 15, 0, 0);
+  return d.toISOString();
+}
+
+export function createDemoSeed(referenceNow: Date = new Date()): WorkspaceState {
+  const books: Book[] = [
+    {
+      id: 'book-systems',
+      title: 'Thinking in Systems: A Primer',
+      author: 'Donella H. Meadows',
+      format: 'physical',
+      kind: 'nonfiction',
+      status: 'reading',
+      currentPos: 142,
+      totalPos: 218,
+      posUnit: 'page',
+      normalizedPos: 142 / 218,
+      docUrl: 'https://docs.google.com/document/d/demo-systems-companion/edit',
+      meta: {
+        startedAt: isoDaysAgo(referenceNow, 18),
+        updatedAt: isoDaysAgo(referenceNow, 2),
+      },
+    },
+    {
+      id: 'book-exhalation',
+      title: 'Exhalation: Stories',
+      author: 'Ted Chiang',
+      format: 'kindle',
+      kind: 'fiction',
+      status: 'reading',
+      currentPos: 168,
+      totalPos: 352,
+      posUnit: 'page',
+      normalizedPos: 168 / 352,
+      docUrl: '',
+      meta: {
+        startedAt: isoDaysAgo(referenceNow, 12),
+        updatedAt: isoDaysAgo(referenceNow, 0),
+      },
+    },
+    {
+      id: 'book-lathe',
+      title: 'The Lathe of Heaven',
+      author: 'Ursula K. Le Guin',
+      format: 'physical',
+      kind: 'fiction',
+      status: 'queued',
+      currentPos: 0,
+      totalPos: 192,
+      posUnit: 'page',
+      normalizedPos: 0,
+      docUrl: '',
+      meta: {
+        updatedAt: isoDaysAgo(referenceNow, 5),
+      },
+    },
+    {
+      id: 'book-finite',
+      title: 'Finite and Infinite Games',
+      author: 'James P. Carse',
+      format: 'physical',
+      kind: 'nonfiction',
+      status: 'finished',
+      currentPos: 180,
+      totalPos: 180,
+      posUnit: 'page',
+      normalizedPos: 1,
+      docUrl: 'https://docs.google.com/document/d/demo-finite-companion/edit',
+      meta: {
+        startedAt: isoDaysAgo(referenceNow, 45),
+        finishedAt: isoDaysAgo(referenceNow, 16),
+        updatedAt: isoDaysAgo(referenceNow, 16),
+      },
+    },
+  ];
+
+  const notes: Note[] = [
+    {
+      id: 'note-delays-feedback',
+      slug: 'delays-in-feedback-loops',
+      bookId: 'book-systems',
+      createdAt: isoDaysAgo(referenceNow, 10),
+      updatedAt: isoDaysAgo(referenceNow, 2),
+      pos: 142,
+      normalizedPos: 142 / 218,
+      status: 'atomic',
+      source: 'app',
+      tags: ['#systems', '#feedback-loops', '#favorite'],
+      quote:
+        'Delays in feedback loops are common causes of oscillations. If there is a delay in the system, an aggressive policy designed to correct a discrepancy will almost certainly lead to overshooting.',
+      takeaway:
+        "Overreacting before a system's natural delay plays out creates the exact whiplash you're trying to fix. Wait out the lag before tuning. Connected to [[playing-with-boundaries]].",
+      contextMechanism:
+        'Author models balancing loops with information and response lag: corrective actions based on outdated state signals amplify systemic volatility.',
+      critique:
+        'Breaks in existential, runaway exponential loops (e.g., liquidity runs or cascade failures) where delay guarantees ruin.',
+      deltaTrigger: 'metrics dip right after a major deploy',
+      deltaAction: 'wait one full feedback cycle (minimum 24h) before tuning configuration parameters',
+      deltaStatus: 'active',
+      meta: {
+        title: 'Delays in Feedback Loops',
+        attachments: [
+          {
+            id: 'att-q4-retro',
+            type: 'doc',
+            title: 'Q4 Infra Retro Doc',
+            url: 'https://docs.google.com/document/d/demo-q4-retro/edit',
+            docId: 'demo-q4-retro',
+          },
+          {
+            id: 'att-meadows-link',
+            type: 'link',
+            title: 'Donella Meadows Systems Archive',
+            url: 'https://donellameadows.org/archives/',
+          },
+        ],
+        links: ['https://donellameadows.org/archives/'],
+      },
+    },
+    {
+      id: 'note-leverage-paradigm',
+      slug: 'paradigm-shifts-outrank-parameters',
+      bookId: 'book-systems',
+      createdAt: isoDaysAgo(referenceNow, 3),
+      updatedAt: isoDaysAgo(referenceNow, 3),
+      pos: 210,
+      normalizedPos: 210 / 218,
+      status: 'saved',
+      source: 'app',
+      tags: ['#systems', '#leverage', '#mindset'],
+      quote:
+        'The higher the leverage point, the more the system will resist changing it—yet shifting the unstated paradigm shifts the entire structure.',
+      takeaway:
+        'Changing parameters is trivial; shifting the unstated paradigm transforms everything downstream. Compare with [[delays-in-feedback-loops]].',
+      contextMechanism: '',
+      critique: '',
+      deltaTrigger: '',
+      deltaAction: '',
+      deltaStatus: 'none',
+      meta: {
+        title: 'Paradigm Shifts Outrank Parameters',
+        attachments: [],
+        links: [],
+      },
+    },
+    {
+      id: 'note-self-organization',
+      slug: 'self-organization-over-control',
+      bookId: 'book-systems',
+      createdAt: isoDaysAgo(referenceNow, 21),
+      updatedAt: isoDaysAgo(referenceNow, 21),
+      pos: 78,
+      normalizedPos: 78 / 218,
+      status: 'saved',
+      source: 'app',
+      tags: ['#systems', '#resilience', '#favorite'],
+      quote: 'Systems cannot be controlled, but they can be designed and redesigned.',
+      takeaway:
+        'Rigid top-down overrides strip away the adaptive capacity that keeps complex workflows resilient. Related to [[playing-with-boundaries]].',
+      contextMechanism: '',
+      critique: '',
+      deltaTrigger: '',
+      deltaAction: '',
+      deltaStatus: 'none',
+      meta: {
+        title: 'Self-Organization Over Control',
+        attachments: [
+          {
+            id: 'att-resilience-link',
+            type: 'link',
+            title: 'Resilience & Leverage Primer',
+            url: 'https://en.wikipedia.org/wiki/System_dynamics',
+          },
+        ],
+        links: ['https://en.wikipedia.org/wiki/System_dynamics'],
+      },
+    },
+    {
+      id: 'note-memory-prism',
+      slug: 'memory-prism-digital-remembrance',
+      bookId: 'book-exhalation',
+      createdAt: isoDaysAgo(referenceNow, 18),
+      updatedAt: isoDaysAgo(referenceNow, 4),
+      pos: 120,
+      normalizedPos: 120 / 352,
+      status: 'in-reflection',
+      source: 'agent',
+      tags: ['#fiction', '#memory', '#identity'],
+      quote:
+        'Digital memory does not forgive the past; it freezes what was meant to be reconstructed.',
+      takeaway:
+        'Total fidelity in recall robs us of the forgiving myth-making that personal growth requires.',
+      contextMechanism: '',
+      critique: '',
+      deltaTrigger: '',
+      deltaAction: '',
+      deltaStatus: 'none',
+      meta: {
+        title: 'Memory Prism: Digital Remembrance',
+        attachments: [],
+        links: [],
+        socraticQuestions: [
+          'Which relationship or disagreement in your own life depends on forgiving reinterpretation rather than verbatim transcripts?',
+          'Where does Chiang imply narrative continuity matters more than literal archival truth?',
+        ],
+      },
+    },
+    {
+      id: 'note-thermal-equilibrium',
+      slug: 'consciousness-and-thermal-equilibrium',
+      bookId: 'book-exhalation',
+      createdAt: isoDaysAgo(referenceNow, 1),
+      updatedAt: isoDaysAgo(referenceNow, 1),
+      pos: 165,
+      normalizedPos: 165 / 352,
+      status: 'saved',
+      source: 'app',
+      tags: ['#fiction', '#prediction', '#entropy'],
+      quote:
+        'The atmospheric pressure between our world and the surrounding reservoir is equalizing.',
+      takeaway:
+        'My Prediction: The lungs do not power thought mechanically; consciousness ceases not from suffocation, but from thermal equilibrium.',
+      contextMechanism: '',
+      critique: '',
+      deltaTrigger: '',
+      deltaAction: '',
+      deltaStatus: 'none',
+      meta: {
+        title: 'Consciousness and Thermal Equilibrium',
+        isPrediction: true,
+        attachments: [],
+        links: [],
+      },
+    },
+    {
+      id: 'note-effective-dreaming',
+      slug: 'effective-dreaming-ethics',
+      bookId: 'book-lathe',
+      createdAt: isoDaysAgo(referenceNow, 5),
+      updatedAt: isoDaysAgo(referenceNow, 5),
+      pos: 15,
+      normalizedPos: 15 / 192,
+      status: 'inbox',
+      source: 'app',
+      tags: ['#fiction', '#ethics', '#dreams'],
+      quote: 'To force the world into a dream is to assume omniscience you do not possess.',
+      takeaway:
+        'Good intentions paired with unchecked reality-warping produce worse second-order disasters than passive patience. Echoes [[self-organization-over-control]].',
+      contextMechanism: '',
+      critique: '',
+      deltaTrigger: '',
+      deltaAction: '',
+      deltaStatus: 'none',
+      meta: {
+        title: 'Burden of Effective Dreaming',
+        attachments: [],
+        links: [],
+      },
+    },
+    {
+      id: 'note-playing-boundaries',
+      slug: 'playing-with-boundaries',
+      bookId: 'book-finite',
+      createdAt: isoDaysAgo(referenceNow, 26),
+      updatedAt: isoDaysAgo(referenceNow, 16),
+      pos: 45,
+      normalizedPos: 45 / 180,
+      status: 'atomic',
+      source: 'app',
+      tags: ['#games', '#strategy', '#mindset'],
+      quote: 'Finite players play within boundaries; infinite players play with boundaries.',
+      takeaway:
+        'Stop treating organizational constraints as immutable laws; negotiate the frame of the game itself. Builds on [[rules-of-infinite-play]].',
+      contextMechanism:
+        'Carse contrasts scorekeeping within fixed rules against reshaping shared conventions so more participants can continue playing.',
+      critique:
+        'In regulated safety-critical environments, boundaries exist to prevent catastrophic failure and should not be treated playfully.',
+      deltaTrigger: 'pulled into defensive zero-sum comparisons in product roadmaps',
+      deltaAction: 'reframe the objective around customer longevity and continuing exploration',
+      deltaStatus: 'active',
+      meta: {
+        title: 'Playing With Boundaries',
+        attachments: [],
+        links: [],
+      },
+    },
+    {
+      id: 'note-infinite-rules',
+      slug: 'rules-of-infinite-play',
+      bookId: 'book-finite',
+      createdAt: isoDaysAgo(referenceNow, 30),
+      updatedAt: isoDaysAgo(referenceNow, 18),
+      pos: 112,
+      normalizedPos: 112 / 180,
+      status: 'atomic',
+      source: 'agent',
+      tags: ['#games', '#principles', '#favorite'],
+      quote: 'The rules of an infinite game must change in the course of play.',
+      takeaway:
+        'Any protocol that refuses to evolve turns an open exploration into a brittle finite contest. Pair with [[playing-with-boundaries]].',
+      contextMechanism:
+        'Rules exist only to keep the horizon open and prevent any single actor from ending play.',
+      critique:
+        'Frequent rule changes without clear signaling erode trust among collaborators.',
+      deltaTrigger: 'a recurring debate reaches a circular stalemate',
+      deltaAction: 'propose a new operating principle that bypasses the binary constraint',
+      deltaStatus: 'graduated',
+      meta: {
+        title: 'Rules of Infinite Play',
+        attachments: [],
+        links: [],
+      },
+    },
+  ];
+
+  const sessions: ReadingSession[] = [
+    {
+      id: 'sess-01',
+      bookId: 'book-systems',
+      date: getLocalDateString(daysAgo(referenceNow, 14)),
+      startPos: 0,
+      endPos: 28,
+      updatedAt: isoDaysAgo(referenceNow, 14),
+      note: 'Introduction and stock/flow diagrams',
+    },
+    {
+      id: 'sess-02',
+      bookId: 'book-systems',
+      date: getLocalDateString(daysAgo(referenceNow, 12)),
+      startPos: 28,
+      endPos: 54,
+      updatedAt: isoDaysAgo(referenceNow, 12),
+      note: '',
+    },
+    {
+      id: 'sess-03',
+      bookId: 'book-exhalation',
+      date: getLocalDateString(daysAgo(referenceNow, 11)),
+      startPos: 0,
+      endPos: 40,
+      updatedAt: isoDaysAgo(referenceNow, 11),
+      note: 'The Merchant and the Alchemist Gate',
+    },
+    {
+      id: 'sess-04',
+      bookId: 'book-systems',
+      date: getLocalDateString(daysAgo(referenceNow, 10)),
+      startPos: 54,
+      endPos: 82,
+      updatedAt: isoDaysAgo(referenceNow, 10),
+      note: '',
+    },
+    {
+      id: 'sess-05',
+      bookId: 'book-exhalation',
+      date: getLocalDateString(daysAgo(referenceNow, 8)),
+      startPos: 40,
+      endPos: 76,
+      updatedAt: isoDaysAgo(referenceNow, 8),
+      note: '',
+    },
+    {
+      id: 'sess-06',
+      bookId: 'book-systems',
+      date: getLocalDateString(daysAgo(referenceNow, 7)),
+      startPos: 82,
+      endPos: 108,
+      updatedAt: isoDaysAgo(referenceNow, 7),
+      note: '',
+    },
+    {
+      id: 'sess-07',
+      bookId: 'book-exhalation',
+      date: getLocalDateString(daysAgo(referenceNow, 5)),
+      startPos: 76,
+      endPos: 124,
+      updatedAt: isoDaysAgo(referenceNow, 5),
+      note: 'Memory prism dilemma',
+    },
+    {
+      id: 'sess-08',
+      bookId: 'book-systems',
+      date: getLocalDateString(daysAgo(referenceNow, 4)),
+      startPos: 108,
+      endPos: 126,
+      updatedAt: isoDaysAgo(referenceNow, 4),
+      note: '',
+    },
+    {
+      id: 'sess-09',
+      bookId: 'book-systems',
+      date: getLocalDateString(daysAgo(referenceNow, 2)),
+      startPos: 126,
+      endPos: 142,
+      updatedAt: isoDaysAgo(referenceNow, 2),
+      note: 'Delays & oscillations',
+    },
+    {
+      id: 'sess-10',
+      bookId: 'book-exhalation',
+      date: getLocalDateString(daysAgo(referenceNow, 1)),
+      startPos: 124,
+      endPos: 165,
+      updatedAt: isoDaysAgo(referenceNow, 1),
+      note: 'Title story opening',
+    },
+    {
+      id: 'sess-11',
+      bookId: 'book-exhalation',
+      date: getLocalDateString(daysAgo(referenceNow, 0)),
+      startPos: 165,
+      endPos: 168,
+      updatedAt: isoDaysAgo(referenceNow, 0, 9),
+      note: '',
+    },
+  ];
+
+  const deltaLogs: DeltaLog[] = [
+    {
+      id: 'dlog-01',
+      noteId: 'note-delays-feedback',
+      date: getLocalDateString(daysAgo(referenceNow, 6)),
+      outcome: 'applied',
+      reflection: 'Held off tuning cache TTLs for 24h; latency settled naturally.',
+    },
+    {
+      id: 'dlog-02',
+      noteId: 'note-delays-feedback',
+      date: getLocalDateString(daysAgo(referenceNow, 3)),
+      outcome: 'no-trigger',
+      reflection: '',
+    },
+    {
+      id: 'dlog-03',
+      noteId: 'note-playing-boundaries',
+      date: getLocalDateString(daysAgo(referenceNow, 9)),
+      outcome: 'missed',
+      reflection: 'Got sucked into feature checklist comparison during planning.',
+    },
+    {
+      id: 'dlog-04',
+      noteId: 'note-playing-boundaries',
+      date: getLocalDateString(daysAgo(referenceNow, 4)),
+      outcome: 'applied',
+      reflection: 'Reframed Q1 roadmap review around long-term retention instead.',
+    },
+  ];
+
+  return {
+    books,
+    notes,
+    sessions,
+    deltaLogs,
+  };
+}

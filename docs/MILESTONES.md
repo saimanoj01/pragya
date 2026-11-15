@@ -37,12 +37,12 @@ All milestones enforce the contracts in [`SPEC.md`](./SPEC.md), zero AI/voice co
    - `LoginView.tsx`, `ShelfView.tsx` (Now Reading + Re-Entry Context + `+10p` + exact advance + responsive 30-day activity dots + `Queued`/`Finished`/`Paused`), `AddBookModal.tsx`, `EditBookModal.tsx`, `QuickCaptureModal.tsx` (`N`, quote, takeaway, tags, `Spar w/ AI later`, `Fiction Prediction` for fiction books, Photo/Doc/Link up to 3 attachments + `⌘V` paste), `NotesView.tsx` (instant search + `All`/`To Spar`/`Atomic`/`Has Media`/`[[Concepts]]` filters + inline Spoiler Shield preview), `SettingsView.tsx`.
 
 ### Acceptance Criteria (Done)
-- [ ] Strictly Pragya-branded across UI, code, storage keys, skill, and docs (zero legacy brand leaks).
-- [ ] Dark & Light Nebula monochrome theme tokens match `SPEC.md` §3; numeric readouts use `.num`.
-- [ ] Mobile (`390×844`) `ShelfView` renders all 30 activity dots inside the card width with `scrollWidth <= clientWidth` (zero horizontal overflow) and clean `Add Book` button wrapping (`whitespace-nowrap`).
-- [ ] `QuickCaptureModal` (`N`) captures Quote + Takeaway + Tags + Spar checkbox + Fiction Prediction checkbox + up to 3 attachments (including `⌘V` image compression `<= 1600px` WebP and Google Doc URL chip auto-detection) and advances book position monotonically (`Math.max`) with 30-min session coalescing.
-- [ ] `NotesView` filters (`All`, `To Spar`, `Atomic`, `Has Media`, `[[Concepts]]`) and inline Spoiler Shield blur (`note.normalizedPos > book.normalizedPos`) work accurately.
-- [ ] `GoogleSheetsAdapter` passes mock-fetch/unit verification for: auto-repair of missing tabs/headers, UUID `A:A` resolution before `values.update`, `modifiedTime` `0ms` cache hit on reload, `401` expiry trigger, and `pragya-media-v1` authenticated image cache.
+- [x] Strictly Pragya-branded across UI, code, storage keys, skill, and docs (zero legacy brand leaks).
+- [x] Dark & Light Nebula monochrome theme tokens match `SPEC.md` §3; numeric readouts use `.num`.
+- [x] Mobile (`390×844`) `ShelfView` renders all 30 activity dots inside the card width with `scrollWidth <= clientWidth` (zero horizontal overflow) and clean `Add Book` button wrapping (`whitespace-nowrap`).
+- [x] `QuickCaptureModal` (`N`) captures Quote + Takeaway + Tags + Spar checkbox + Fiction Prediction checkbox + up to 3 attachments (including `⌘V` image compression `<= 1600px` WebP and Google Doc URL chip auto-detection) and advances book position monotonically (`Math.max`) with 30-min session coalescing.
+- [x] `NotesView` filters (`All`, `To Spar`, `Atomic`, `Has Media`, `[[Concepts]]`) and inline Spoiler Shield blur (`note.normalizedPos > book.normalizedPos`) work accurately.
+- [x] `GoogleSheetsAdapter` passes mock-fetch/unit verification for: auto-repair of missing tabs/headers, UUID `A:A` resolution before `values.update`, `modifiedTime` `0ms` cache hit on reload, `401` expiry trigger, and `pragya-media-v1` authenticated image cache.
 
 ### Required Automated Tests
 - **Unit (`tests/unit/m1Core.test.mjs` via `node --test`):**
@@ -61,40 +61,50 @@ All milestones enforce the contracts in [`SPEC.md`](./SPEC.md), zero AI/voice co
   - Simulated Google OAuth hash callback (`access_token=` + CSRF `state`), `modifiedTime` fast reload (asserting sheet range GETs are skipped when `modifiedTime` unchanged), and `401` triggering `session-expired-modal`.
   - Mobile (`390×844`) 5-slot `BottomNav`, `More` drawer, and assertion that `document.documentElement.scrollWidth <= window.innerWidth` and `[data-testid="activity-dots"]` has zero horizontal overflow.
 
-### Checkpoint Gate
+### Checkpoint Gate & Status
 - `npm run build` (`tsc && vite build`), `npm run lint`, `npm run test:unit`, and M1 `npm run test:e2e` all pass → commit & push M1 checkpoint.
+- **M1 Checkpoint Status: PASSED** — `reviewer` (`APPROVE`), `qa` (`PASS`: `npm run build`, `npm run lint`, `10/10` unit tests in `tests/unit/m1Core.test.mjs`, `8/8` Playwright E2E across `tier1_foundation_and_capture.spec.ts` and `tier2_oauth_and_mobile.spec.ts`, including `390×844` mobile overflow checks and regression tests).
+- **M1 Baseline Already Landed for M2:**
+  - `src/components/views/BridgeViews.tsx` provides temporary M1 preview components (`BookDetailPreview`, `NoteDetailPreview`, `PracticePreview`) wired in `src/App.tsx`.
+  - `src/context/PragyaContext.tsx` already implements `advanceBookPosition` (`manualOverride`), `markBookFinished`, `updateNote`, `logDeltaOutcome`, and `replaceWorkspaceFromSnapshot`.
+  - Pure utilities already implemented in `src/`: `src/utils/snapshot.ts` (`buildSnapshot`, `validateSnapshotPayload`), `src/utils/wikilinks.ts` (`slugify`, `generateUniqueSlug`, `extractWikilinks`, `extractNoteWikilinks`, `computeBacklinks`), `src/utils/deltaFormat.ts` (`stripDeltaPrefix`, `normalizeDeltaTrigger`, `normalizeDeltaAction`, `formatWhenDoDisplay`), and `src/utils/spoilerMath.ts` (`isNoteSpoiler`, `isSealedPrediction`, `isUnlockedPrediction`).
 
 ---
 
 ## Milestone 2: Deepening, Spoiler Shield, Wikilinks/Backlinks, Practice & Snapshot Backup
 
-### Scope & Deliverables
-1. **Book Drilldown (`src/components/views/BookDetailView.tsx`, `#/book/:id`):**
-   - Per-book progress header, `+10p` & exact position input, **Manual Bookmark Reset / Override** checkbox (`manual-pos-override-checkbox`) enabling explicit backward position reset, **Mark as Finished** (`mark-finished-btn`) unlocking sealed fiction predictions and clearing spoiler blurs.
-   - Ordered book notes list with per-card Spoiler Shield + `Space` reveal.
+### Scope & Deliverables (Exact Handoff Against M1 Baseline)
+1. **Replace Preview Shells & Build Book Drilldown (`src/components/views/BookDetailView.tsx`, `#/book/:id`):**
+   - Replace `BookDetailPreview` in `src/components/views/BridgeViews.tsx` (and remove `BridgeViews.tsx` once all three views are updated in `src/App.tsx`).
+   - Preserve existing `data-testid`s (`book-detail-view`, `back-to-shelf-btn`, `note-card-{slug}`, `spoiler-shield-{slug}`, `spoiler-reveal-btn-{slug}`) and add: `+10p` advance, `book-detail-advance-input`, `book-detail-advance-btn`, **Manual Bookmark Reset / Override** checkbox (`manual-pos-override-checkbox`) passed as `{ manualOverride: true }` to `PragyaContext.advanceBookPosition`, and **Mark as Finished** (`mark-finished-btn`) calling `PragyaContext.markBookFinished` to unlock sealed fiction predictions and clear spoiler blurs.
+   - Ordered book notes list with per-card Spoiler Shield, `J`/`K` selection, `Enter` navigation, and `Space` reveal.
 2. **Atomic Note Detail (`src/components/views/NoteDetailView.tsx`, `#/note/:slug`):**
-   - **Socratic Recovery Banner** (`socratic-recovery-banner`) shown when `status === 'in-reflection'` and `meta.socraticQuestions` is populated, rendering both persisted questions above `Continue Deepening →`.
-   - Verbatim Quote, Core Takeaway, clickable `[[wikilinks]]`, Layer 2 sections (`Context & Mechanism`, clean single `WHEN`/`DO` Behavioral Delta card, `Socratic Critique`), `<DriveImage />` attachment thumbnails + **`ImageLightbox.tsx`** (`Space` / click / `Escape`), and in-memory **Referenced By (Backlinks)** (`backlinks-section`) excluding self-links (`n.slug !== current.slug`).
-3. **Deepen & Edit Modals (`DeepenNoteModal.tsx`, `EditNoteModal.tsx`, `WikilinkAutocomplete.tsx`):**
+   - Replace `NoteDetailPreview` from `BridgeViews.tsx` while keeping existing `data-testid`s (`note-detail-view`, `back-to-notes-btn`, `socratic-recovery-banner`, `wikilink-chip-{slug}`, `attachment-image-{id}`, `backlinks-section`, `backlink-item-{slug}`).
+   - Add header actions: `Edit Note (E)` (`edit-note-btn`) and `Deepen Note (D)` (`deepen-note-btn`), plus a `Continue Deepening →` button inside `socratic-recovery-banner` when `status === 'in-reflection'` and `meta.socraticQuestions` is populated.
+   - Render Verbatim Quote, Core Takeaway, clickable `[[wikilinks]]` (via `extractNoteWikilinks`, including a clean missing-target card/action if a `[[slug]]` has no matching note yet), Layer 2 sections (`Context & Mechanism`, Behavioral Delta via `formatWhenDoDisplay` guaranteeing zero `WHEN WHEN` / `DO DO`, `Socratic Critique`), `<DriveImage />` thumbnails opening **`src/components/modals/ImageLightbox.tsx`** (`image-lightbox`, toggled via click/`Space` and closed via `Escape` with `stopPropagation`), and Backlinks via `computeBacklinks` (already excludes self-links).
+3. **Deepen & Edit Modals (`src/components/modals/DeepenNoteModal.tsx`, `EditNoteModal.tsx`, `src/components/common/WikilinkAutocomplete.tsx`):**
    - Triggered by `D` / `E` or header buttons.
-   - Displays Socratic Recovery questions inside `DeepenNoteModal` when `status === 'in-reflection'`.
-   - Inline `[[` autocomplete popover (`wikilink-autocomplete`, `data-popover="true"`) triggered inside Takeaway / Context / Critique textareas with keyboard/click selection.
-   - Enforces `<= 5` Active Behavioral Deltas cap (`deltaStatus === 'active'`), surfacing `deepen-delta-cap-warning` if 5 other notes are already active.
-4. **Practice & Snapshot Portability (`src/components/views/PracticeView.tsx`, `ImportConfirmModal.tsx`, `#/practice`):**
-   - **Active Behavioral Deltas (`N/5`):** `1` Applied, `2` Missed Trigger (opens inline trigger editor to update `deltaTrigger` on the spot), `3` Didn't Come Up, `Graduate`, `Pause` — appending `DeltaLogs` rows and updating `Notes`.
-   - **Paused & Graduated Deltas:** compact archive with `Reactivate` (enforcing `<= 5` active cap).
-   - **Takeaway Shuffle:** deterministic daily (`YYYY-MM-DD`) resurfacing of up to 3 cards (`>= 14` days old or `#favorite`/`#favorites`, excluding spoilers, sealed predictions, and `lastReviewedAt === today`), with `Mark Reviewed`.
-   - **Unlocked Fiction Predictions:** dedicated section showing unlocked predictions from `finished` fiction books.
-   - **JSON Snapshot Backup:** `Export JSON` (`PragyaSnapshot` v1 download) and `Import JSON` (schema validation + `ImportConfirmModal` preview before replacing state).
-5. **Complete Keyboard Map & Focus Guard (`src/hooks/useKeyboardShortcuts.ts`):**
-   - Full implementation of `⌘K`, `N`, `G S/N/P`, `J/K + Enter`, `Space`, `O`, `D`, `E`, `1/2/3`, `R`, layered `Escape`, strictly guarded when focus is inside `<input>`, `<textarea>`, `<select>`, or `[contenteditable="true"]`.
+   - `DeepenNoteModal`: displays persisted `meta.socraticQuestions` above fields when `status === 'in-reflection'`, edits Title/Slug (`generateUniqueSlug(..., excludeSelfSlug)`), Core Takeaway, Context & Mechanism, Behavioral Delta (`deltaTrigger` / `deltaAction` normalized via `normalizeDeltaTrigger` / `normalizeDeltaAction`, `deltaStatus`), Socratic Critique, and upgrades note `status` to `'atomic'`.
+   - `EditNoteModal`: edits Layer 1/Layer 2 fields, `slug`, `#tags`, `isPrediction` (for fiction books), and attachments (`<= 3` cap, append-only removal without deleting Drive blobs).
+   - `WikilinkAutocomplete`: inline `[[` popover (`wikilink-autocomplete`, `wikilink-option-{slug}`, `data-popover="true"`) inside Takeaway / Context / Critique textareas (excluding current note slug).
+   - **Active Delta Cap (`<= 5`):** Enforce `deltaStatus === 'active'` max 5 limit in both `PragyaContext.updateNote` (throwing/surfacing clear error if a 6th distinct note attempts `'active'`) and in `DeepenNoteModal` / `PracticeView` (`deepen-delta-cap-warning`).
+4. **Practice & Snapshot Portability (`src/components/views/PracticeView.tsx`, `src/components/modals/ImportConfirmModal.tsx`, `src/utils/takeawayShuffle.ts`, `#/practice`):**
+   - Replace `PracticePreview` from `BridgeViews.tsx` while keeping `practice-view`, `active-deltas-section`, `active-deltas-count`, `delta-card-{id}`.
+   - **Active Behavioral Deltas (`N/5`):** `delta-apply-btn-{id}` (`1`), `delta-missed-btn-{id}` (`2`, opens inline trigger editor `delta-trigger-edit-input-{id}` + `delta-trigger-save-btn-{id}` normalizing via `normalizeDeltaTrigger`), `delta-notrigger-btn-{id}` (`3`), `delta-graduate-btn-{id}`, `delta-pause-btn-{id}` — logging via `PragyaContext.logDeltaOutcome` and updating note via `PragyaContext.updateNote`.
+   - **Paused & Graduated Deltas:** compact archive with `delta-reactivate-btn-{id}` (enforcing `<= 5` active cap).
+   - **Takeaway Shuffle (`src/utils/takeawayShuffle.ts`):** deterministic `YYYY-MM-DD` selection of up to 3 eligible notes (`>= 14` days old or `#favorite`/`#favorites`, excluding `isNoteSpoiler`, `isSealedPrediction`, and `meta.lastReviewedAt?.slice(0, 10) === todayDate`), rendered in `takeaway-shuffle-section` (`shuffle-card-{slug}`, `shuffle-review-btn-{slug}` setting `meta.lastReviewedAt` to today).
+   - **Unlocked Fiction Predictions:** `unlocked-predictions-section` listing notes matching `isUnlockedPrediction(note, book)` from `src/utils/spoilerMath.ts`.
+   - **JSON Snapshot Backup:** Wire `src/utils/snapshot.ts` (`buildSnapshot` → `export-json-btn`; `validateSnapshotPayload` + `import-json-input` → `import-confirm-modal` / `import-confirm-btn` → `PragyaContext.replaceWorkspaceFromSnapshot`). Also wire optional Import JSON alongside Export JSON in `SettingsView.tsx` if desired.
+5. **Complete Keyboard Map & Focus Guard (`src/hooks/useKeyboardShortcuts.ts` + `src/App.tsx`):**
+   - Extend M1 keyboard handling in `App.tsx` (`⌘K`, `G S/N/P`, `N`, `R`, `Escape`) and `NotesView.tsx` (`J/K/Enter/Space`) into unified shortcut support covering `J/K + Enter` across `BookDetailView` and `PracticeView`, `Space` (`BookDetailView` spoiler reveal + `NoteDetailView` `ImageLightbox`), `O` (open primary Doc/link), `D` (`DeepenNoteModal`), `E` (`EditNoteModal` / `EditBookModal`), `1/2/3` (`PracticeView` check-ins), and strict layered `Escape` (`ImageLightbox` / `[data-popover="true"]` → topmost modal → detail back-navigation) with `isEditableElement` focus guard.
 
 ### Acceptance Criteria (Done)
+- [ ] `BridgeViews.tsx` previews are fully replaced by `BookDetailView.tsx`, `NoteDetailView.tsx`, and `PracticeView.tsx` in `src/App.tsx`.
 - [ ] `BookDetailView` refuses backward bookmark movement unless `manual-pos-override-checkbox` is checked; `Mark as Finished` unlocks predictions and removes spoilers.
 - [ ] `NoteDetailView` displays persisted `socraticQuestions` for `in-reflection` notes, renders clean single `WHEN`/`DO` prefixes (zero `WHEN WHEN` or `DO DO`), opens `<DriveImage />` lightbox, resolves clickable `[[wikilinks]]`, and computes Backlinks excluding self-links.
 - [ ] Typing `[[` in `DeepenNoteModal` / `EditNoteModal` opens `wikilink-autocomplete` and inserts `[[selected-slug]]`.
-- [ ] `PracticeView` enforces `<= 5` Active Behavioral Deltas cap across activation, deepening, and reactivation; logs `DeltaLogs` via buttons or keys `1/2/3`; inline-edits `deltaTrigger` on Missed Trigger; renders deterministic Takeaway Shuffle excluding spoilers, sealed predictions, and reviewed-today notes; displays Unlocked Fiction Predictions when a fiction book finishes.
-- [ ] JSON Snapshot Export → Import validates schema (`version: 1`, required arrays/fields) and restores full workspace via confirmation modal.
+- [ ] `PracticeView` enforces `<= 5` Active Behavioral Deltas cap across activation, deepening, and reactivation (backed by `PragyaContext.updateNote` guard); logs `DeltaLogs` via buttons or keys `1/2/3`; inline-edits `deltaTrigger` on Missed Trigger; renders deterministic Takeaway Shuffle excluding spoilers, sealed predictions, and reviewed-today notes; displays Unlocked Fiction Predictions when a fiction book finishes.
+- [ ] JSON Snapshot Export → Import validates schema (`validateSnapshotPayload` in `src/utils/snapshot.ts`) and restores full workspace via `ImportConfirmModal`.
 - [ ] Typing `n`, `d`, `e`, `1`, `2`, `3`, `r`, `g` inside any input/textarea never triggers global shortcuts; `Escape` closes popovers/lightboxes before modals before detail back-navigation.
 
 ### Required Automated Tests
@@ -102,12 +112,12 @@ All milestones enforce the contracts in [`SPEC.md`](./SPEC.md), zero AI/voice co
   - Takeaway Shuffle determinism (same date = same selection), exclusion of spoilers, sealed predictions, and `lastReviewedAt === today`.
   - Backlinks resolver (extracts `[[slug]]`, excludes self-references, handles duplicate links in one note).
   - Active Delta `<= 5` cap guard on deepen & reactivate.
-  - Snapshot schema validator (validates good snapshot, rejects malformed JSON / wrong version / missing arrays).
+  - Snapshot schema validator (`validateSnapshotPayload` validates good snapshot, normalizes `WHEN`/`DO`, rejects malformed JSON / wrong version / missing arrays).
 - **Playwright E2E (`tests/specs/tier3_deepen_spoilers_practice.spec.ts`):**
   - `BookDetailView`: attempt backward bookmark without override (blocked / stays monotonic), check override and reset backward, `Mark as Finished` unlocking `Exhalation: Stories` prediction.
   - `NoteDetailView`: verify Socratic Recovery Banner on `in-reflection` note, deepen with `[[` autocomplete → `atomic`, verify Backlink appears on target note and self-link is excluded, verify single `WHEN`/`DO` text (assert no `WHEN WHEN` / `DO DO`), test lightbox `Space` & `Escape`.
-  - `PracticeView`: `1/2/3` keyboard & button check-ins, Missed Trigger inline trigger edit, attempt 6th active delta → cap warning enforced, Graduate + Reactivate, Takeaway Shuffle `Mark Reviewed` removes card for today, Export/Import JSON snapshot roundtrip.
-  - Keyboard focus guard test: typing `"ndeg123r"` inside Quick Capture / Edit inputs must not open modals or navigate.
+  - `PracticeView`: `1/2/3` keyboard & button check-ins, Missed Trigger inline trigger edit, attempt 6th active delta → cap warning enforced, Graduate + Reactivate, Takeaway Shuffle `Mark Reviewed` removes card for today, Export/Import JSON snapshot roundtrip via `ImportConfirmModal`.
+  - Keyboard focus guard test: typing `"ndeg123r"` inside Quick Capture / Deepen / Edit inputs must not open modals or navigate.
 
 ### Checkpoint Gate
 - `npm run build`, `npm run lint`, `npm run test:unit`, and full M1 + M2 `npm run test:e2e` pass → commit & push M2 checkpoint.

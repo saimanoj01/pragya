@@ -1,0 +1,575 @@
+import React, {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
+import type {
+  Attachment,
+  Book,
+  BookFormat,
+  BookKind,
+  BookStatus,
+  DeltaLog,
+  DeltaOutcome,
+  Note,
+  PosUnit,
+  PragyaSnapshot,
+  ReadingSession,
+} from '../types/pragya';
+import { DemoStorageAdapter } from '../services/demoAdapter';
+import { GoogleSheetsAdapter } from '../services/googleSheetsAdapter';
+import type { StorageAdapter } from '../services/storage';
+import { compressImageToWebp } from '../utils/imageCompress';
+import {
+  applyBookmarkAdvance,
+  createUuid,
+  getLocalDateString,
+  upsertCoalescedSession,
+} from '../utils/sessionCoalesce';
+import { normalizeTagList } from '../utils/sheetCodecs';
+import { computeNormalizedPos } from '../utils/spoilerMath';
+import { generateUniqueSlug } from '../utils/wikilinks';
+import { showToast } from '../utils/toast';
+import { useAuth } from './AuthContext';
+
+export interface AddBookInput {
+  title: string;
+  author: string;
+  format: BookFormat;
+  kind: BookKind;
+  status: BookStatus;
+  currentPos: number;
+  totalPos: number;
+  posUnit: PosUnit;
+  docUrl?: string;
+}
+
+export interface QuickCaptureInput {
+  bookId: string;
+  pos: number;
+  title?: string;
+  quote?: string;
+  takeaway: string;
+  tags: string[];
+  sparLater?: boolean;
+  isPrediction?: boolean;
+  attachments?: Attachment[];
+}
+
+export interface PragyaContextValue {
+  books: Book[];
+  notes: Note[];
+  sessions: ReadingSession[];
+  deltaLogs: DeltaLog[];
+  isLoading: boolean;
+  isSyncing: boolean;
+  lastSyncedAt: string | null;
+  spreadsheetId: string | null;
+  mediaFolderId: string | null;
+  syncNow: (force?: boolean) => Promise<void>;
+  addBook: (input: AddBookInput) => Promise<Book>;
+  updateBook: (book: Book) => Promise<Book>;
+  advanceBookPosition: (
+    bookId: string,
+    incomingPos: number,
+    options?: { manualOverride?: boolean; sessionNote?: string }
+  ) => Promise<{ book: Book; changed: boolean; rejectedBackward: boolean }>;
+  startReadingBook: (bookId: string) => Promise<Book | null>;
+  markBookFinished: (bookId: string) => Promise<Book | null>;
+  captureNote: (input: QuickCaptureInput) => Promise<Note>;
+  updateNote: (note: Note) => Promise<Note>;
+  logDeltaOutcome: (
+    noteId: string,
+    outcome: DeltaOutcome,
+    reflection?: string
+  ) => Promise<DeltaLog>;
+  replaceWorkspaceFromSnapshot: (snapshot: PragyaSnapshot) => Promise<void>;
+  resetDemoWorkspace: () => Promise<void>;
+  uploadImageAttachment: (file: File | Blob) => Promise<Attachment>;
+  resolveDocTitle: (docId: string) => Promise<string | null>;
+}
+
+const PragyaContext = createContext<PragyaContextValue | undefined>(undefined);
+
+function upsertList<T extends { id: string }>(items: T[], item: T): T[] {
+  const idx = items.findIndex(x => x.id === item.id);
+  if (idx >= 0) {
+    const next = [...items];
+    next[idx] = item;
+    return next;
+  }
+  return [...items, item];
+}
+
+export const PragyaProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const { isAuthenticated, isMockMode, user, getGoogleToken, triggerSessionExpired } = useAuth();
+
+  const userEmail = user?.email;
+  const adapter: StorageAdapter = useMemo(() => {
+    if (isMockMode) {
+      return new DemoStorageAdapter();
+    }
+    return new GoogleSheetsAdapter(getGoogleToken, triggerSessionExpired, userEmail);
+  }, [isMockMode, userEmail, getGoogleToken, triggerSessionExpired]);
+
+  const [books, setBooks] = useState<Book[]>([]);
+  const [notes, setNotes] = useState<Note[]>([]);
+  const [sessions, setSessions] = useState<ReadingSession[]>([]);
+  const [deltaLogs, setDeltaLogs] = useState<DeltaLog[]>([]);
+  const [isLoading, setIsLoading] = useState<boolean>(false);
+  const [isSyncing, setIsSyncing] = useState<boolean>(false);
+  const [lastSyncedAt, setLastSyncedAt] = useState<string | null>(null);
+  const [spreadsheetId, setSpreadsheetId] = useState<string | null>(null);
+  const [mediaFolderId, setMediaFolderId] = useState<string | null>(null);
+
+  const booksRef = useRef<Book[]>(books);
+  const notesRef = useRef<Note[]>(notes);
+  const sessionsRef = useRef<ReadingSession[]>(sessions);
+  const deltaLogsRef = useRef<DeltaLog[]>(deltaLogs);
+  const isAuthenticatedRef = useRef<boolean>(isAuthenticated);
+  isAuthenticatedRef.current = isAuthenticated;
+
+  const mutationQueueRef = useRef<Promise<unknown>>(Promise.resolve());
+
+  const enqueueMutation = useCallback(<T,>(task: () => Promise<T>): Promise<T> => {
+    const next = mutationQueueRef.current.catch(() => {}).then(task);
+    mutationQueueRef.current = next;
+    return next;
+  }, []);
+
+  const syncNow = useCallback(
+    async (force = false) => {
+      if (!isAuthenticated) return;
+      setIsSyncing(true);
+      try {
+        await enqueueMutation(async () => {
+          if (!isAuthenticatedRef.current) return;
+          const ws = await adapter.loadWorkspace({ forceRefresh: force });
+          if (!isAuthenticatedRef.current) return;
+          booksRef.current = ws.books;
+          notesRef.current = ws.notes;
+          sessionsRef.current = ws.sessions;
+          deltaLogsRef.current = ws.deltaLogs;
+          setBooks(ws.books);
+          setNotes(ws.notes);
+          setSessions(ws.sessions);
+          setDeltaLogs(ws.deltaLogs);
+          setSpreadsheetId(ws.spreadsheetId || null);
+          setMediaFolderId(ws.mediaFolderId || null);
+          setLastSyncedAt(new Date().toISOString());
+        });
+        if (force && isAuthenticatedRef.current) {
+          showToast('Workspace synced', 'success');
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : 'Failed to sync workspace';
+        if (!msg.includes('401')) {
+          showToast(msg, 'error');
+        }
+      } finally {
+        setIsSyncing(false);
+        setIsLoading(false);
+      }
+    },
+    [adapter, enqueueMutation, isAuthenticated]
+  );
+
+  useEffect(() => {
+    if (!isAuthenticated) {
+      booksRef.current = [];
+      notesRef.current = [];
+      sessionsRef.current = [];
+      deltaLogsRef.current = [];
+      setBooks([]);
+      setNotes([]);
+      setSessions([]);
+      setDeltaLogs([]);
+      setSpreadsheetId(null);
+      setMediaFolderId(null);
+      setLastSyncedAt(null);
+      return;
+    }
+    setIsLoading(true);
+    void syncNow(false);
+  }, [isAuthenticated, isMockMode, syncNow]);
+
+  const addBook = useCallback(
+    (input: AddBookInput): Promise<Book> =>
+      enqueueMutation(async () => {
+        const nowIso = new Date().toISOString();
+        const totalPos = Math.max(0, Number(input.totalPos) || 0);
+        const currentPos = Math.max(0, Number(input.currentPos) || 0);
+        const normalizedPos =
+          input.status === 'finished'
+            ? 1
+            : computeNormalizedPos(currentPos, totalPos, input.posUnit);
+
+        const newBook: Book = {
+          id: createUuid(),
+          title: input.title.trim(),
+          author: input.author.trim(),
+          format: input.format,
+          kind: input.kind,
+          status: input.status,
+          currentPos,
+          totalPos,
+          posUnit: input.posUnit,
+          normalizedPos,
+          docUrl: (input.docUrl || '').trim(),
+          meta: {
+            ...(input.status === 'reading' || input.status === 'finished'
+              ? { startedAt: nowIso }
+              : {}),
+            ...(input.status === 'finished' ? { finishedAt: nowIso } : {}),
+            updatedAt: nowIso,
+          },
+        };
+
+        const saved = await adapter.saveBook(newBook);
+        const nextBooks = upsertList(booksRef.current, saved);
+        booksRef.current = nextBooks;
+        setBooks(nextBooks);
+        return saved;
+      }),
+    [adapter, enqueueMutation]
+  );
+
+  const updateBook = useCallback(
+    (book: Book): Promise<Book> =>
+      enqueueMutation(async () => {
+        const nowIso = new Date().toISOString();
+        const nextBook: Book = {
+          ...book,
+          normalizedPos:
+            book.status === 'finished'
+              ? 1
+              : computeNormalizedPos(book.currentPos, book.totalPos, book.posUnit),
+          meta: {
+            ...book.meta,
+            updatedAt: nowIso,
+          },
+        };
+        const saved = await adapter.saveBook(nextBook);
+        const nextBooks = upsertList(booksRef.current, saved);
+        booksRef.current = nextBooks;
+        setBooks(nextBooks);
+        return saved;
+      }),
+    [adapter, enqueueMutation]
+  );
+
+  const advanceBookPositionInternal = useCallback(
+    async (
+      bookId: string,
+      incomingPos: number,
+      options: { manualOverride?: boolean; sessionNote?: string } = {}
+    ): Promise<{ book: Book; changed: boolean; rejectedBackward: boolean }> => {
+      const existing = booksRef.current.find(b => b.id === bookId);
+      if (!existing) {
+        throw new Error('Book not found');
+      }
+      const nowIso = new Date().toISOString();
+      const res = applyBookmarkAdvance(existing, incomingPos, {
+        manualOverride: options.manualOverride,
+        nowIso,
+      });
+
+      if (res.rejectedBackward) {
+        return { book: existing, changed: false, rejectedBackward: true };
+      }
+
+      if (!res.changed) {
+        return { book: existing, changed: false, rejectedBackward: false };
+      }
+
+      const savedBook = await adapter.saveBook(res.updatedBook);
+      const nextBooks = upsertList(booksRef.current, savedBook);
+      booksRef.current = nextBooks;
+      setBooks(nextBooks);
+
+      const sessionRes = upsertCoalescedSession(sessionsRef.current, {
+        bookId,
+        prevPos: res.prevPos,
+        nextPos: res.nextPos,
+        nowIso,
+        note: options.sessionNote,
+        manualOverride: options.manualOverride,
+      });
+
+      const savedSession = await adapter.saveSession(sessionRes.upserted);
+      const nextSessions = upsertList(sessionsRef.current, savedSession);
+      sessionsRef.current = nextSessions;
+      setSessions(nextSessions);
+
+      return { book: savedBook, changed: true, rejectedBackward: false };
+    },
+    [adapter]
+  );
+
+  const advanceBookPosition = useCallback(
+    (
+      bookId: string,
+      incomingPos: number,
+      options: { manualOverride?: boolean; sessionNote?: string } = {}
+    ): Promise<{ book: Book; changed: boolean; rejectedBackward: boolean }> =>
+      enqueueMutation(() => advanceBookPositionInternal(bookId, incomingPos, options)),
+    [advanceBookPositionInternal, enqueueMutation]
+  );
+
+  const startReadingBook = useCallback(
+    (bookId: string): Promise<Book | null> =>
+      enqueueMutation(async () => {
+        const existing = booksRef.current.find(b => b.id === bookId);
+        if (!existing) return null;
+        const nowIso = new Date().toISOString();
+        const next: Book = {
+          ...existing,
+          status: 'reading',
+          meta: {
+            ...existing.meta,
+            startedAt: existing.meta.startedAt || nowIso,
+            updatedAt: nowIso,
+          },
+        };
+        const saved = await adapter.saveBook(next);
+        const nextBooks = upsertList(booksRef.current, saved);
+        booksRef.current = nextBooks;
+        setBooks(nextBooks);
+        return saved;
+      }),
+    [adapter, enqueueMutation]
+  );
+
+  const markBookFinished = useCallback(
+    (bookId: string): Promise<Book | null> =>
+      enqueueMutation(async () => {
+        const existing = booksRef.current.find(b => b.id === bookId);
+        if (!existing) return null;
+        const nowIso = new Date().toISOString();
+        const finalPos = existing.totalPos > 0 ? existing.totalPos : existing.currentPos;
+        const next: Book = {
+          ...existing,
+          status: 'finished',
+          currentPos: finalPos,
+          normalizedPos: 1,
+          meta: {
+            ...existing.meta,
+            startedAt: existing.meta.startedAt || nowIso,
+            finishedAt: nowIso,
+            updatedAt: nowIso,
+          },
+        };
+        const saved = await adapter.saveBook(next);
+        const nextBooks = upsertList(booksRef.current, saved);
+        booksRef.current = nextBooks;
+        setBooks(nextBooks);
+        return saved;
+      }),
+    [adapter, enqueueMutation]
+  );
+
+  const captureNote = useCallback(
+    (input: QuickCaptureInput): Promise<Note> =>
+      enqueueMutation(async () => {
+        const book = booksRef.current.find(b => b.id === input.bookId);
+        if (!book) {
+          throw new Error('Select a valid book before capturing a note.');
+        }
+        const nowIso = new Date().toISOString();
+        const pos = Math.max(0, Number(input.pos) || 0);
+        const normalizedPos = computeNormalizedPos(pos, book.totalPos, book.posUnit);
+        const attachments = (input.attachments || []).slice(0, 3);
+        const links = attachments
+          .filter((a): a is Extract<Attachment, { type: 'link' | 'doc' }> => a.type !== 'image')
+          .map(a => a.url);
+
+        const slugSource =
+          (input.title || '').trim() ||
+          input.takeaway.trim().split(/\s+/).slice(0, 6).join(' ') ||
+          (input.quote || '').trim().split(/\s+/).slice(0, 6).join(' ') ||
+          `${book.title} p${pos}`;
+
+        const slug = generateUniqueSlug(
+          slugSource,
+          notesRef.current.map(n => n.slug)
+        );
+
+        const newNote: Note = {
+          id: createUuid(),
+          slug,
+          bookId: book.id,
+          createdAt: nowIso,
+          updatedAt: nowIso,
+          pos,
+          normalizedPos,
+          status: input.sparLater ? 'inbox' : 'saved',
+          source: 'app',
+          tags: normalizeTagList(input.tags || []),
+          quote: (input.quote || '').trim(),
+          takeaway: input.takeaway.trim(),
+          contextMechanism: '',
+          critique: '',
+          deltaTrigger: '',
+          deltaAction: '',
+          deltaStatus: 'none',
+          meta: {
+            ...(input.title?.trim() ? { title: input.title.trim() } : {}),
+            attachments,
+            links,
+            ...(book.kind === 'fiction' && input.isPrediction ? { isPrediction: true } : {}),
+          },
+        };
+
+        const savedNote = await adapter.saveNote(newNote);
+        const nextNotes = [savedNote, ...notesRef.current];
+        notesRef.current = nextNotes;
+        setNotes(nextNotes);
+
+        if (pos > book.currentPos) {
+          await advanceBookPositionInternal(book.id, pos);
+        }
+
+        return savedNote;
+      }),
+    [adapter, advanceBookPositionInternal, enqueueMutation]
+  );
+
+  const updateNote = useCallback(
+    (note: Note): Promise<Note> =>
+      enqueueMutation(async () => {
+        const nowIso = new Date().toISOString();
+        const updated: Note = {
+          ...note,
+          updatedAt: nowIso,
+        };
+        const saved = await adapter.saveNote(updated);
+        const nextNotes = upsertList(notesRef.current, saved);
+        notesRef.current = nextNotes;
+        setNotes(nextNotes);
+        return saved;
+      }),
+    [adapter, enqueueMutation]
+  );
+
+  const logDeltaOutcome = useCallback(
+    (noteId: string, outcome: DeltaOutcome, reflection = ''): Promise<DeltaLog> =>
+      enqueueMutation(async () => {
+        const log: DeltaLog = {
+          id: createUuid(),
+          noteId,
+          date: getLocalDateString(),
+          outcome,
+          reflection: reflection.trim(),
+        };
+        const saved = await adapter.saveDeltaLog(log);
+        const nextLogs = upsertList(deltaLogsRef.current, saved);
+        deltaLogsRef.current = nextLogs;
+        setDeltaLogs(nextLogs);
+        return saved;
+      }),
+    [adapter, enqueueMutation]
+  );
+
+  const replaceWorkspaceFromSnapshot = useCallback(
+    (snapshot: PragyaSnapshot): Promise<void> =>
+      enqueueMutation(async () => {
+        const ws = await adapter.replaceWorkspace(snapshot);
+        booksRef.current = ws.books;
+        notesRef.current = ws.notes;
+        sessionsRef.current = ws.sessions;
+        deltaLogsRef.current = ws.deltaLogs;
+        setBooks(ws.books);
+        setNotes(ws.notes);
+        setSessions(ws.sessions);
+        setDeltaLogs(ws.deltaLogs);
+        setLastSyncedAt(new Date().toISOString());
+      }),
+    [adapter, enqueueMutation]
+  );
+
+  const resetDemoWorkspace = useCallback(
+    () =>
+      enqueueMutation(async () => {
+        if (!adapter.resetDemoData) return;
+        const fresh = await adapter.resetDemoData();
+        booksRef.current = fresh.books;
+        notesRef.current = fresh.notes;
+        sessionsRef.current = fresh.sessions;
+        deltaLogsRef.current = fresh.deltaLogs;
+        setBooks(fresh.books);
+        setNotes(fresh.notes);
+        setSessions(fresh.sessions);
+        setDeltaLogs(fresh.deltaLogs);
+        setLastSyncedAt(new Date().toISOString());
+        showToast('Demo data reset to defaults', 'success');
+      }),
+    [adapter, enqueueMutation]
+  );
+
+  const uploadImageAttachment = useCallback(
+    async (file: File | Blob): Promise<Attachment> => {
+      const compressed = await compressImageToWebp(file, 1600, 0.82);
+      if (adapter.uploadImage) {
+        return adapter.uploadImage(
+          compressed.blob,
+          compressed.fileName,
+          compressed.mimeType,
+          compressed.width,
+          compressed.height
+        );
+      }
+      throw new Error('Image upload unavailable in current adapter');
+    },
+    [adapter]
+  );
+
+  const resolveDocTitle = useCallback(
+    async (docId: string): Promise<string | null> => {
+      if (!adapter.resolveDocTitle) return null;
+      return adapter.resolveDocTitle(docId);
+    },
+    [adapter]
+  );
+
+  return (
+    <PragyaContext.Provider
+      value={{
+        books,
+        notes,
+        sessions,
+        deltaLogs,
+        isLoading,
+        isSyncing,
+        lastSyncedAt,
+        spreadsheetId,
+        mediaFolderId,
+        syncNow,
+        addBook,
+        updateBook,
+        advanceBookPosition,
+        startReadingBook,
+        markBookFinished,
+        captureNote,
+        updateNote,
+        logDeltaOutcome,
+        replaceWorkspaceFromSnapshot,
+        resetDemoWorkspace,
+        uploadImageAttachment,
+        resolveDocTitle,
+      }}
+    >
+      {children}
+    </PragyaContext.Provider>
+  );
+};
+
+// eslint-disable-next-line react-refresh/only-export-components
+export function usePragya(): PragyaContextValue {
+  const ctx = useContext(PragyaContext);
+  if (!ctx) throw new Error('usePragya must be used within PragyaProvider');
+  return ctx;
+}

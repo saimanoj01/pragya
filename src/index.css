@@ -1,0 +1,115 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root, .dark {
+    color-scheme: dark;
+    /* surfaces */
+    --background: 228 12% 5%;      /* #0B0C0F */
+    --card: 228 10% 8%;            /* #131418 surface-1 */
+    --card-foreground: 220 14% 94%;
+    --surface-2: 228 9% 11%;       /* #1A1B20 hover / inset */
+    --popover: 228 10% 10%;
+    --popover-foreground: 220 14% 94%;
+    --border: 228 8% 16%;          /* hairline */
+    --input: 228 8% 18%;
+    /* text */
+    --foreground: 220 14% 94%;     /* #EDEEF1 */
+    --muted-foreground: 222 7% 63%;/* #9DA0A8 */
+    --faint: 222 6% 44%;           /* #6C6F77 */
+    /* interactive = monochrome */
+    --primary: 220 14% 94%;
+    --primary-foreground: 228 12% 6%;
+    --secondary: 228 9% 13%;
+    --secondary-foreground: 220 14% 94%;
+    --muted: 228 9% 13%;
+    --accent: 228 9% 13%;
+    --accent-foreground: 220 14% 94%;
+    --destructive: 357 85% 64%;
+    --destructive-foreground: 220 14% 94%;
+    --ring: 220 14% 94%;
+    /* semantic accents */
+    --c-fixed: 221 83% 66%;
+    --c-variable: 194 86% 56%;
+    --c-nonmonthly: 38 92% 62%;
+    --c-saved: 152 62% 52%;
+    --c-negative: 357 85% 64%;
+    --radius: 14px;
+  }
+
+  .light {
+    color-scheme: light;
+    --background: 60 9% 98%;       /* #FAFAF9 */
+    --card: 0 0% 100%;             /* #FFFFFF */
+    --card-foreground: 228 12% 6%;
+    --surface-2: 240 5% 96%;       /* #F4F4F5 */
+    --popover: 0 0% 100%;
+    --popover-foreground: 228 12% 6%;
+    --border: 240 6% 91%;
+    --input: 240 6% 88%;
+    --foreground: 228 12% 6%;      /* #0D0E11 */
+    --muted-foreground: 222 6% 38%;/* #5A5E66 */
+    --faint: 222 5% 56%;           /* #8A8E96 */
+    --primary: 228 12% 8%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 240 5% 95%;
+    --secondary-foreground: 228 12% 8%;
+    --muted: 240 5% 95%;
+    --accent: 240 5% 95%;
+    --accent-foreground: 228 12% 8%;
+    --destructive: 357 70% 54%;
+    --destructive-foreground: 0 0% 100%;
+    --ring: 228 12% 8%;
+    --c-fixed: 221 70% 52%;
+    --c-variable: 196 88% 35%;
+    --c-nonmonthly: 36 84% 43%;
+    --c-saved: 156 80% 36%;
+    --c-negative: 357 70% 54%;
+    --radius: 14px;
+  }
+
+  body {
+    font-feature-settings: 'cv11', 'ss01';
+  }
+}
+
+.num {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum', 'cv11', 'ss01';
+  letter-spacing: -0.01em;
+}
+
+@layer utilities {
+  .custom-scrollbar {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(148, 163, 184, 0.3) transparent;
+  }
+
+  .custom-scrollbar::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  .custom-scrollbar::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  .custom-scrollbar::-webkit-scrollbar-thumb {
+    background: rgba(148, 163, 184, 0.2);
+    border-radius: 4px;
+  }
+
+  .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+    background: rgba(148, 163, 184, 0.4);
+  }
+
+  .no-scrollbar {
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+}

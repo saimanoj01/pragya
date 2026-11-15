@@ -1,0 +1,222 @@
+import React, { useState } from 'react';
+import {
+  Cloud,
+  Download,
+  ExternalLink,
+  FolderOpen,
+  LogOut,
+  Moon,
+  RefreshCw,
+  RotateCcw,
+  Sun,
+} from 'lucide-react';
+import { useAuth } from '../../context/AuthContext';
+import { usePragya } from '../../context/PragyaContext';
+import { useTheme } from '../../context/ThemeContext';
+import { buildSnapshot } from '../../utils/snapshot';
+import { showToast } from '../../utils/toast';
+
+export const SettingsView: React.FC = () => {
+  const {
+    user,
+    isMockMode,
+    googleClientId,
+    saveGoogleClientId,
+    logout,
+  } = useAuth();
+  const {
+    books,
+    notes,
+    sessions,
+    deltaLogs,
+    isSyncing,
+    lastSyncedAt,
+    spreadsheetId,
+    mediaFolderId,
+    syncNow,
+    resetDemoWorkspace,
+  } = usePragya();
+  const { theme, toggleTheme } = useTheme();
+
+  const [clientIdDraft, setClientIdDraft] = useState(googleClientId || '');
+
+  const handleSaveClientId = (e: React.FormEvent) => {
+    e.preventDefault();
+    saveGoogleClientId(clientIdDraft);
+    showToast('Google Client ID updated', 'success');
+  };
+
+  const handleExportSnapshot = () => {
+    const snapshot = buildSnapshot({ books, notes, sessions, deltaLogs });
+    const blob = new Blob([JSON.stringify(snapshot, null, 2)], {
+      type: 'application/json',
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `pragya-backup-${new Date().toISOString().slice(0, 10)}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    showToast('Exported Pragya JSON snapshot', 'success');
+  };
+
+  return (
+    <div data-testid="settings-view" className="py-6 space-y-6">
+      <div>
+        <h1 className="text-display-l text-foreground tracking-tight">Settings</h1>
+        <p className="text-body text-muted-foreground mt-1">
+          Manage Google Workspace connection, theme, and snapshot portability.
+        </p>
+      </div>
+
+      {/* Mode & Sync Card */}
+      <section className="bg-card border border-border rounded-[14px] p-5 space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="w-10 h-10 rounded-[10px] bg-surface2 border border-border flex items-center justify-center shrink-0">
+              <Cloud className="w-5 h-5 text-foreground" />
+            </div>
+            <div className="min-w-0">
+              <h2 className="text-heading text-foreground">
+                {isMockMode ? 'Demo Workspace (Offline)' : 'Google Workspace Connected'}
+              </h2>
+              <p className="text-label text-muted-foreground truncate">
+                {isMockMode
+                  ? 'Stored locally in pragya_demo_state_v1 and IndexedDB.'
+                  : user?.email || 'Synced with Pragya Commonplace'}
+              </p>
+            </div>
+          </div>
+
+          <button
+            type="button"
+            data-testid="sync-now-btn"
+            disabled={isSyncing}
+            onClick={() => void syncNow(true)}
+            className="h-9 px-3.5 rounded-[10px] bg-primary text-primary-foreground text-label font-semibold hover:opacity-90 disabled:opacity-50 inline-flex items-center gap-1.5 whitespace-nowrap"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${isSyncing ? 'animate-spin' : ''}`} />
+            <span>{isSyncing ? 'Syncing…' : 'Sync Now (R)'}</span>
+          </button>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2 border-t border-border/60 text-label">
+          <div className="min-w-0 p-3 rounded-[10px] bg-surface2/50 border border-border space-y-1">
+            <div className="text-eyebrow uppercase text-muted-foreground">Spreadsheet</div>
+            <div className="flex items-center justify-between gap-2 min-w-0">
+              <span
+                data-testid="settings-spreadsheet-id"
+                className="min-w-0 font-mono text-foreground truncate"
+              >
+                {spreadsheetId || (isMockMode ? 'Demo Local Store' : 'Not linked yet')}
+              </span>
+              {spreadsheetId && (
+                <a
+                  href={`https://docs.google.com/spreadsheets/d/${encodeURIComponent(spreadsheetId)}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-muted-foreground hover:text-foreground shrink-0"
+                  title="Open Pragya Commonplace Sheet"
+                >
+                  <ExternalLink className="w-3.5 h-3.5" />
+                </a>
+              )}
+            </div>
+          </div>
+
+          <div className="min-w-0 p-3 rounded-[10px] bg-surface2/50 border border-border space-y-1">
+            <div className="text-eyebrow uppercase text-muted-foreground">Media Folder</div>
+            <div className="flex items-center gap-2 text-foreground min-w-0">
+              <FolderOpen className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
+              <span className="min-w-0 truncate">
+                {isMockMode
+                  ? 'IndexedDB (pragya-demo-media)'
+                  : mediaFolderId
+                    ? `Pragya Media (${mediaFolderId})`
+                    : 'Pragya Media/ (auto-created on upload)'}
+              </span>
+            </div>
+          </div>
+        </div>
+
+        {lastSyncedAt && (
+          <div className="text-[11px] text-muted-foreground num">
+            Last synced: {new Date(lastSyncedAt).toLocaleString()}
+          </div>
+        )}
+      </section>
+
+      {/* Google OAuth Client ID */}
+      <section className="bg-card border border-border rounded-[14px] p-5 space-y-3">
+        <div>
+          <h2 className="text-heading text-foreground">Google OAuth Client ID</h2>
+          <p className="text-label text-muted-foreground mt-0.5">
+            Optional runtime override persisted to localStorage (&lsquo;pragya_google_client_id&rsquo;).
+          </p>
+        </div>
+        <form onSubmit={handleSaveClientId} className="flex flex-col sm:flex-row gap-2">
+          <input
+            type="text"
+            data-testid="settings-client-id-input"
+            value={clientIdDraft}
+            onChange={e => setClientIdDraft(e.target.value)}
+            placeholder="your-client-id.apps.googleusercontent.com"
+            className="flex-1 h-10 px-3 rounded-[10px] bg-background border border-input text-body text-foreground placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-ring/40"
+          />
+          <button
+            type="submit"
+            className="h-10 px-4 rounded-[10px] bg-surface2 hover:bg-secondary border border-border text-body font-medium text-foreground whitespace-nowrap"
+          >
+            Save Client ID
+          </button>
+        </form>
+      </section>
+
+      {/* Preferences & Portability */}
+      <section className="bg-card border border-border rounded-[14px] p-5 space-y-4">
+        <h2 className="text-heading text-foreground">Appearance & Portability</h2>
+
+        <div className="flex flex-wrap items-center gap-3">
+          <button
+            type="button"
+            onClick={toggleTheme}
+            className="h-10 px-4 rounded-[10px] bg-surface2 hover:bg-secondary border border-border text-body font-medium text-foreground inline-flex items-center gap-2"
+          >
+            {theme === 'dark' ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
+            <span>Switch to {theme === 'dark' ? 'Light' : 'Dark'} Mode</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={handleExportSnapshot}
+            className="h-10 px-4 rounded-[10px] bg-surface2 hover:bg-secondary border border-border text-body font-medium text-foreground inline-flex items-center gap-2"
+          >
+            <Download className="w-4 h-4" />
+            <span>Export JSON Snapshot</span>
+          </button>
+
+          {isMockMode && (
+            <button
+              type="button"
+              data-testid="reset-demo-btn"
+              onClick={() => void resetDemoWorkspace()}
+              className="h-10 px-4 rounded-[10px] bg-surface2 hover:bg-secondary border border-border text-body font-medium text-foreground inline-flex items-center gap-2"
+            >
+              <RotateCcw className="w-4 h-4" />
+              <span>Reset Demo Data</span>
+            </button>
+          )}
+
+          <button
+            type="button"
+            onClick={() => void logout()}
+            className="h-10 px-4 rounded-[10px] bg-negative/10 hover:bg-negative/20 border border-negative/30 text-body font-medium text-negative inline-flex items-center gap-2 ml-auto"
+          >
+            <LogOut className="w-4 h-4" />
+            <span>Log out</span>
+          </button>
+        </div>
+      </section>
+    </div>
+  );
+};
