@@ -6,6 +6,8 @@ export interface ModalProps {
   onClose: () => void;
   title?: string;
   ariaLabel?: string;
+  /** Id of the visible heading element inside the dialog; bound via aria-labelledby. */
+  headingId?: string;
   dataTestId?: string;
   variant?: 'dialog' | 'sheet';
   children: React.ReactNode;
@@ -19,6 +21,7 @@ export function Modal({
   onClose,
   title,
   ariaLabel,
+  headingId,
   dataTestId,
   variant = 'dialog',
   children,
@@ -143,7 +146,8 @@ export function Modal({
       ref={modalRef}
       role="dialog"
       aria-modal="true"
-      aria-label={ariaLabel || title || 'Dialog'}
+      aria-labelledby={headingId || undefined}
+      aria-label={headingId ? undefined : ariaLabel || title || 'Dialog'}
       data-testid={dataTestId}
       onClick={handleBackdropClick}
       tabIndex={-1}

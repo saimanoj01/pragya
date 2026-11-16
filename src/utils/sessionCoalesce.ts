@@ -55,13 +55,15 @@ export function applyBookmarkAdvance(
 
   let nextPos: number;
   let nextNorm: number;
+  const maxPos =
+    book.totalPos > 0 ? book.totalPos : book.posUnit === 'percent' ? 100 : Number.POSITIVE_INFINITY;
 
   if (options.manualOverride) {
-    nextPos = book.totalPos > 0 ? Math.min(safeIncoming, book.totalPos) : safeIncoming;
+    nextPos = Number.isFinite(maxPos) ? Math.min(safeIncoming, maxPos) : safeIncoming;
     nextNorm = computeNormalizedPos(nextPos, book.totalPos, book.posUnit);
   } else {
     const monotonic = Math.max(prevPos, safeIncoming);
-    nextPos = book.totalPos > 0 ? Math.min(monotonic, book.totalPos) : monotonic;
+    nextPos = Number.isFinite(maxPos) ? Math.min(monotonic, maxPos) : monotonic;
     const computed =
       book.totalPos > 0
         ? clamp01(nextPos / book.totalPos)
@@ -82,6 +84,8 @@ export function applyBookmarkAdvance(
 
   const updatedBook: Book = {
     ...book,
+    // Parity with pragya_cli.py: advancing a queued book starts reading it.
+    status: book.status === 'queued' ? 'reading' : book.status,
     currentPos: nextPos,
     normalizedPos: nextNorm,
     meta: {

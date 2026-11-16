@@ -172,12 +172,16 @@ export const ShelfView: React.FC<ShelfViewProps> = ({
 
         <div
           data-testid="activity-dots"
+          role="group"
+          aria-label="Reading sessions over the last 30 days"
           className="grid grid-cols-15 sm:grid-cols-30 gap-1.5 w-full"
         >
           {activityDays.map((day, idx) => (
             <div
               key={day.date}
               data-testid={`activity-dot-${idx}`}
+              role="img"
+              aria-label={`${day.date}: ${day.count} session${day.count === 1 ? '' : 's'}`}
               title={`${day.date}: ${day.count} session${day.count === 1 ? '' : 's'}`}
               className={`w-full max-w-[14px] aspect-square rounded-full mx-auto transition-colors ${
                 day.count >= 2

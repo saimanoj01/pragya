@@ -87,3 +87,27 @@ export function navigateTo(hash: string): void {
     window.location.hash = target;
   }
 }
+
+/** sessionStorage key holding the pre-login hash route restored after OAuth (M4.4). */
+export const OAUTH_RETURN_ROUTE_KEY = 'pragya_oauth_return_route';
+export const DEFAULT_POST_LOGIN_HASH = '#/shelf';
+
+/**
+ * A hash is restorable after OAuth only when it is a real in-app route
+ * (never an OAuth callback fragment, never empty / `#` / `#/`).
+ */
+export function isRestorableAppRoute(hash: string | null | undefined): hash is string {
+  if (!hash || typeof hash !== 'string') return false;
+  if (hash === '#' || hash === '#/') return false;
+  if (!hash.startsWith('#/')) return false;
+  if (isOAuthCallbackHash(hash)) return false;
+  if (hash.length > 512) return false;
+  const withoutHash = hash.slice(2).split('?')[0];
+  const head = withoutHash.split('/')[0]?.toLowerCase() || '';
+  return ['shelf', 'book', 'notes', 'note', 'practice', 'settings'].includes(head);
+}
+
+/** Resolve the post-login landing hash from a stored pre-login route. */
+export function resolvePostLoginHash(stored: string | null | undefined): string {
+  return isRestorableAppRoute(stored) ? stored : DEFAULT_POST_LOGIN_HASH;
+}

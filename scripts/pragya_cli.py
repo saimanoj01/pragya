@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import mimetypes
 import os
 import re
@@ -630,8 +631,50 @@ def row_to_delta_log(row: list[Any]) -> dict[str, Any] | None:
 
 
 # ---------------------------------------------------------------------------
-# Monotonic Bookmark & 30-Min Session Coalescing
+# Monotonic Bookmark, Note Clamping & 30-Min Session Coalescing
 # ---------------------------------------------------------------------------
+
+
+def clamp_note_pos(raw_pos: float, book: dict[str, Any] | None) -> float:
+    pos = max(0.0, float(raw_pos or 0))
+    if not book:
+        return pos
+    pos_unit = book.get("posUnit") or "page"
+    total_pos = float(book.get("totalPos") or 0)
+    if pos_unit == "percent":
+        pos = min(100.0, pos)
+    if total_pos > 0:
+        pos = min(total_pos, pos)
+    return pos
+
+
+def _to_epoch_ms(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        if not math.isfinite(value):
+            return None
+        # Sheets UNFORMATTED_VALUE may surface serial dates (days since 1899-12-30).
+        if 0 < value < 2_958_466:
+            return round((value - 25569) * 86_400_000)
+        return round(value)
+    if not isinstance(value, str):
+        return None
+    trimmed = value.strip()
+    if not trimmed:
+        return None
+    dt = parse_iso_utc(trimmed)
+    if dt is None:
+        return None
+    return round(dt.timestamp() * 1000)
+
+
+def _is_remote_newer(remote_ts: Any, expected_ts: Any) -> bool:
+    remote_ms = _to_epoch_ms(remote_ts)
+    expected_ms = _to_epoch_ms(expected_ts)
+    if remote_ms is None or expected_ms is None:
+        return False
+    return remote_ms > expected_ms
 
 
 def apply_bookmark_advance(
@@ -745,10 +788,22 @@ class WorkspaceBackend:
     def load_workspace(self) -> dict[str, Any]:
         raise NotImplementedError
 
-    def save_book(self, book: dict[str, Any]) -> dict[str, Any]:
+    def save_book(
+        self,
+        book: dict[str, Any],
+        *,
+        expected_base_updated_at: str | None = None,
+        force: bool = False,
+    ) -> dict[str, Any]:
         raise NotImplementedError
 
-    def save_note(self, note: dict[str, Any]) -> dict[str, Any]:
+    def save_note(
+        self,
+        note: dict[str, Any],
+        *,
+        expected_base_updated_at: str | None = None,
+        force: bool = False,
+    ) -> dict[str, Any]:
         raise NotImplementedError
 
     def save_session(self, session: dict[str, Any]) -> dict[str, Any]:
@@ -828,14 +883,44 @@ class StateFileBackend(WorkspaceBackend):
             "deltaLogs": list(raw["deltaLogs"]),
         }
 
-    def save_book(self, book: dict[str, Any]) -> dict[str, Any]:
+    def save_book(
+        self,
+        book: dict[str, Any],
+        *,
+        expected_base_updated_at: str | None = None,
+        force: bool = False,
+    ) -> dict[str, Any]:
         raw = self._read_raw()
+        if expected_base_updated_at and not force:
+            for existing in raw["books"]:
+                if existing.get("id") == book.get("id"):
+                    remote_ts = (existing.get("meta") or {}).get("updatedAt")
+                    if _is_remote_newer(remote_ts, expected_base_updated_at):
+                        raise CliError(
+                            f"Row conflict on Books {book.get('id')}: remote updatedAt ({remote_ts}) is newer than loaded base ({expected_base_updated_at}). Re-run or pass --force to overwrite."
+                        )
+                    break
         raw["books"] = _upsert_by_id(raw["books"], book)
         self._write_raw(raw)
         return book
 
-    def save_note(self, note: dict[str, Any]) -> dict[str, Any]:
+    def save_note(
+        self,
+        note: dict[str, Any],
+        *,
+        expected_base_updated_at: str | None = None,
+        force: bool = False,
+    ) -> dict[str, Any]:
         raw = self._read_raw()
+        if expected_base_updated_at and not force:
+            for existing in raw["notes"]:
+                if existing.get("id") == note.get("id"):
+                    remote_ts = existing.get("updatedAt")
+                    if _is_remote_newer(remote_ts, expected_base_updated_at):
+                        raise CliError(
+                            f"Row conflict on Notes {note.get('id')}: remote updatedAt ({remote_ts}) is newer than loaded base ({expected_base_updated_at}). Re-run or pass --force to overwrite."
+                        )
+                    break
         raw["notes"] = _upsert_by_id(raw["notes"], note)
         self._write_raw(raw)
         return note
@@ -970,7 +1055,18 @@ class GoogleWorkspaceBackend(WorkspaceBackend):
         return self._spreadsheet_id
 
     def _read_range(self, sid: str, range_a1: str) -> list[list[Any]]:
-        res = self._run_json(["gsheets", "readonly", "read", sid, range_a1, "--json"])
+        res = self._run_json(
+            [
+                "gsheets",
+                "readonly",
+                "read",
+                sid,
+                range_a1,
+                "--value-render-option",
+                "UNFORMATTED_VALUE",
+                "--json",
+            ]
+        )
         if isinstance(res, list):
             return [r for r in res if isinstance(r, list)]
         if isinstance(res, dict):
@@ -1030,7 +1126,16 @@ class GoogleWorkspaceBackend(WorkspaceBackend):
         self._schema_checked = True
         return sid
 
-    def _upsert_row(self, tab: str, last_col: str, row_id: str, row_values: list[Any]) -> None:
+    def _upsert_row(
+        self,
+        tab: str,
+        last_col: str,
+        row_id: str,
+        row_values: list[Any],
+        *,
+        expected_base_updated_at: str | None = None,
+        force: bool = False,
+    ) -> None:
         sid = self.ensure_schema()
         col_a = self._read_range(sid, f"{tab}!A:A")
         matched_row: int | None = None
@@ -1040,6 +1145,38 @@ class GoogleWorkspaceBackend(WorkspaceBackend):
                 break
 
         if matched_row is not None:
+            if expected_base_updated_at and not force and tab in ("Notes", "Books"):
+                tab_rows = self._read_range(sid, f"{tab}!A:{last_col}")
+                target_row: list[Any] | None = None
+                if 0 <= matched_row - 1 < len(tab_rows):
+                    cand = tab_rows[matched_row - 1]
+                    if cand and str(cand[0] or "").strip() == row_id:
+                        target_row = cand
+                if target_row is None:
+                    for cand in tab_rows:
+                        if cand and str(cand[0] or "").strip() == row_id:
+                            target_row = cand
+                            break
+                if target_row is not None:
+                    remote_ts: Any = None
+                    if tab == "Notes" and len(target_row) > 4:
+                        remote_ts = target_row[4]
+                    elif tab == "Books" and len(target_row) > 11:
+                        raw_meta = target_row[11]
+                        if isinstance(raw_meta, dict):
+                            remote_ts = raw_meta.get("updatedAt")
+                        elif isinstance(raw_meta, str) and raw_meta.strip():
+                            try:
+                                parsed_meta = json.loads(raw_meta)
+                                if isinstance(parsed_meta, dict):
+                                    remote_ts = parsed_meta.get("updatedAt")
+                            except json.JSONDecodeError:
+                                remote_ts = None
+                    if _is_remote_newer(remote_ts, expected_base_updated_at):
+                        raise CliError(
+                            f"Row conflict on {tab} {row_id}: remote updatedAt ({remote_ts}) is newer than loaded base ({expected_base_updated_at}). Re-run after syncing or pass --force to overwrite."
+                        )
+
             op = {
                 "op": "write",
                 "range": f"{tab}!A{matched_row}:{last_col}{matched_row}",
@@ -1067,12 +1204,38 @@ class GoogleWorkspaceBackend(WorkspaceBackend):
             "deltaLogs": logs,
         }
 
-    def save_book(self, book: dict[str, Any]) -> dict[str, Any]:
-        self._upsert_row("Books", "L", book["id"], book_to_row(book))
+    def save_book(
+        self,
+        book: dict[str, Any],
+        *,
+        expected_base_updated_at: str | None = None,
+        force: bool = False,
+    ) -> dict[str, Any]:
+        self._upsert_row(
+            "Books",
+            "L",
+            book["id"],
+            book_to_row(book),
+            expected_base_updated_at=expected_base_updated_at,
+            force=force,
+        )
         return book
 
-    def save_note(self, note: dict[str, Any]) -> dict[str, Any]:
-        self._upsert_row("Notes", "R", note["id"], note_to_row(note))
+    def save_note(
+        self,
+        note: dict[str, Any],
+        *,
+        expected_base_updated_at: str | None = None,
+        force: bool = False,
+    ) -> dict[str, Any]:
+        self._upsert_row(
+            "Notes",
+            "R",
+            note["id"],
+            note_to_row(note),
+            expected_base_updated_at=expected_base_updated_at,
+            force=force,
+        )
         return note
 
     def save_session(self, session: dict[str, Any]) -> dict[str, Any]:
@@ -1318,7 +1481,7 @@ def cmd_capture(args: argparse.Namespace, backend: WorkspaceBackend) -> dict[str
     ws = backend.load_workspace()
     book = resolve_book(ws["books"], args.book)
     now_iso = now_iso_utc()
-    incoming_pos = max(0.0, float(args.pos))
+    incoming_pos = clamp_note_pos(args.pos, book)
     normalized_pos = compute_normalized_pos(
         incoming_pos, float(book.get("totalPos") or 0), book.get("posUnit") or "page"
     )
@@ -1415,8 +1578,13 @@ def cmd_capture(args: argparse.Namespace, backend: WorkspaceBackend) -> dict[str
         now_iso=now_iso,
     )
     saved_session: dict[str, Any] | None = None
+    force = bool(getattr(args, "force", False))
     if changed:
-        backend.save_book(updated_book)
+        backend.save_book(
+            updated_book,
+            expected_base_updated_at=(book.get("meta") or {}).get("updatedAt"),
+            force=force,
+        )
         sess, _ = upsert_coalesced_session(
             ws["sessions"],
             book_id=book["id"],
@@ -1480,7 +1648,12 @@ def cmd_reflect(args: argparse.Namespace, backend: WorkspaceBackend) -> dict[str
         updated["status"] = "in-reflection"
         updated["updatedAt"] = now_iso
         updated.setdefault("meta", {})["socraticQuestions"] = questions
-        backend.save_note(updated)
+        force = bool(getattr(args, "force", False))
+        backend.save_note(
+            updated,
+            expected_base_updated_at=note.get("updatedAt"),
+            force=force,
+        )
         return {
             "stage": 1,
             "status": "awaiting_user_reply",
@@ -1542,7 +1715,12 @@ def cmd_reflect(args: argparse.Namespace, backend: WorkspaceBackend) -> dict[str
         updated["deltaStatus"] = next_delta_status
         updated["status"] = "atomic"
         updated["updatedAt"] = now_iso
-        backend.save_note(updated)
+        force = bool(getattr(args, "force", False))
+        backend.save_note(
+            updated,
+            expected_base_updated_at=note.get("updatedAt"),
+            force=force,
+        )
         return {
             "stage": "commit",
             "note": updated,
@@ -1630,7 +1808,11 @@ def cmd_recall(args: argparse.Namespace, backend: WorkspaceBackend) -> dict[str,
                 updated_note = json.loads(json.dumps(note))
                 updated_note["deltaTrigger"] = normalize_delta_trigger(args.trigger)
                 updated_note["updatedAt"] = now_iso_utc()
-                backend.save_note(updated_note)
+                backend.save_note(
+                    updated_note,
+                    expected_base_updated_at=note.get("updatedAt"),
+                    force=bool(getattr(args, "force", False)),
+                )
 
             return {
                 "mode": "checkin",
@@ -1668,8 +1850,12 @@ def cmd_recall(args: argparse.Namespace, backend: WorkspaceBackend) -> dict[str,
             note = resolve_note(ws["notes"], args.mark_reviewed)
             updated = json.loads(json.dumps(note))
             updated.setdefault("meta", {})["lastReviewedAt"] = today
-            updated["updatedAt"] = now_iso_utc()
-            backend.save_note(updated)
+            # Reviewing is not editing: preserve updatedAt so export-md isn't triggered needlessly.
+            backend.save_note(
+                updated,
+                expected_base_updated_at=note.get("updatedAt"),
+                force=bool(getattr(args, "force", False)),
+            )
             return {
                 "mode": "shuffle",
                 "markedReviewed": updated["slug"],
@@ -1774,7 +1960,11 @@ def cmd_ocr_backfill(args: argparse.Namespace, backend: WorkspaceBackend) -> dic
         updated["quote"] = resolved_text
         updated.setdefault("meta", {})["ocrBackfilled"] = True
         updated["updatedAt"] = now_iso_utc()
-        backend.save_note(updated)
+        backend.save_note(
+            updated,
+            expected_base_updated_at=n.get("updatedAt"),
+            force=bool(getattr(args, "force", False)),
+        )
         updated_notes.append(updated)
 
     return {
@@ -1908,7 +2098,11 @@ def cmd_export_md(args: argparse.Namespace, backend: WorkspaceBackend) -> dict[s
 
         updated_note = json.loads(json.dumps(n))
         updated_note.setdefault("meta", {})["exportedAt"] = stamp_iso
-        backend.save_note(updated_note)
+        backend.save_note(
+            updated_note,
+            expected_base_updated_at=n.get("updatedAt"),
+            force=bool(getattr(args, "force", False)),
+        )
         exported_files.append(str(dest_file))
 
     return {
@@ -1982,7 +2176,11 @@ def cmd_book_doc_sync(args: argparse.Namespace, backend: WorkspaceBackend) -> di
         updated_book = json.loads(json.dumps(book))
         updated_book["docUrl"] = new_url
         updated_book.setdefault("meta", {})["updatedAt"] = now_iso_utc()
-        backend.save_book(updated_book)
+        backend.save_book(
+            updated_book,
+            expected_base_updated_at=(book.get("meta") or {}).get("updatedAt"),
+            force=bool(getattr(args, "force", False)),
+        )
         if full_initial.strip():
             backend.append_doc_text(doc_id, full_initial.rstrip() + "\n")
         final_doc_url = new_url
@@ -2031,6 +2229,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--spreadsheet-id",
         default=argparse.SUPPRESS,
         help="Target Google Spreadsheet ID (defaults to discovering 'Pragya Commonplace').",
+    )
+    common.add_argument(
+        "--force",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Bypass pre-write updatedAt row conflict guard on Books/Notes updates.",
     )
 
     parser = argparse.ArgumentParser(

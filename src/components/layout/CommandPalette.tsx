@@ -261,6 +261,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
               <input
                 ref={inputRef}
                 type="text"
+                aria-label="Search commands, books, and notes"
                 data-testid="command-palette-input"
                 value={query}
                 onChange={e => setQuery(e.target.value)}

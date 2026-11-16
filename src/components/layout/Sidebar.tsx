@@ -12,6 +12,7 @@ import {
   Sun,
   Moon,
   LogOut,
+  WifiOff,
 } from 'lucide-react';
 import type { User } from '../../context/AuthContext';
 import type { PragyaView } from '../../utils/navigation';
@@ -23,6 +24,7 @@ export interface SidebarProps {
   currentView: PragyaView;
   user: User | null;
   isMockMode: boolean;
+  isOfflineReadOnly?: boolean;
   theme: 'light' | 'dark';
   toggleTheme: () => void;
   onOpenCapture: () => void;
@@ -34,6 +36,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   currentView,
   user,
   isMockMode,
+  isOfflineReadOnly = false,
   theme,
   toggleTheme,
   onOpenCapture,
@@ -177,6 +180,19 @@ export const Sidebar: React.FC<SidebarProps> = ({
             </kbd>
           )}
         </button>
+
+        {!isMockMode && isOfflineReadOnly && (
+          <div
+            data-testid="sidebar-offline-badge"
+            title="Offline · Cached Read-Only"
+            className={`rounded-[8px] bg-warning/15 border border-warning/30 text-warning text-[11px] font-medium flex items-center gap-1.5 ${
+              collapsed ? 'justify-center h-8 px-0' : 'px-2.5 py-1.5'
+            }`}
+          >
+            <WifiOff className="w-3.5 h-3.5 shrink-0" />
+            {!collapsed && <span className="truncate">Offline · Read-Only</span>}
+          </div>
+        )}
       </div>
 
       {/* Primary Nav */}

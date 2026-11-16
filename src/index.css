@@ -17,7 +17,7 @@
     /* text */
     --foreground: 220 14% 94%;     /* #EDEEF1 */
     --muted-foreground: 222 7% 63%;/* #9DA0A8 */
-    --faint: 222 6% 44%;           /* #6C6F77 */
+    --faint: 222 7% 55%;           /* #848893 WCAG AA >=4.9:1 on --surface-2 */
     /* interactive = monochrome */
     --primary: 220 14% 94%;
     --primary-foreground: 228 12% 6%;
@@ -50,7 +50,7 @@
     --input: 240 6% 88%;
     --foreground: 228 12% 6%;      /* #0D0E11 */
     --muted-foreground: 222 6% 38%;/* #5A5E66 */
-    --faint: 222 5% 56%;           /* #8A8E96 */
+    --faint: 222 6% 43%;           /* #676B75 WCAG AA >=4.8:1 on --surface-2 */
     --primary: 228 12% 8%;
     --primary-foreground: 0 0% 100%;
     --secondary: 240 5% 95%;
@@ -58,14 +58,14 @@
     --muted: 240 5% 95%;
     --accent: 240 5% 95%;
     --accent-foreground: 228 12% 8%;
-    --destructive: 357 70% 54%;
+    --destructive: 357 72% 41%;
     --destructive-foreground: 0 0% 100%;
     --ring: 228 12% 8%;
     --c-fixed: 221 70% 52%;
     --c-variable: 196 88% 35%;
-    --c-nonmonthly: 36 84% 43%;
-    --c-saved: 156 80% 36%;
-    --c-negative: 357 70% 54%;
+    --c-nonmonthly: 36 90% 28%;
+    --c-saved: 156 84% 24%;
+    --c-negative: 357 72% 41%;
     --radius: 14px;
   }
 

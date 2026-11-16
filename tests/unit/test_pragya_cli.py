@@ -1227,6 +1227,204 @@ class TestPragyaCli(unittest.TestCase):
             self.assertEqual(rc_b, 0, err_b)
             self.assertEqual(out_a, out_b)
 
+    def test_m4_mark_reviewed_preserves_updated_at_and_capture_clamps_pos(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            snap = _make_sample_snapshot()
+            snap["books"].append(
+                {
+                    "id": "book-pct",
+                    "title": "Percent Reader",
+                    "author": "Test Author",
+                    "format": "ebook",
+                    "kind": "nonfiction",
+                    "status": "reading",
+                    "currentPos": 15,
+                    "totalPos": 100,
+                    "posUnit": "percent",
+                    "normalizedPos": 0.15,
+                    "docUrl": "",
+                    "meta": {"updatedAt": "2026-11-10T08:00:00Z"},
+                }
+            )
+            state_path = Path(tmp) / "m4_state.json"
+            state_path.write_text(json.dumps(snap, indent=2), encoding="utf-8")
+
+            # Export first so exportedAt >= updatedAt
+            md_dir = Path(tmp) / "notes_md"
+            rc_exp1, res_exp1, err1 = _run_cli_json(
+                ["--state-file", str(state_path), "export-md", "--output-dir", str(md_dir)]
+            )
+            self.assertEqual(rc_exp1, 0, err1)
+            self.assertGreaterEqual(res_exp1["exportedCount"], 1)
+
+            before_data = json.loads(state_path.read_text(encoding="utf-8"))
+            before_note = next(
+                n for n in before_data["notes"] if n["slug"] == "delays-in-feedback-loops"
+            )
+
+            # Mark reviewed: stamps lastReviewedAt WITHOUT bumping updatedAt
+            rc_rev, res_rev, err_rev = _run_cli_json(
+                [
+                    "--state-file",
+                    str(state_path),
+                    "recall",
+                    "--mode",
+                    "shuffle",
+                    "--mark-reviewed",
+                    "delays-in-feedback-loops",
+                    "--date",
+                    "2026-11-16",
+                ]
+            )
+            self.assertEqual(rc_rev, 0, err_rev)
+            self.assertEqual(res_rev["markedReviewed"], "delays-in-feedback-loops")
+
+            after_data = json.loads(state_path.read_text(encoding="utf-8"))
+            after_note = next(
+                n for n in after_data["notes"] if n["slug"] == "delays-in-feedback-loops"
+            )
+            self.assertEqual(after_note["updatedAt"], before_note["updatedAt"])
+            self.assertEqual(after_note["meta"]["lastReviewedAt"], "2026-11-16")
+
+            # Subsequent export-md skips the reviewed note
+            rc_exp2, res_exp2, err2 = _run_cli_json(
+                ["--state-file", str(state_path), "export-md", "--output-dir", str(md_dir)]
+            )
+            self.assertEqual(rc_exp2, 0, err2)
+            self.assertEqual(res_exp2["exportedCount"], 0)
+
+            # Capture clamps pos into [0, totalPos] and [0, 100] for percent books
+            rc_cap_page, res_cap_page, err_cp = _run_cli_json(
+                [
+                    "--state-file",
+                    str(state_path),
+                    "capture",
+                    "--book",
+                    "book-systems",
+                    "--pos",
+                    "9999",
+                    "--takeaway",
+                    "Over-range page clamp",
+                ]
+            )
+            self.assertEqual(rc_cap_page, 0, err_cp)
+            self.assertEqual(res_cap_page["note"]["pos"], 218)
+            self.assertEqual(res_cap_page["note"]["normalizedPos"], 1.0)
+
+            rc_cap_pct, res_cap_pct, err_pct = _run_cli_json(
+                [
+                    "--state-file",
+                    str(state_path),
+                    "capture",
+                    "--book",
+                    "book-pct",
+                    "--pos",
+                    "145",
+                    "--takeaway",
+                    "Over-range percent clamp",
+                ]
+            )
+            self.assertEqual(rc_cap_pct, 0, err_pct)
+            self.assertEqual(res_cap_pct["note"]["pos"], 100)
+            self.assertEqual(res_cap_pct["note"]["normalizedPos"], 1.0)
+
+    def test_m4_live_unformatted_value_and_row_conflict_guard_with_force(self) -> None:
+        snap = _make_sample_snapshot()
+        book_rows = [pragya_cli.BOOKS_HEADERS] + [pragya_cli.book_to_row(b) for b in snap["books"]]
+        notes_rows = [pragya_cli.NOTES_HEADERS] + [pragya_cli.note_to_row(n) for n in snap["notes"]]
+        sessions_rows = [pragya_cli.SESSIONS_HEADERS] + [
+            pragya_cli.session_to_row(s) for s in snap["sessions"]
+        ]
+        logs_rows = [pragya_cli.DELTA_LOGS_HEADERS] + [
+            pragya_cli.delta_log_to_row(dl) for dl in snap["deltaLogs"]
+        ]
+
+        seen_read_cmds: list[list[str]] = []
+        batch_calls: list[list[dict[str, object]]] = []
+        bump_remote_on_conflict_read = False
+
+        def fake_runner(cmd: list[str]) -> tuple[int, str, str]:
+            if cmd[:3] == ["gsheets", "readonly", "list"]:
+                return 0, json.dumps({"files": [{"id": "sid-m4", "name": "Pragya Commonplace"}]}), ""
+            if cmd[:3] == ["gsheets", "readonly", "list-sheets"]:
+                return (
+                    0,
+                    json.dumps(
+                        {
+                            "sheets": [
+                                {"properties": {"title": "Books"}},
+                                {"properties": {"title": "Notes"}},
+                                {"properties": {"title": "Sessions"}},
+                                {"properties": {"title": "DeltaLogs"}},
+                            ]
+                        }
+                    ),
+                    "",
+                )
+            if cmd[:3] == ["gsheets", "readonly", "read"]:
+                seen_read_cmds.append(list(cmd))
+                rng = cmd[4]
+                if rng == "Books!A1:L1":
+                    return 0, json.dumps({"values": [pragya_cli.BOOKS_HEADERS]}), ""
+                if rng == "Notes!A1:R1":
+                    return 0, json.dumps({"values": [pragya_cli.NOTES_HEADERS]}), ""
+                if rng == "Sessions!A1:G1":
+                    return 0, json.dumps({"values": [pragya_cli.SESSIONS_HEADERS]}), ""
+                if rng == "DeltaLogs!A1:E1":
+                    return 0, json.dumps({"values": [pragya_cli.DELTA_LOGS_HEADERS]}), ""
+                if rng == "Books!A:L":
+                    return 0, json.dumps({"values": book_rows}), ""
+                if rng == "Notes!A:R":
+                    if bump_remote_on_conflict_read:
+                        # Simulate another client updating row 2 right before save
+                        notes_rows[1][4] = "2099-01-01T00:00:00Z"
+                    return 0, json.dumps({"values": notes_rows}), ""
+                if rng == "Sessions!A:G":
+                    return 0, json.dumps({"values": sessions_rows}), ""
+                if rng == "DeltaLogs!A:E":
+                    return 0, json.dumps({"values": logs_rows}), ""
+                if rng == "Notes!A:A":
+                    return 0, json.dumps({"values": [[r[0]] for r in notes_rows]}), ""
+            if cmd[:3] == ["gsheets", "mutate", "batch"]:
+                f_idx = cmd.index("-f")
+                payload = json.loads(Path(cmd[f_idx + 1]).read_text(encoding="utf-8"))
+                batch_calls.append(payload)
+                return 0, json.dumps({"updated": True}), ""
+            return 1, "", f"Unexpected command: {cmd}"
+
+        backend = pragya_cli.GoogleWorkspaceBackend(runner=fake_runner)
+        ws = backend.load_workspace()
+        self.assertTrue(
+            all(
+                cmd[5:7] == ["--value-render-option", "UNFORMATTED_VALUE"]
+                for cmd in seen_read_cmds
+            ),
+            f"All _read_range calls must request UNFORMATTED_VALUE: {seen_read_cmds}",
+        )
+
+        target_note = dict(ws["notes"][0])
+        base_ts = target_note["updatedAt"]
+        target_note["takeaway"] = "Stale edit"
+        target_note["updatedAt"] = "2026-11-16T00:00:00Z"
+
+        # Remote updatedAt becomes newer before save -> abort BEFORE batch write
+        bump_remote_on_conflict_read = True
+        with self.assertRaises(pragya_cli.CliError) as ctx:
+            backend.save_note(target_note, expected_base_updated_at=base_ts, force=False)
+        self.assertIn("Row conflict", str(ctx.exception))
+        self.assertEqual(len(batch_calls), 0)
+
+        # With force=True (mirrors CLI --force), write proceeds
+        backend.save_note(target_note, expected_base_updated_at=base_ts, force=True)
+        self.assertEqual(len(batch_calls), 1)
+        self.assertEqual(batch_calls[0][0]["op"], "write")
+
+        # Numeric Sheets serial date (46342.5 = 2026-11-16T12:00:00Z) compares accurately
+        self.assertTrue(pragya_cli._is_remote_newer(46342.5, "2026-11-15T12:00:00Z"))
+        self.assertFalse(pragya_cli._is_remote_newer(46340.5, "2026-11-15T12:00:00Z"))
+        self.assertFalse(pragya_cli._is_remote_newer("not-a-date", "2026-11-15T12:00:00Z"))
+
 
 if __name__ == "__main__":
     unittest.main()
+

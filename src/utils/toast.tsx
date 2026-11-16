@@ -1,6 +1,7 @@
 import { toast as sonnerToast } from 'sonner';
+import { getToastStyle, type ToastType } from './toastStyle';
 
-export type ToastType = 'success' | 'error' | 'info';
+export type { ToastType };
 
 export interface ToastAction {
   label: string;
@@ -18,22 +19,19 @@ export function showToast(
   type: ToastType = 'info',
   options?: ToastOptions
 ) {
-  const isError =
-    type === 'error' ||
-    /fail|error|denied|offline|exceeded|cannot|invalid/i.test(message);
+  // M4.3: trust the explicit semantic type — never regex-override from message text.
+  const style = getToastStyle(type);
 
   sonnerToast.custom(
     id => (
       <div
         data-testid="notification-toast"
-        className={`${
-          isError
-            ? 'notification-error bg-rose-500/95 border-rose-400/40 text-white'
-            : 'notification-success bg-emerald-600/95 border-emerald-400/40 text-white'
-        } py-3 px-5 rounded-2xl border font-medium shadow-xl shadow-black/25 flex items-center gap-3 backdrop-blur-md cursor-pointer`}
+        data-toast-variant={style.variant}
+        role={style.variant === 'error' ? 'alert' : 'status'}
+        className={`${style.containerClass} py-3 px-5 rounded-2xl border font-medium shadow-xl shadow-black/25 flex items-center gap-3 backdrop-blur-md cursor-pointer`}
         onClick={() => sonnerToast.dismiss(id)}
       >
-        <div className="w-2 h-2 rounded-full bg-white animate-pulse shrink-0" />
+        <div className={`w-2 h-2 rounded-full shrink-0 ${style.dotClass}`} />
         <span className="text-sm font-semibold">{message}</span>
         {options?.action && (
           <button
@@ -44,7 +42,7 @@ export function showToast(
               options.action!.onClick();
               sonnerToast.dismiss(id);
             }}
-            className="ml-1.5 px-2.5 py-1 rounded-lg bg-white/20 hover:bg-white/30 text-white text-xs font-bold transition-colors shrink-0 focus-visible:ring-2 focus-visible:ring-white/70"
+            className={`ml-1.5 px-2.5 py-1 rounded-lg text-xs font-bold transition-colors shrink-0 ${style.actionClass}`}
           >
             {options.action.label}
           </button>

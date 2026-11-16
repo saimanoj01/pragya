@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Loader2 } from 'lucide-react';
+import { Loader2, RefreshCw, WifiOff } from 'lucide-react';
 import { MotionConfig } from 'framer-motion';
 import type { Book, Note } from './types/pragya';
 import { dur, ease } from './theme/motion';
@@ -38,7 +38,7 @@ function PragyaShell() {
     setShowSessionExpiredModal,
   } = useAuth();
   const { theme, toggleTheme } = useTheme();
-  const { books, notes, isLoading, syncNow } = usePragya();
+  const { books, notes, isLoading, isSyncing, isOfflineReadOnly, syncNow } = usePragya();
 
   const [route, setRoute] = useState<PragyaRoute>(() => parseHash());
   const [showCaptureModal, setShowCaptureModal] = useState(false);
@@ -152,6 +152,7 @@ function PragyaShell() {
               currentView={route.view}
               user={user}
               isMockMode={isMockMode}
+              isOfflineReadOnly={isOfflineReadOnly}
               theme={theme}
               toggleTheme={toggleTheme}
               onOpenCapture={() => openQuickCapture(null)}
@@ -160,12 +161,43 @@ function PragyaShell() {
             />
 
             <main className="flex-1 overflow-y-auto print:overflow-visible px-4 md:px-8 print:px-0 pt-0 pb-24 md:pb-8 print:pb-0 w-full relative custom-scrollbar">
-              <div className="max-w-5xl mx-auto w-full">{mainContent}</div>
+              <div className="max-w-5xl mx-auto w-full">
+                {!isMockMode && isOfflineReadOnly && (
+                  <div
+                    data-testid="offline-readonly-badge"
+                    role="status"
+                    className="mt-4 rounded-[12px] bg-warning/10 border border-warning/30 px-4 py-2.5 flex flex-wrap items-center justify-between gap-2 text-label"
+                  >
+                    <div className="flex items-center gap-2 min-w-0 text-foreground">
+                      <WifiOff className="w-4 h-4 text-warning shrink-0" />
+                      <span>
+                        <strong className="font-semibold">Offline · Cached Read-Only</strong>
+                        <span className="text-muted-foreground">
+                          {' '}
+                          — Viewing cached reading data. Reconnect to save changes.
+                        </span>
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      data-testid="offline-retry-sync-btn"
+                      disabled={isSyncing}
+                      onClick={() => void syncNow(true)}
+                      className="h-8 px-3 rounded-[8px] bg-card border border-border hover:bg-surface2 text-label font-semibold text-foreground inline-flex items-center gap-1.5 whitespace-nowrap disabled:opacity-50"
+                    >
+                      <RefreshCw className={`w-3.5 h-3.5 ${isSyncing ? 'animate-spin' : ''}`} />
+                      <span>Retry Sync</span>
+                    </button>
+                  </div>
+                )}
+                {mainContent}
+              </div>
             </main>
           </div>
 
           <BottomNav
             currentView={route.view}
+            isOfflineReadOnly={!isMockMode && isOfflineReadOnly}
             theme={theme}
             toggleTheme={toggleTheme}
             onOpenCapture={() => openQuickCapture(null)}

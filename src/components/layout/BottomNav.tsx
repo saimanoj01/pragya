@@ -12,12 +12,14 @@ import {
   Moon,
   LogOut,
   X,
+  WifiOff,
 } from 'lucide-react';
 import type { PragyaView } from '../../utils/navigation';
 import { navigateTo } from '../../utils/navigation';
 
 export interface BottomNavProps {
   currentView: PragyaView;
+  isOfflineReadOnly?: boolean;
   theme: 'light' | 'dark';
   toggleTheme: () => void;
   onOpenCapture: () => void;
@@ -27,6 +29,7 @@ export interface BottomNavProps {
 
 export const BottomNav: React.FC<BottomNavProps> = ({
   currentView,
+  isOfflineReadOnly = false,
   theme,
   toggleTheme,
   onOpenCapture,
@@ -158,7 +161,18 @@ export const BottomNav: React.FC<BottomNavProps> = ({
               className="print:hidden md:hidden fixed bottom-16 left-0 right-0 z-50 bg-card border-t border-border rounded-t-[14px] p-4 shadow-2xl space-y-2"
             >
               <div className="flex items-center justify-between pb-2 border-b border-border/60">
-                <span className="text-eyebrow uppercase text-muted-foreground">More Options</span>
+                <div className="flex items-center gap-2">
+                  <span className="text-eyebrow uppercase text-muted-foreground">More Options</span>
+                  {isOfflineReadOnly && (
+                    <span
+                      data-testid="drawer-offline-badge"
+                      className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-warning/15 border border-warning/30 text-[10px] font-semibold text-warning"
+                    >
+                      <WifiOff className="w-3 h-3" />
+                      <span>Offline · Read-Only</span>
+                    </span>
+                  )}
+                </div>
                 <button
                   type="button"
                   aria-label="Close More menu"

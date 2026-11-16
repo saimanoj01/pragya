@@ -1,10 +1,11 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   FileText,
   Image as ImageIcon,
   Link2,
   Loader2,
+  RotateCcw,
   X,
 } from 'lucide-react';
 import type { Attachment, DeltaStatus, Note, NoteStatus } from '../../types/pragya';
@@ -14,6 +15,15 @@ import {
   normalizeDeltaAction,
   normalizeDeltaTrigger,
 } from '../../utils/deltaFormat';
+import {
+  clearDraft,
+  getEditNoteDraftKey,
+  isNoteDraftStale,
+  readDraft,
+  writeDraft,
+  type EditNoteDraft,
+} from '../../utils/draftStorage';
+import { clampNotePos } from '../../utils/positionClamp';
 import { createUuid } from '../../utils/sessionCoalesce';
 import { parseTagsCsv, serializeTagsCsv } from '../../utils/sheetCodecs';
 import { computeNormalizedPos } from '../../utils/spoilerMath';
@@ -40,6 +50,21 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
   onSaved,
 }) => {
   const { books, notes, updateNote, uploadImageAttachment, resolveDocTitle } = usePragya();
+  const baseId = useId();
+  const headingId = `${baseId}-heading`;
+  const titleId = `${baseId}-title`;
+  const slugId = `${baseId}-slug`;
+  const posId = `${baseId}-pos`;
+  const statusId = `${baseId}-status`;
+  const tagsId = `${baseId}-tags`;
+  const predictionId = `${baseId}-prediction`;
+  const quoteId = `${baseId}-quote`;
+  const takeawayId = `${baseId}-takeaway`;
+  const contextId = `${baseId}-context`;
+  const triggerId = `${baseId}-trigger`;
+  const actionId = `${baseId}-action`;
+  const deltaStatusId = `${baseId}-delta-status`;
+  const critiqueId = `${baseId}-critique`;
 
   const [title, setTitle] = useState('');
   const [slug, setSlug] = useState('');
@@ -55,6 +80,8 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
   const [deltaAction, setDeltaAction] = useState('');
   const [deltaStatus, setDeltaStatus] = useState<DeltaStatus>('none');
   const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [draftRestored, setDraftRestored] = useState(false);
+  const [baseUpdatedAt, setBaseUpdatedAt] = useState('');
 
   const [attachMode, setAttachMode] = useState<'none' | 'doc' | 'link'>('none');
   const [draftUrl, setDraftUrl] = useState('');
@@ -73,11 +100,115 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
 
   const wasOpenRef = useRef(false);
   const initializedIdRef = useRef<string | null>(null);
+  const submittedOrDiscardedRef = useRef(false);
+  const canonicalRef = useRef({
+    title: '',
+    slug: '',
+    pos: '0',
+    status: 'saved' as NoteStatus,
+    quote: '',
+    takeaway: '',
+    tagsRaw: '',
+    isPrediction: false,
+    contextMechanism: '',
+    critique: '',
+    deltaTrigger: '',
+    deltaAction: '',
+    deltaStatus: 'none' as DeltaStatus,
+  });
+
+  const isDirty = useMemo(() => {
+    const c = canonicalRef.current;
+    return (
+      title !== c.title ||
+      slug !== c.slug ||
+      pos !== c.pos ||
+      status !== c.status ||
+      quote !== c.quote ||
+      takeaway !== c.takeaway ||
+      tagsRaw !== c.tagsRaw ||
+      isPrediction !== c.isPrediction ||
+      contextMechanism !== c.contextMechanism ||
+      critique !== c.critique ||
+      deltaTrigger !== c.deltaTrigger ||
+      deltaAction !== c.deltaAction ||
+      deltaStatus !== c.deltaStatus
+    );
+  }, [
+    title,
+    slug,
+    pos,
+    status,
+    quote,
+    takeaway,
+    tagsRaw,
+    isPrediction,
+    contextMechanism,
+    critique,
+    deltaTrigger,
+    deltaAction,
+    deltaStatus,
+  ]);
+
+  const draftStateRef = useRef<{
+    key: string;
+    isDirty: boolean;
+    payload: EditNoteDraft;
+  }>({
+    key: '',
+    isDirty: false,
+    payload: {
+      baseUpdatedAt: '',
+      title: '',
+      slug: '',
+      pos: '0',
+      status: 'saved',
+      quote: '',
+      takeaway: '',
+      tagsRaw: '',
+      isPrediction: false,
+      contextMechanism: '',
+      critique: '',
+      deltaTrigger: '',
+      deltaAction: '',
+      deltaStatus: 'none',
+      savedAt: '',
+    },
+  });
+  draftStateRef.current = {
+    key: note ? getEditNoteDraftKey(note.id) : '',
+    isDirty,
+    payload: {
+      baseUpdatedAt: baseUpdatedAt || note?.updatedAt || '',
+      title,
+      slug,
+      pos,
+      status,
+      quote,
+      takeaway,
+      tagsRaw,
+      isPrediction,
+      contextMechanism,
+      critique,
+      deltaTrigger,
+      deltaAction,
+      deltaStatus,
+      savedAt: new Date().toISOString(),
+    },
+  };
 
   useEffect(() => {
     if (!isOpen || !note) {
+      if (wasOpenRef.current && draftStateRef.current.key && !submittedOrDiscardedRef.current) {
+        if (draftStateRef.current.isDirty) {
+          writeDraft(draftStateRef.current.key, draftStateRef.current.payload);
+        } else {
+          clearDraft(draftStateRef.current.key);
+        }
+      }
       wasOpenRef.current = false;
       initializedIdRef.current = null;
+      submittedOrDiscardedRef.current = false;
       return;
     }
     if (wasOpenRef.current && initializedIdRef.current === note.id) {
@@ -85,21 +216,83 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
     }
     wasOpenRef.current = true;
     initializedIdRef.current = note.id;
+    submittedOrDiscardedRef.current = false;
 
     const formattedDelta = formatWhenDoDisplay(note.deltaTrigger, note.deltaAction);
-    setTitle(note.meta?.title || '');
-    setSlug(note.slug);
-    setPos(String(note.pos));
-    setStatus(note.status);
-    setQuote(note.quote || '');
-    setTakeaway(note.takeaway || '');
-    setTagsRaw(serializeTagsCsv(note.tags || []));
-    setIsPrediction(Boolean(note.meta?.isPrediction));
-    setContextMechanism(note.contextMechanism || '');
-    setCritique(note.critique || '');
-    setDeltaTrigger(formattedDelta.triggerBody);
-    setDeltaAction(formattedDelta.actionBody);
-    setDeltaStatus(note.deltaStatus || 'none');
+    const canonical = {
+      title: note.meta?.title || '',
+      slug: note.slug,
+      pos: String(note.pos),
+      status: note.status,
+      quote: note.quote || '',
+      takeaway: note.takeaway || '',
+      tagsRaw: serializeTagsCsv(note.tags || []),
+      isPrediction: Boolean(note.meta?.isPrediction),
+      contextMechanism: note.contextMechanism || '',
+      critique: note.critique || '',
+      deltaTrigger: formattedDelta.triggerBody,
+      deltaAction: formattedDelta.actionBody,
+      deltaStatus: (note.deltaStatus || 'none') as DeltaStatus,
+    };
+    canonicalRef.current = canonical;
+    setBaseUpdatedAt(note.updatedAt);
+
+    const draftKey = getEditNoteDraftKey(note.id);
+    const savedDraft = readDraft<EditNoteDraft>(draftKey);
+    if (savedDraft && isNoteDraftStale(savedDraft.baseUpdatedAt, note.updatedAt)) {
+      clearDraft(draftKey);
+    }
+
+    const validDraft =
+      savedDraft && !isNoteDraftStale(savedDraft.baseUpdatedAt, note.updatedAt) ? savedDraft : null;
+    const draftHasEdits =
+      validDraft &&
+      (validDraft.title !== canonical.title ||
+        validDraft.slug !== canonical.slug ||
+        validDraft.pos !== canonical.pos ||
+        validDraft.status !== canonical.status ||
+        validDraft.quote !== canonical.quote ||
+        validDraft.takeaway !== canonical.takeaway ||
+        validDraft.tagsRaw !== canonical.tagsRaw ||
+        validDraft.isPrediction !== canonical.isPrediction ||
+        validDraft.contextMechanism !== canonical.contextMechanism ||
+        validDraft.critique !== canonical.critique ||
+        validDraft.deltaTrigger !== canonical.deltaTrigger ||
+        validDraft.deltaAction !== canonical.deltaAction ||
+        validDraft.deltaStatus !== canonical.deltaStatus);
+
+    if (validDraft && draftHasEdits) {
+      setTitle(validDraft.title);
+      setSlug(validDraft.slug);
+      setPos(validDraft.pos);
+      setStatus(validDraft.status);
+      setQuote(validDraft.quote);
+      setTakeaway(validDraft.takeaway);
+      setTagsRaw(validDraft.tagsRaw);
+      setIsPrediction(Boolean(validDraft.isPrediction));
+      setContextMechanism(validDraft.contextMechanism);
+      setCritique(validDraft.critique);
+      setDeltaTrigger(validDraft.deltaTrigger);
+      setDeltaAction(validDraft.deltaAction);
+      setDeltaStatus(validDraft.deltaStatus || 'none');
+      setDraftRestored(true);
+    } else {
+      setTitle(canonical.title);
+      setSlug(canonical.slug);
+      setPos(canonical.pos);
+      setStatus(canonical.status);
+      setQuote(canonical.quote);
+      setTakeaway(canonical.takeaway);
+      setTagsRaw(canonical.tagsRaw);
+      setIsPrediction(canonical.isPrediction);
+      setContextMechanism(canonical.contextMechanism);
+      setCritique(canonical.critique);
+      setDeltaTrigger(canonical.deltaTrigger);
+      setDeltaAction(canonical.deltaAction);
+      setDeltaStatus(canonical.deltaStatus);
+      setDraftRestored(false);
+    }
+
     setAttachments(note.meta?.attachments || []);
     setAttachMode('none');
     setDraftUrl('');
@@ -110,6 +303,74 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
     setUploadingImage(false);
     setSubmitting(false);
   }, [isOpen, note]);
+
+  // Debounced (250ms) draft autosave
+  useEffect(() => {
+    if (!isOpen || !note || !wasOpenRef.current) return;
+    if (isDirty) {
+      submittedOrDiscardedRef.current = false;
+    }
+    const key = getEditNoteDraftKey(note.id);
+    const timer = window.setTimeout(() => {
+      if (draftStateRef.current.isDirty) {
+        writeDraft(key, draftStateRef.current.payload);
+      } else {
+        clearDraft(key);
+      }
+    }, 250);
+    return () => window.clearTimeout(timer);
+  }, [
+    isOpen,
+    note,
+    isDirty,
+    title,
+    slug,
+    pos,
+    status,
+    quote,
+    takeaway,
+    tagsRaw,
+    isPrediction,
+    contextMechanism,
+    critique,
+    deltaTrigger,
+    deltaAction,
+    deltaStatus,
+  ]);
+
+  useEffect(() => {
+    if (!isOpen || !isDirty) return;
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (draftStateRef.current.key && draftStateRef.current.isDirty) {
+        writeDraft(draftStateRef.current.key, draftStateRef.current.payload);
+      }
+      e.preventDefault();
+      e.returnValue = '';
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [isOpen, isDirty]);
+
+  const handleDiscardDraft = () => {
+    if (!note) return;
+    submittedOrDiscardedRef.current = true;
+    clearDraft(getEditNoteDraftKey(note.id));
+    const c = canonicalRef.current;
+    setTitle(c.title);
+    setSlug(c.slug);
+    setPos(c.pos);
+    setStatus(c.status);
+    setQuote(c.quote);
+    setTakeaway(c.takeaway);
+    setTagsRaw(c.tagsRaw);
+    setIsPrediction(c.isPrediction);
+    setContextMechanism(c.contextMechanism);
+    setCritique(c.critique);
+    setDeltaTrigger(c.deltaTrigger);
+    setDeltaAction(c.deltaAction);
+    setDeltaStatus(c.deltaStatus);
+    setDraftRestored(false);
+  };
 
   const book = useMemo(
     () => (note ? books.find(b => b.id === note.bookId) || null : null),
@@ -275,7 +536,8 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
       return;
     }
 
-    const parsedPos = Math.max(0, Number(pos) || 0);
+    const posChanged = Number(pos) !== Number(note.pos);
+    const parsedPos = posChanged && book ? clampNotePos(pos, book) : Math.max(0, Number(pos) || 0);
     const normalizedPos = book
       ? computeNormalizedPos(parsedPos, book.totalPos, book.posUnit)
       : note.normalizedPos;
@@ -288,28 +550,34 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
         note.slug
       );
 
-      const saved = await updateNote({
-        ...note,
-        slug: nextSlug,
-        pos: parsedPos,
-        normalizedPos,
-        status,
-        tags: parseTagsCsv(tagsRaw),
-        quote: quote.trim(),
-        takeaway: takeaway.trim(),
-        contextMechanism: contextMechanism.trim(),
-        critique: critique.trim(),
-        deltaTrigger: normalizedTrigger,
-        deltaAction: normalizedAction,
-        deltaStatus,
-        meta: {
-          ...note.meta,
-          ...(title.trim() ? { title: title.trim() } : { title: undefined }),
-          attachments: attachments.slice(0, 3),
-          ...(book?.kind === 'fiction' ? { isPrediction } : {}),
+      const saved = await updateNote(
+        {
+          ...note,
+          slug: nextSlug,
+          pos: parsedPos,
+          normalizedPos,
+          status,
+          tags: parseTagsCsv(tagsRaw),
+          quote: quote.trim(),
+          takeaway: takeaway.trim(),
+          contextMechanism: contextMechanism.trim(),
+          critique: critique.trim(),
+          deltaTrigger: normalizedTrigger,
+          deltaAction: normalizedAction,
+          deltaStatus,
+          meta: {
+            ...note.meta,
+            ...(title.trim() ? { title: title.trim() } : { title: undefined }),
+            attachments: attachments.slice(0, 3),
+            ...(book?.kind === 'fiction' ? { isPrediction } : {}),
+          },
         },
-      });
+        { expectedBaseUpdatedAt: baseUpdatedAt || note.updatedAt }
+      );
 
+      submittedOrDiscardedRef.current = true;
+      clearDraft(getEditNoteDraftKey(note.id));
+      setDraftRestored(false);
       showToast('Note updated', 'success');
       onSaved?.(saved);
       onClose();
@@ -330,14 +598,15 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
       onClose={onClose}
       dataTestId="edit-note-modal"
       title="Edit Note"
+      headingId={headingId}
       maxWidth="max-w-2xl"
     >
       <div className="flex items-center justify-between gap-3 mb-4">
         <div className="min-w-0">
-          <h2 className="text-title text-foreground">Edit Note</h2>
-          {book && (
-            <p className="text-label text-muted-foreground truncate">{book.title}</p>
-          )}
+          <h2 id={headingId} className="text-title text-foreground">
+            Edit Note
+          </h2>
+          {book && <p className="text-label text-muted-foreground truncate">{book.title}</p>}
         </div>
         <button
           type="button"
@@ -349,11 +618,32 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
         </button>
       </div>
 
+      {draftRestored && (
+        <div
+          data-testid="draft-restored-banner"
+          className="mb-4 px-3 py-2 rounded-[10px] bg-surface2 border border-border flex items-center justify-between gap-2 text-label"
+        >
+          <span className="text-foreground">Draft restored from earlier session</span>
+          <button
+            type="button"
+            data-testid="draft-discard-btn"
+            onClick={handleDiscardDraft}
+            className="inline-flex items-center gap-1 font-semibold text-muted-foreground hover:text-foreground"
+          >
+            <RotateCcw className="w-3 h-3" />
+            <span>Discard</span>
+          </button>
+        </div>
+      )}
+
       <form onSubmit={e => void handleSubmit(e)} className="space-y-4">
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <div className="space-y-1.5">
-            <label className="block text-eyebrow uppercase text-muted-foreground">Title</label>
+            <label htmlFor={titleId} className="block text-eyebrow uppercase text-muted-foreground">
+              Title
+            </label>
             <input
+              id={titleId}
               type="text"
               data-testid="edit-note-title-input"
               value={title}
@@ -364,8 +654,11 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
           </div>
 
           <div className="space-y-1.5">
-            <label className="block text-eyebrow uppercase text-muted-foreground">Slug</label>
+            <label htmlFor={slugId} className="block text-eyebrow uppercase text-muted-foreground">
+              Slug
+            </label>
             <input
+              id={slugId}
               type="text"
               data-testid="edit-note-slug-input"
               value={slug}
@@ -377,10 +670,11 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
 
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
           <div className="space-y-1.5">
-            <label className="block text-eyebrow uppercase text-muted-foreground">
+            <label htmlFor={posId} className="block text-eyebrow uppercase text-muted-foreground">
               Position ({(book?.posUnit || 'page').toUpperCase()})
             </label>
             <input
+              id={posId}
               type="number"
               min="0"
               data-testid="edit-note-pos-input"
@@ -391,8 +685,14 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
           </div>
 
           <div className="space-y-1.5">
-            <label className="block text-eyebrow uppercase text-muted-foreground">Status</label>
+            <label
+              htmlFor={statusId}
+              className="block text-eyebrow uppercase text-muted-foreground"
+            >
+              Status
+            </label>
             <select
+              id={statusId}
               data-testid="edit-note-status-select"
               value={status}
               onChange={e => setStatus(e.target.value as NoteStatus)}
@@ -406,8 +706,11 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
           </div>
 
           <div className="space-y-1.5">
-            <label className="block text-eyebrow uppercase text-muted-foreground">Tags (CSV)</label>
+            <label htmlFor={tagsId} className="block text-eyebrow uppercase text-muted-foreground">
+              Tags (CSV)
+            </label>
             <input
+              id={tagsId}
               type="text"
               data-testid="edit-note-tags-input"
               value={tagsRaw}
@@ -419,8 +722,12 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
         </div>
 
         {book?.kind === 'fiction' && (
-          <label className="inline-flex items-center gap-2 text-body text-foreground cursor-pointer select-none">
+          <label
+            htmlFor={predictionId}
+            className="inline-flex items-center gap-2 text-body text-foreground cursor-pointer select-none"
+          >
             <input
+              id={predictionId}
               type="checkbox"
               data-testid="edit-note-prediction-checkbox"
               checked={isPrediction}
@@ -432,10 +739,11 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
         )}
 
         <div className="space-y-1.5">
-          <label className="block text-eyebrow uppercase text-muted-foreground">
+          <label htmlFor={quoteId} className="block text-eyebrow uppercase text-muted-foreground">
             Verbatim Quote
           </label>
           <textarea
+            id={quoteId}
             rows={2}
             data-testid="edit-note-quote-input"
             value={quote}
@@ -445,10 +753,14 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
         </div>
 
         <div className="space-y-1.5 relative">
-          <label className="block text-eyebrow uppercase text-muted-foreground">
+          <label
+            htmlFor={takeawayId}
+            className="block text-eyebrow uppercase text-muted-foreground"
+          >
             Core Takeaway / Why I Liked It (supports [[wikilinks]])
           </label>
           <textarea
+            id={takeawayId}
             ref={takeawayRef}
             rows={3}
             data-testid="edit-note-takeaway-input"
@@ -477,10 +789,14 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
         </div>
 
         <div className="space-y-1.5 relative">
-          <label className="block text-eyebrow uppercase text-muted-foreground">
+          <label
+            htmlFor={contextId}
+            className="block text-eyebrow uppercase text-muted-foreground"
+          >
             Context &amp; Mechanism (supports [[wikilinks]])
           </label>
           <textarea
+            id={contextId}
             ref={contextRef}
             rows={2}
             data-testid="edit-note-context-input"
@@ -512,10 +828,14 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
         <div className="rounded-[12px] bg-surface2/50 border border-border p-4 space-y-3">
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div className="space-y-1">
-              <label className="block text-[11px] font-semibold uppercase text-muted-foreground">
+              <label
+                htmlFor={triggerId}
+                className="block text-[11px] font-semibold uppercase text-muted-foreground"
+              >
                 WHEN Trigger
               </label>
               <input
+                id={triggerId}
                 type="text"
                 data-testid="edit-note-trigger-input"
                 value={deltaTrigger}
@@ -524,10 +844,14 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
               />
             </div>
             <div className="space-y-1">
-              <label className="block text-[11px] font-semibold uppercase text-muted-foreground">
+              <label
+                htmlFor={actionId}
+                className="block text-[11px] font-semibold uppercase text-muted-foreground"
+              >
                 DO Action
               </label>
               <input
+                id={actionId}
                 type="text"
                 data-testid="edit-note-action-input"
                 value={deltaAction}
@@ -538,7 +862,11 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
           </div>
 
           <div className="flex flex-wrap items-center gap-3">
+            <label htmlFor={deltaStatusId} className="sr-only">
+              Delta Status
+            </label>
             <select
+              id={deltaStatusId}
               data-testid="edit-note-delta-status-select"
               value={deltaStatus}
               onChange={e => setDeltaStatus(e.target.value as DeltaStatus)}
@@ -566,10 +894,14 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
         </div>
 
         <div className="space-y-1.5 relative">
-          <label className="block text-eyebrow uppercase text-muted-foreground">
+          <label
+            htmlFor={critiqueId}
+            className="block text-eyebrow uppercase text-muted-foreground"
+          >
             Critique &amp; Boundary Conditions (supports [[wikilinks]])
           </label>
           <textarea
+            id={critiqueId}
             ref={critiqueRef}
             rows={2}
             data-testid="edit-note-critique-input"
@@ -609,6 +941,7 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
                 ref={fileInputRef}
                 type="file"
                 accept="image/*"
+                aria-label="Upload image attachment"
                 className="hidden"
                 onChange={e => {
                   const file = e.target.files?.[0];
@@ -662,6 +995,7 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
             <div className="p-3 rounded-[10px] bg-surface2/50 border border-border flex flex-col sm:flex-row gap-2">
               <input
                 type="url"
+                aria-label="Attachment URL"
                 value={draftUrl}
                 onChange={e => setDraftUrl(e.target.value)}
                 placeholder="https://..."
@@ -669,6 +1003,7 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
               />
               <input
                 type="text"
+                aria-label="Attachment title"
                 value={draftTitle}
                 onChange={e => setDraftTitle(e.target.value)}
                 placeholder="Title (optional)"

@@ -1,7 +1,14 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { FileText, Image as ImageIcon, Link2, Loader2, X } from 'lucide-react';
+import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
+import { FileText, Image as ImageIcon, Link2, Loader2, RotateCcw, X } from 'lucide-react';
 import type { Attachment } from '../../types/pragya';
 import { usePragya } from '../../context/PragyaContext';
+import {
+  CAPTURE_DRAFT_KEY,
+  clearDraft,
+  readDraft,
+  writeDraft,
+  type CaptureDraft,
+} from '../../utils/draftStorage';
 import { createUuid } from '../../utils/sessionCoalesce';
 import { parseTagsCsv } from '../../utils/sheetCodecs';
 import { showToast } from '../../utils/toast';
@@ -23,6 +30,15 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
   onClose,
 }) => {
   const { books, captureNote, uploadImageAttachment, resolveDocTitle } = usePragya();
+  const baseId = useId();
+  const headingId = `${baseId}-heading`;
+  const bookFieldId = `${baseId}-book`;
+  const posFieldId = `${baseId}-pos`;
+  const quoteFieldId = `${baseId}-quote`;
+  const takeawayFieldId = `${baseId}-takeaway`;
+  const tagsFieldId = `${baseId}-tags`;
+  const sparFieldId = `${baseId}-spar`;
+  const predFieldId = `${baseId}-pred`;
 
   const defaultBookId = useMemo(() => {
     if (initialBookId && books.some(b => b.id === initialBookId)) return initialBookId;
@@ -39,6 +55,7 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [uploadingImage, setUploadingImage] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [draftRestored, setDraftRestored] = useState(false);
 
   const [attachMode, setAttachMode] = useState<'none' | 'doc' | 'link'>('none');
   const [draftUrl, setDraftUrl] = useState('');
@@ -46,33 +63,109 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const wasOpenRef = useRef(false);
+  const submittedOrDiscardedRef = useRef(false);
+
+  const isDirty = useMemo(
+    () =>
+      quote.trim() !== '' ||
+      takeaway.trim() !== '' ||
+      tagsRaw.trim() !== '' ||
+      sparLater ||
+      isPrediction,
+    [isPrediction, quote, sparLater, tagsRaw, takeaway]
+  );
+
+  const draftSnapshotRef = useRef<{ isDirty: boolean; payload: CaptureDraft }>({
+    isDirty: false,
+    payload: {
+      bookId: '',
+      pos: '0',
+      quote: '',
+      takeaway: '',
+      tagsRaw: '',
+      sparLater: false,
+      isPrediction: false,
+      updatedAt: '',
+    },
+  });
+  draftSnapshotRef.current = {
+    isDirty,
+    payload: {
+      bookId,
+      pos,
+      quote,
+      takeaway,
+      tagsRaw,
+      sparLater,
+      isPrediction,
+      updatedAt: new Date().toISOString(),
+    },
+  };
 
   useEffect(() => {
     if (!isOpen) {
+      if (wasOpenRef.current && !submittedOrDiscardedRef.current) {
+        if (draftSnapshotRef.current.isDirty) {
+          writeDraft(CAPTURE_DRAFT_KEY, draftSnapshotRef.current.payload);
+        } else {
+          clearDraft(CAPTURE_DRAFT_KEY);
+        }
+      }
       wasOpenRef.current = false;
+      submittedOrDiscardedRef.current = false;
       return;
     }
     if (wasOpenRef.current) {
       return;
     }
     wasOpenRef.current = true;
+    submittedOrDiscardedRef.current = false;
 
     const chosenId = defaultBookId;
     const chosenBook = books.find(b => b.id === chosenId);
-    setBookId(chosenId);
-    setPos(chosenBook ? String(chosenBook.currentPos) : '0');
-    setQuote('');
-    setTakeaway('');
-    setTagsRaw('');
-    setSparLater(false);
-    setIsPrediction(false);
+    const savedDraft = readDraft<CaptureDraft>(CAPTURE_DRAFT_KEY);
+    const canRestoreDraft =
+      savedDraft &&
+      (savedDraft.quote.trim() !== '' ||
+        savedDraft.takeaway.trim() !== '' ||
+        savedDraft.tagsRaw.trim() !== '' ||
+        savedDraft.sparLater ||
+        savedDraft.isPrediction) &&
+      (!initialBookId || savedDraft.bookId === initialBookId);
+
+    if (canRestoreDraft && savedDraft) {
+      const resolvedBookId = books.some(b => b.id === savedDraft.bookId)
+        ? savedDraft.bookId
+        : chosenId;
+      const resolvedBook = books.find(b => b.id === resolvedBookId);
+      setBookId(resolvedBookId);
+      setPos(savedDraft.pos || (resolvedBook ? String(resolvedBook.currentPos) : '0'));
+      setQuote(savedDraft.quote || '');
+      setTakeaway(savedDraft.takeaway || '');
+      setTagsRaw(savedDraft.tagsRaw || '');
+      setSparLater(Boolean(savedDraft.sparLater));
+      setIsPrediction(
+        resolvedBook?.kind === 'fiction' ? Boolean(savedDraft.isPrediction) : false
+      );
+      setDraftRestored(true);
+    } else {
+      setBookId(chosenId);
+      setPos(chosenBook ? String(chosenBook.currentPos) : '0');
+      setQuote('');
+      setTakeaway('');
+      setTagsRaw('');
+      setSparLater(false);
+      setIsPrediction(false);
+      setDraftRestored(false);
+    }
+
     setAttachments([]);
     setAttachMode('none');
     setDraftUrl('');
     setDraftTitle('');
     setUploadingImage(false);
     setSubmitting(false);
-  }, [isOpen, defaultBookId, books]);
+  }, [isOpen, defaultBookId, books, initialBookId]);
 
   useEffect(() => {
     if (isOpen && !bookId && defaultBookId) {
@@ -83,6 +176,36 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
       }
     }
   }, [isOpen, bookId, defaultBookId, books]);
+
+  // Debounced (250ms) silent draft autosave
+  useEffect(() => {
+    if (!isOpen || !wasOpenRef.current) return;
+    if (isDirty) {
+      submittedOrDiscardedRef.current = false;
+    }
+    const timer = window.setTimeout(() => {
+      if (draftSnapshotRef.current.isDirty) {
+        writeDraft(CAPTURE_DRAFT_KEY, draftSnapshotRef.current.payload);
+      } else {
+        clearDraft(CAPTURE_DRAFT_KEY);
+      }
+    }, 250);
+    return () => window.clearTimeout(timer);
+  }, [isOpen, isDirty, bookId, pos, quote, takeaway, tagsRaw, sparLater, isPrediction]);
+
+  // Warn only when open with unpersisted/unsaved dirty input
+  useEffect(() => {
+    if (!isOpen || !isDirty) return;
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (draftSnapshotRef.current.isDirty) {
+        writeDraft(CAPTURE_DRAFT_KEY, draftSnapshotRef.current.payload);
+      }
+      e.preventDefault();
+      e.returnValue = '';
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [isOpen, isDirty]);
 
   const selectedBook = useMemo(() => books.find(b => b.id === bookId) || null, [books, bookId]);
 
@@ -95,6 +218,20 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
         setIsPrediction(false);
       }
     }
+  };
+
+  const handleDiscardDraft = () => {
+    submittedOrDiscardedRef.current = true;
+    clearDraft(CAPTURE_DRAFT_KEY);
+    const chosenBook = books.find(b => b.id === defaultBookId);
+    setBookId(defaultBookId);
+    setPos(chosenBook ? String(chosenBook.currentPos) : '0');
+    setQuote('');
+    setTakeaway('');
+    setTagsRaw('');
+    setSparLater(false);
+    setIsPrediction(false);
+    setDraftRestored(false);
   };
 
   const attachUrl = useCallback(
@@ -269,6 +406,9 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
         isPrediction: selectedBook?.kind === 'fiction' ? isPrediction : false,
         attachments,
       });
+      submittedOrDiscardedRef.current = true;
+      clearDraft(CAPTURE_DRAFT_KEY);
+      setDraftRestored(false);
       showToast(sparLater ? 'Captured to Sparring Inbox' : 'Note captured', 'success');
       onClose();
     } catch (err) {
@@ -286,6 +426,7 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
       onClose={onClose}
       dataTestId="quick-capture-modal"
       title="Quick Capture"
+      headingId={headingId}
       maxWidth="max-w-xl"
     >
       <div className="flex items-center justify-between mb-4">
@@ -293,7 +434,9 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
           <span className="text-lg leading-none" aria-hidden="true">
             🪷
           </span>
-          <h2 className="text-title text-foreground">Quick Capture</h2>
+          <h2 id={headingId} className="text-title text-foreground">
+            Quick Capture
+          </h2>
         </div>
         <button
           type="button"
@@ -305,11 +448,35 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
         </button>
       </div>
 
+      {draftRestored && (
+        <div
+          data-testid="draft-restored-banner"
+          className="mb-4 px-3 py-2 rounded-[10px] bg-surface2 border border-border flex items-center justify-between gap-2 text-label"
+        >
+          <span className="text-foreground">Draft restored from earlier session</span>
+          <button
+            type="button"
+            data-testid="draft-discard-btn"
+            onClick={handleDiscardDraft}
+            className="inline-flex items-center gap-1 font-semibold text-muted-foreground hover:text-foreground"
+          >
+            <RotateCcw className="w-3 h-3" />
+            <span>Discard</span>
+          </button>
+        </div>
+      )}
+
       <form onSubmit={handleSubmit} className="space-y-4">
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
           <div className="sm:col-span-2 space-y-1.5">
-            <label className="block text-eyebrow uppercase text-muted-foreground">Book</label>
+            <label
+              htmlFor={bookFieldId}
+              className="block text-eyebrow uppercase text-muted-foreground"
+            >
+              Book
+            </label>
             <select
+              id={bookFieldId}
               data-testid="capture-book-select"
               value={bookId}
               onChange={e => handleBookChange(e.target.value)}
@@ -324,10 +491,14 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
           </div>
 
           <div className="space-y-1.5">
-            <label className="block text-eyebrow uppercase text-muted-foreground">
+            <label
+              htmlFor={posFieldId}
+              className="block text-eyebrow uppercase text-muted-foreground"
+            >
               Position ({(selectedBook?.posUnit || 'page').toUpperCase()})
             </label>
             <input
+              id={posFieldId}
               type="number"
               min="0"
               data-testid="capture-pos-input"
@@ -339,10 +510,14 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
         </div>
 
         <div className="space-y-1.5">
-          <label className="block text-eyebrow uppercase text-muted-foreground">
+          <label
+            htmlFor={quoteFieldId}
+            className="block text-eyebrow uppercase text-muted-foreground"
+          >
             Verbatim Quote (Optional)
           </label>
           <textarea
+            id={quoteFieldId}
             rows={2}
             data-testid="capture-quote-input"
             value={quote}
@@ -353,10 +528,14 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
         </div>
 
         <div className="space-y-1.5">
-          <label className="block text-eyebrow uppercase text-muted-foreground">
+          <label
+            htmlFor={takeawayFieldId}
+            className="block text-eyebrow uppercase text-muted-foreground"
+          >
             Why I Liked It / Core Takeaway <span className="text-negative">*</span>
           </label>
           <textarea
+            id={takeawayFieldId}
             rows={3}
             data-testid="capture-takeaway-input"
             value={takeaway}
@@ -368,8 +547,14 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
 
         <div className="flex flex-col sm:flex-row sm:items-end gap-3">
           <div className="flex-1 space-y-1.5">
-            <label className="block text-eyebrow uppercase text-muted-foreground">Tags (CSV)</label>
+            <label
+              htmlFor={tagsFieldId}
+              className="block text-eyebrow uppercase text-muted-foreground"
+            >
+              Tags (CSV)
+            </label>
             <input
+              id={tagsFieldId}
               type="text"
               data-testid="capture-tags-input"
               value={tagsRaw}
@@ -380,8 +565,12 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
           </div>
 
           <div className="flex flex-wrap items-center gap-4 pb-2">
-            <label className="inline-flex items-center gap-2 text-body text-foreground cursor-pointer select-none">
+            <label
+              htmlFor={sparFieldId}
+              className="inline-flex items-center gap-2 text-body text-foreground cursor-pointer select-none"
+            >
               <input
+                id={sparFieldId}
                 type="checkbox"
                 data-testid="capture-spar-checkbox"
                 checked={sparLater}
@@ -392,8 +581,12 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
             </label>
 
             {selectedBook?.kind === 'fiction' && (
-              <label className="inline-flex items-center gap-2 text-body text-foreground cursor-pointer select-none">
+              <label
+                htmlFor={predFieldId}
+                className="inline-flex items-center gap-2 text-body text-foreground cursor-pointer select-none"
+              >
                 <input
+                  id={predFieldId}
                   type="checkbox"
                   data-testid="capture-prediction-checkbox"
                   checked={isPrediction}
@@ -418,6 +611,7 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
                 ref={fileInputRef}
                 type="file"
                 accept="image/*"
+                aria-label="Upload image attachment"
                 data-testid="capture-photo-input"
                 className="hidden"
                 onChange={e => {
@@ -481,6 +675,7 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
               <div className="flex flex-col sm:flex-row gap-2">
                 <input
                   type="url"
+                  aria-label="Attachment URL"
                   data-testid="capture-attachment-url-input"
                   value={draftUrl}
                   onChange={e => setDraftUrl(e.target.value)}
@@ -493,6 +688,7 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
                 />
                 <input
                   type="text"
+                  aria-label="Attachment title"
                   data-testid="capture-attachment-title-input"
                   value={draftTitle}
                   onChange={e => setDraftTitle(e.target.value)}

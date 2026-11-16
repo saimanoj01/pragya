@@ -22,7 +22,15 @@ import {
   rowToSession,
   sessionToRow,
 } from '../utils/sheetCodecs';
-import { ensureLocalStorage, type StorageAdapter, type StorageLoadOptions } from './storage';
+import { RowConflictError, extractMetaUpdatedAt, isRemoteNewer } from '../utils/conflictGuard';
+import { planTrailingClearRanges, type ImportTabPlan } from '../utils/importSafety';
+import { isNetworkError } from '../utils/offline';
+import {
+  ensureLocalStorage,
+  type SaveOptions,
+  type StorageAdapter,
+  type StorageLoadOptions,
+} from './storage';
 
 ensureLocalStorage();
 
@@ -368,6 +376,21 @@ export class GoogleSheetsAdapter implements StorageAdapter {
       cached?.spreadsheetId ||
       '';
 
+    const offlineFallback = (): WorkspaceState | null => {
+      if (knownId && cached && cached.spreadsheetId === knownId && cached.state) {
+        this.spreadsheetId = knownId;
+        if (cached.mediaFolderId) this.mediaFolderId = cached.mediaFolderId;
+        return {
+          ...cached.state,
+          spreadsheetId: knownId,
+          modifiedTime: cached.modifiedTime,
+          mediaFolderId: cached.mediaFolderId,
+          isOfflineReadOnly: true,
+        };
+      }
+      return null;
+    };
+
     // Drive modifiedTime fast-reload cache check
     if (!forceRefresh && knownId && cached && cached.spreadsheetId === knownId && cached.modifiedTime) {
       try {
@@ -380,6 +403,7 @@ export class GoogleSheetsAdapter implements StorageAdapter {
           localStorage.removeItem(SHEETS_CACHE_STORAGE_KEY);
           localStorage.removeItem(SPREADSHEET_ID_STORAGE_KEY);
           this.spreadsheetId = null;
+          cached = null;
         } else if (remoteMeta.modifiedTime && remoteMeta.modifiedTime === cached.modifiedTime) {
           this.spreadsheetId = knownId;
           if (cached.mediaFolderId) this.mediaFolderId = cached.mediaFolderId;
@@ -397,10 +421,27 @@ export class GoogleSheetsAdapter implements StorageAdapter {
           localStorage.removeItem(SHEETS_CACHE_STORAGE_KEY);
           localStorage.removeItem(SPREADSHEET_ID_STORAGE_KEY);
           this.spreadsheetId = null;
+          cached = null;
+        } else if (isNetworkError(err)) {
+          // M4.5: offline → serve last-known cache in read-only mode
+          const offline = offlineFallback();
+          if (offline) return offline;
         }
       }
     }
 
+    try {
+      return await this.loadWorkspaceFromSheets();
+    } catch (err) {
+      if (isNetworkError(err)) {
+        const offline = offlineFallback();
+        if (offline) return offline;
+      }
+      throw err;
+    }
+  }
+
+  private async loadWorkspaceFromSheets(): Promise<WorkspaceState> {
     const { spreadsheetId, modifiedTime, createdNew } = await this.discoverOrCreateSpreadsheet();
     if (!createdNew) {
       await this.ensureSchemaAndRepair(spreadsheetId);
@@ -410,12 +451,13 @@ export class GoogleSheetsAdapter implements StorageAdapter {
       spec => `ranges=${encodeURIComponent(`${spec.title}!A:${spec.lastCol}`)}`
     ).join('&');
 
+    // UNFORMATTED_VALUE appended after ranges=... so numeric cells stay numbers.
     const batchRes = await this.fetchApi<{
       valueRanges?: Array<{ range?: string; values?: unknown[][] }>;
     }>(
       `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(
         spreadsheetId
-      )}/values:batchGet?${dataRangesQuery}`
+      )}/values:batchGet?${dataRangesQuery}&valueRenderOption=UNFORMATTED_VALUE`
     );
 
     const vrs = batchRes.valueRanges || [];
@@ -492,7 +534,8 @@ export class GoogleSheetsAdapter implements StorageAdapter {
     tab: TabSchemaSpec['title'],
     lastCol: string,
     id: string,
-    rowValues: (string | number)[]
+    rowValues: (string | number)[],
+    conflictGuard?: { expectedBaseUpdatedAt?: string; timestampCol: 'E' | 'L' }
   ): Promise<void> {
     const spreadsheetId = await this.getActiveSpreadsheetId();
     const colARes = await this.fetchApi<{ values?: unknown[][] }>(
@@ -513,6 +556,22 @@ export class GoogleSheetsAdapter implements StorageAdapter {
 
     if (matchIndex >= 0) {
       const sheetRowNumber = matchIndex + 1;
+      // M4.9: pre-write row-level conflict guard (targeted single-cell read of the
+      // row's timestamp column, resolved fresh at write time — never cached).
+      if (conflictGuard?.expectedBaseUpdatedAt) {
+        const tsRange = `${tab}!${conflictGuard.timestampCol}${sheetRowNumber}`;
+        const tsRes = await this.fetchApi<{ values?: unknown[][] }>(
+          `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(
+            spreadsheetId
+          )}/values/${encodeURIComponent(tsRange)}?valueRenderOption=UNFORMATTED_VALUE`
+        );
+        const rawCell = tsRes.values?.[0]?.[0];
+        const remoteUpdatedAt =
+          conflictGuard.timestampCol === 'L' ? extractMetaUpdatedAt(rawCell) : rawCell;
+        if (isRemoteNewer(remoteUpdatedAt, conflictGuard.expectedBaseUpdatedAt)) {
+          throw new RowConflictError(String(remoteUpdatedAt), conflictGuard.expectedBaseUpdatedAt);
+        }
+      }
       const targetRange = `${tab}!A${sheetRowNumber}:${lastCol}${sheetRowNumber}`;
       await this.fetchApi(
         `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(
@@ -575,9 +634,12 @@ export class GoogleSheetsAdapter implements StorageAdapter {
     });
   }
 
-  async saveBook(book: Book): Promise<Book> {
+  async saveBook(book: Book, options: SaveOptions = {}): Promise<Book> {
     return this.enqueueWrite(async () => {
-      await this.upsertRowById('Books', 'L', book.id, bookToRow(book));
+      await this.upsertRowById('Books', 'L', book.id, bookToRow(book), {
+        expectedBaseUpdatedAt: options.expectedBaseUpdatedAt,
+        timestampCol: 'L',
+      });
       await this.updateCacheAfterMutation(s => ({
         ...s,
         books: upsertInArray(s.books, book),
@@ -586,9 +648,12 @@ export class GoogleSheetsAdapter implements StorageAdapter {
     });
   }
 
-  async saveNote(note: Note): Promise<Note> {
+  async saveNote(note: Note, options: SaveOptions = {}): Promise<Note> {
     return this.enqueueWrite(async () => {
-      await this.upsertRowById('Notes', 'R', note.id, noteToRow(note));
+      await this.upsertRowById('Notes', 'R', note.id, noteToRow(note), {
+        expectedBaseUpdatedAt: options.expectedBaseUpdatedAt,
+        timestampCol: 'E',
+      });
       await this.updateCacheAfterMutation(s => ({
         ...s,
         notes: upsertInArray(s.notes, note),
@@ -624,30 +689,43 @@ export class GoogleSheetsAdapter implements StorageAdapter {
       const spreadsheetId = await this.getActiveSpreadsheetId();
       await this.ensureSchemaAndRepair(spreadsheetId);
 
-      await this.fetchApi(
+      // M4.8 step 1: snapshot current row counts (A:A) BEFORE mutating anything.
+      const countRangesQuery = TAB_SPECS.map(
+        spec => `ranges=${encodeURIComponent(`${spec.title}!A:A`)}`
+      ).join('&');
+      const countRes = await this.fetchApi<{
+        valueRanges?: Array<{ range?: string; values?: unknown[][] }>;
+      }>(
         `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(
           spreadsheetId
-        )}/values:batchClear`,
-        {
-          method: 'POST',
-          body: JSON.stringify({
-            ranges: ['Books!A2:L', 'Notes!A2:R', 'Sessions!A2:G', 'DeltaLogs!A2:E'],
-          }),
-        }
+        )}/values:batchGet?${countRangesQuery}&majorDimension=ROWS`
       );
+      const countVrs = countRes.valueRanges || [];
 
-      const data = [
-        { range: 'Books!A1:L', values: [[...BOOKS_HEADERS], ...snapshot.books.map(bookToRow)] },
-        { range: 'Notes!A1:R', values: [[...NOTES_HEADERS], ...snapshot.notes.map(noteToRow)] },
-        {
-          range: 'Sessions!A1:G',
-          values: [[...SESSIONS_HEADERS], ...snapshot.sessions.map(sessionToRow)],
-        },
-        {
-          range: 'DeltaLogs!A1:E',
-          values: [[...DELTA_LOGS_HEADERS], ...snapshot.deltaLogs.map(deltaLogToRow)],
-        },
-      ];
+      const rowsByTab: Record<TabSchemaSpec['title'], (string | number)[][]> = {
+        Books: snapshot.books.map(bookToRow),
+        Notes: snapshot.notes.map(noteToRow),
+        Sessions: snapshot.sessions.map(sessionToRow),
+        DeltaLogs: snapshot.deltaLogs.map(deltaLogToRow),
+      };
+
+      const plans: ImportTabPlan[] = TAB_SPECS.map((spec, idx) => {
+        const vr =
+          countVrs.find(r => r.range?.startsWith(`${spec.title}!`)) || countVrs[idx];
+        return {
+          tab: spec.title,
+          lastCol: spec.lastCol,
+          oldRowCount: vr?.values?.length || 0,
+          newRowCount: 1 + rowsByTab[spec.title].length,
+        };
+      });
+
+      // M4.8 step 2: write headers + all new rows from A1 FIRST. If this fails,
+      // the existing sheet rows are untouched (zero blank-sheet wipe).
+      const data = TAB_SPECS.map(spec => ({
+        range: `${spec.title}!A1:${spec.lastCol}`,
+        values: [[...spec.headers], ...rowsByTab[spec.title]],
+      }));
 
       await this.fetchApi(
         `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(
@@ -661,6 +739,20 @@ export class GoogleSheetsAdapter implements StorageAdapter {
           }),
         }
       );
+
+      // M4.8 step 3: only clear trailing stale rows on tabs that shrank.
+      const trailingRanges = planTrailingClearRanges(plans);
+      if (trailingRanges.length > 0) {
+        await this.fetchApi(
+          `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(
+            spreadsheetId
+          )}/values:batchClear`,
+          {
+            method: 'POST',
+            body: JSON.stringify({ ranges: trailingRanges }),
+          }
+        );
+      }
 
       let modifiedTime = '';
       try {

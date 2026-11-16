@@ -1,6 +1,9 @@
-import React, { useState } from 'react';
-import { AlertTriangle, FileJson, X } from 'lucide-react';
+import React, { useId, useState } from 'react';
+import { AlertTriangle, Download, FileJson, X } from 'lucide-react';
 import type { PragyaSnapshot } from '../../types/pragya';
+import { usePragya } from '../../context/PragyaContext';
+import { getLocalDateString } from '../../utils/sessionCoalesce';
+import { buildSnapshot } from '../../utils/snapshot';
 import { showToast } from '../../utils/toast';
 import { Modal } from '../common/Modal';
 
@@ -15,7 +18,23 @@ export const ImportConfirmModal: React.FC<ImportConfirmModalProps> = ({
   onClose,
   onConfirm,
 }) => {
+  const { books, notes, sessions, deltaLogs } = usePragya();
   const [submitting, setSubmitting] = useState(false);
+  const headingId = useId();
+
+  const handleDownloadCurrentBackup = () => {
+    const current = buildSnapshot({ books, notes, sessions, deltaLogs });
+    const blob = new Blob([JSON.stringify(current, null, 2)], {
+      type: 'application/json',
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `pragya-pre-import-backup-${getLocalDateString()}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    showToast('Downloaded current workspace backup', 'info');
+  };
 
   const handleConfirm = async () => {
     if (!snapshot) return;
@@ -36,12 +55,15 @@ export const ImportConfirmModal: React.FC<ImportConfirmModalProps> = ({
       onClose={onClose}
       dataTestId="import-confirm-modal"
       title="Confirm JSON Snapshot Import"
+      headingId={headingId}
       maxWidth="max-w-md"
     >
       <div className="flex items-center justify-between mb-4">
         <div className="flex items-center gap-2">
           <FileJson className="w-5 h-5 text-foreground" />
-          <h2 className="text-title text-foreground">Import Snapshot</h2>
+          <h2 id={headingId} className="text-title text-foreground">
+            Import Snapshot
+          </h2>
         </div>
         <button
           type="button"
@@ -58,7 +80,8 @@ export const ImportConfirmModal: React.FC<ImportConfirmModalProps> = ({
           <div className="rounded-[10px] bg-warning/10 border border-warning/30 p-3 flex items-start gap-2.5 text-label text-foreground">
             <AlertTriangle className="w-4 h-4 text-warning shrink-0 mt-0.5" />
             <span>
-              Importing replaces all current Books, Notes, Reading Sessions, and Delta Logs in your active workspace.
+              Importing replaces all current Books, Notes, Reading Sessions, and Delta Logs in your
+              active workspace. A local rollback backup is also saved automatically.
             </span>
           </div>
 
@@ -85,8 +108,17 @@ export const ImportConfirmModal: React.FC<ImportConfirmModalProps> = ({
             </div>
           </div>
 
-          <div className="text-[11px] text-muted-foreground num">
-            Snapshot exported: {new Date(snapshot.exportedAt).toLocaleString()}
+          <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-muted-foreground num">
+            <span>Snapshot exported: {new Date(snapshot.exportedAt).toLocaleString()}</span>
+            <button
+              type="button"
+              data-testid="import-download-backup-btn"
+              onClick={handleDownloadCurrentBackup}
+              className="inline-flex items-center gap-1 text-foreground font-medium hover:underline"
+            >
+              <Download className="w-3 h-3" />
+              <span>Download current workspace backup first</span>
+            </button>
           </div>
 
           <div className="flex items-center justify-end gap-2 pt-2">

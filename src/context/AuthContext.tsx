@@ -5,6 +5,14 @@ import {
   SPREADSHEET_ID_STORAGE_KEY,
 } from '../services/googleSheetsAdapter';
 import { showToast } from '../utils/toast';
+import {
+  OAUTH_RETURN_ROUTE_KEY,
+  isRestorableAppRoute,
+  resolvePostLoginHash,
+} from '../utils/navigation';
+import { OFFLINE_INFO_TOAST } from '../utils/offline';
+import { clearAllDrafts } from '../utils/draftStorage';
+import { clearPreImportBackup } from '../utils/importSafety';
 
 export interface User {
   email: string;
@@ -112,7 +120,7 @@ export interface AuthContextType {
   googleClientIdExists: boolean;
   saveGoogleClientId: (clientId: string) => void;
   getGoogleToken: () => string | null;
-  login: () => Promise<void>;
+  login: () => Promise<{ ok: boolean; reason?: 'missing_client_id' | 'offline' | 'error' }>;
   loginAsMock: () => Promise<void>;
   logout: () => Promise<void>;
   showSessionExpiredModal: boolean;
@@ -209,6 +217,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
       if (oauthError !== null) {
         sessionStorage.removeItem(OAUTH_CSRF_STATE_KEY);
+        sessionStorage.removeItem(OAUTH_RETURN_ROUTE_KEY);
         clearOAuthHash();
         showToast(
           oauthError === 'access_denied'
@@ -225,6 +234,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         const returnedState = params.get('state');
         const storedState = sessionStorage.getItem(OAUTH_CSRF_STATE_KEY);
         sessionStorage.removeItem(OAUTH_CSRF_STATE_KEY);
+        const storedReturnRoute = sessionStorage.getItem(OAUTH_RETURN_ROUTE_KEY);
+        sessionStorage.removeItem(OAUTH_RETURN_ROUTE_KEY);
 
         if (!storedState || returnedState !== storedState) {
           clearOAuthHash();
@@ -287,7 +298,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         localStorage.setItem(GOOGLE_USER_KEY, JSON.stringify(profile));
         setUser(profile);
         setIsAuthenticated(true);
-        window.location.hash = '#/shelf';
+        // M4.4: restore the validated pre-login route (fallback #/shelf).
+        window.location.hash = resolvePostLoginHash(storedReturnRoute);
       }
       setIsLoading(false);
     };
@@ -299,7 +311,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   useEffect(() => {
     const handleOffline = () => {
-      showToast('You are currently offline', 'error');
+      if (!localStorage.getItem(GOOGLE_TOKEN_KEY)) return;
+      showToast(OFFLINE_INFO_TOAST, 'info');
     };
     window.addEventListener('offline', handleOffline);
     return () => window.removeEventListener('offline', handleOffline);
@@ -320,11 +333,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
-  const login = useCallback(async () => {
+  const login = useCallback(async (): Promise<{
+    ok: boolean;
+    reason?: 'missing_client_id' | 'offline' | 'error';
+  }> => {
     const clientId = resolveConfiguredClientId();
     if (!clientId) {
-      showToast('Please configure a Google OAuth Client ID or continue in Demo Mode.', 'error');
-      return;
+      return { ok: false, reason: 'missing_client_id' };
     }
 
     const csrfState =
@@ -332,11 +347,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         ? crypto.randomUUID()
         : Math.random().toString(36).slice(2);
     sessionStorage.setItem(OAUTH_CSRF_STATE_KEY, csrfState);
+    // M4.4: remember the in-app route so the user lands back where they started.
+    const currentHash = typeof window !== 'undefined' ? window.location.hash : '';
+    if (isRestorableAppRoute(currentHash)) {
+      sessionStorage.setItem(OAUTH_RETURN_ROUTE_KEY, currentHash);
+    } else {
+      sessionStorage.removeItem(OAUTH_RETURN_ROUTE_KEY);
+    }
 
     if (await checkIsTrulyOffline()) {
       sessionStorage.removeItem(OAUTH_CSRF_STATE_KEY);
+      sessionStorage.removeItem(OAUTH_RETURN_ROUTE_KEY);
       showToast('You are currently offline', 'error');
-      return;
+      return { ok: false, reason: 'offline' };
     }
 
     setIsLoading(true);
@@ -367,9 +390,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       } else {
         window.location.href = authUrl;
       }
+      return { ok: true };
     } catch {
       setIsLoading(false);
       showToast('Failed to start Google sign-in', 'error');
+      return { ok: false, reason: 'error' };
     }
   }, []);
 
@@ -380,6 +405,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
     localStorage.removeItem(GOOGLE_TOKEN_KEY);
     localStorage.removeItem(GOOGLE_USER_KEY);
+    clearPreImportBackup();
     localStorage.setItem(MOCK_SESSION_KEY, JSON.stringify(demoUser));
     localStorage.setItem(MOCK_MODE_KEY, 'true');
     setUser(demoUser);
@@ -408,7 +434,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     localStorage.removeItem(SHEETS_CACHE_STORAGE_KEY);
     localStorage.removeItem(MEDIA_FOLDER_ID_STORAGE_KEY);
     localStorage.removeItem(SPREADSHEET_ID_STORAGE_KEY);
+    clearAllDrafts();
+    clearPreImportBackup();
     sessionStorage.removeItem(OAUTH_CSRF_STATE_KEY);
+    sessionStorage.removeItem(OAUTH_RETURN_ROUTE_KEY);
     if (typeof caches !== 'undefined') {
       caches.delete('pragya-media-v1').catch(() => {});
     }

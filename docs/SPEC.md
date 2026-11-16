@@ -75,13 +75,13 @@ Aligned with `/tmp/expense-ref`:
 | `--input` | `228 8% 18%` | `240 6% 88%` | Form field borders |
 | `--foreground` | `220 14% 94%` (`#EDEEF1`) | `228 12% 6%` (`#0D0E11`) | Primary text |
 | `--muted-foreground` | `222 7% 63%` (`#9DA0A8`) | `222 6% 38%` (`#5A5E66`) | Secondary text |
-| `--faint` | `222 6% 44%` (`#6C6F77`) | `222 5% 56%` (`#8A8E96`) | Tertiary captions / dots |
+| `--faint` | `222 7% 55%` (`#848893`) | `222 6% 43%` (`#676B75`) | Tertiary captions / dots |
 | `--primary` | `220 14% 94%` | `228 12% 8%` | Monochrome primary CTA fill |
 | `--primary-foreground` | `228 12% 6%` | `0 0% 100%` | Monochrome primary CTA text |
 | `--secondary` / `--muted` / `--accent` | `228 9% 13%` | `240 5% 95%` | Neutral interactive surfaces |
-| `--destructive` / `--c-negative` | `357 85% 64%` | `357 70% 54%` | Destructive / error states |
-| `--c-saved` (`positive`) | `152 62% 52%` | `156 80% 36%` | Applied / Graduated / Success |
-| `--c-nonmonthly` (`warning`) | `38 92% 62%` | `36 84% 43%` | Missed Trigger / Sparring badge |
+| `--destructive` / `--c-negative` | `357 85% 64%` | `357 72% 41%` | Destructive / error states |
+| `--c-saved` (`positive`) | `152 62% 52%` | `156 84% 24%` | Applied / Graduated / Success |
+| `--c-nonmonthly` (`warning`) | `38 92% 62%` | `36 90% 28%` | Missed Trigger / Sparring badge |
 | `--c-fixed` | `221 83% 66%` | `221 70% 52%` | Optional semantic accent |
 | `--c-variable` | `194 86% 56%` | `196 88% 35%` | Optional semantic accent |
 
@@ -457,7 +457,7 @@ Location: `.agents/skills/pragya-companion/SKILL.md` + Python CLI `scripts/pragy
   - React + Lucide + Framer Motion chunk splitting.
 - `.github/workflows/deploy.yml`:
   - Triggers on push to `main` and `workflow_dispatch`.
-  - Node 20, `npm ci`, `npm run build` with:
+  - Node 24, Python 3.12, `npm ci`, pre-build quality gates (`npm run lint`, `npm run test:unit`, `python3 -m unittest discover -s tests/unit -v`), and `npm run build` with:
     - `VITE_GOOGLE_CLIENT_ID: ${{ secrets.VITE_GOOGLE_CLIENT_ID }}`
     - `VITE_BASE_PATH: '/pragya/'`
   - Deploys `./dist` via `actions/upload-pages-artifact@v3` & `actions/deploy-pages@v4`.
@@ -467,17 +467,18 @@ Location: `.agents/skills/pragya-companion/SKILL.md` + Python CLI `scripts/pragy
 ## 10. Stable `data-testid` Contract (Shared by Developer & QA)
 
 ### Shell & Auth
-- `login-view`, `google-login-btn`, `demo-login-btn`, `client-id-input`, `client-id-save-btn`, `session-expired-modal`, `session-reauth-btn`, `session-demo-btn`
-- `sidebar`, `sidebar-toggle-btn`, `sidebar-expand-btn`, `sidebar-capture-btn`, `demo-badge`, `nav-item-shelf`, `nav-item-notes`, `nav-item-practice`, `nav-item-settings`, `command-palette-trigger`, `theme-toggle-btn`, `logout-btn`
-- `bottom-nav`, `bottom-nav-shelf`, `bottom-nav-notes`, `bottom-nav-capture`, `bottom-nav-practice`, `bottom-nav-more`, `mobile-more-drawer`, `drawer-nav-settings`, `drawer-theme-toggle`, `drawer-sync-btn`, `drawer-logout-btn`
+- `login-view`, `google-login-btn`, `demo-login-btn`, `client-id-input`, `client-id-save-btn`, `missing-client-id-prompt`, `oauth-setup-guide`, `oauth-guide-origin`, `oauth-guide-redirect`, `oauth-copy-origin-btn`, `oauth-copy-redirect-btn`, `session-expired-modal`, `session-reauth-btn`, `session-demo-btn`
+- `sidebar`, `sidebar-toggle-btn`, `sidebar-expand-btn`, `sidebar-capture-btn`, `sidebar-offline-badge`, `demo-badge`, `nav-item-shelf`, `nav-item-notes`, `nav-item-practice`, `nav-item-settings`, `command-palette-trigger`, `theme-toggle-btn`, `logout-btn`
+- `bottom-nav`, `bottom-nav-shelf`, `bottom-nav-notes`, `bottom-nav-capture`, `bottom-nav-practice`, `bottom-nav-more`, `mobile-more-drawer`, `drawer-offline-badge`, `drawer-nav-settings`, `drawer-theme-toggle`, `drawer-sync-btn`, `drawer-logout-btn`, `offline-readonly-badge`, `offline-retry-sync-btn`
 
 ### Modals & Overlays
 - `command-palette`, `command-palette-input`, `command-palette-item-{id}`
 - `quick-capture-modal`, `capture-book-select`, `capture-pos-input`, `capture-quote-input`, `capture-takeaway-input`, `capture-tags-input`, `capture-spar-checkbox`, `capture-prediction-checkbox`, `capture-attach-photo-btn`, `capture-photo-input`, `capture-attach-doc-btn`, `capture-attach-link-btn`, `capture-attachment-list`, `capture-submit-btn`
+- `draft-restored-banner`, `draft-discard-btn`
 - `add-book-modal`, `book-title-input`, `book-author-input`, `book-format-select`, `book-kind-select`, `book-status-select`, `book-pos-input`, `book-total-input`, `book-unit-select`, `book-docurl-input`, `book-submit-btn`
 - `edit-book-modal`
 - `deepen-note-modal`, `deepen-title-input`, `deepen-slug-input`, `deepen-takeaway-input`, `deepen-context-input`, `deepen-trigger-input`, `deepen-action-input`, `deepen-delta-status-select`, `deepen-delta-cap-warning`, `deepen-critique-input`, `deepen-submit-btn`
-- `edit-note-modal`, `wikilink-autocomplete`, `wikilink-option-{slug}`, `image-lightbox`, `import-confirm-modal`, `import-confirm-btn`
+- `edit-note-modal`, `wikilink-autocomplete`, `wikilink-option-{slug}`, `image-lightbox`, `import-confirm-modal`, `import-download-backup-btn`, `import-confirm-btn`
 
 ### Views & Actions
 - `shelf-view`, `add-book-btn`, `activity-dots`, `activity-dot-{i}`, `activity-count`, `now-reading-section`, `book-card-{id}`, `advance-10p-btn-{id}`, `advance-exact-input-{id}`, `advance-exact-btn-{id}`, `book-capture-btn-{id}`, `book-start-btn-{id}`
@@ -485,4 +486,4 @@ Location: `.agents/skills/pragya-companion/SKILL.md` + Python CLI `scripts/pragy
 - `notes-view`, `notes-search-input`, `notes-filter-all`, `notes-filter-to-spar`, `notes-filter-atomic`, `notes-filter-media`, `notes-filter-concepts`, `note-card-{slug}`, `spoiler-shield-{slug}`, `spoiler-reveal-btn-{slug}`
 - `note-detail-view`, `back-to-notes-btn`, `edit-note-btn`, `deepen-note-btn`, `socratic-recovery-banner`, `wikilink-chip-{slug}`, `backlinks-section`, `backlink-item-{slug}`, `attachment-image-{id}`
 - `practice-view`, `active-deltas-section`, `active-deltas-count`, `delta-card-{id}`, `delta-apply-btn-{id}`, `delta-missed-btn-{id}`, `delta-notrigger-btn-{id}`, `delta-trigger-edit-input-{id}`, `delta-trigger-save-btn-{id}`, `delta-graduate-btn-{id}`, `delta-pause-btn-{id}`, `delta-reactivate-btn-{id}`, `takeaway-shuffle-section`, `shuffle-card-{slug}`, `shuffle-review-btn-{slug}`, `unlocked-predictions-section`, `export-json-btn`, `import-json-input`
-- `settings-view`, `sync-now-btn`, `settings-client-id-input`, `settings-spreadsheet-id`, `reset-demo-btn`
+- `settings-view`, `sync-now-btn`, `settings-offline-badge`, `settings-client-id-input`, `settings-oauth-guide-toggle`, `settings-spreadsheet-id`, `restore-pre-import-backup-btn`, `reset-demo-btn`

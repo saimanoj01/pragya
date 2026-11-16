@@ -1,5 +1,5 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { AlertTriangle, Sparkles, X } from 'lucide-react';
+import React, { useEffect, useId, useMemo, useRef, useState } from 'react';
+import { AlertTriangle, RotateCcw, Sparkles, X } from 'lucide-react';
 import type { DeltaStatus, Note } from '../../types/pragya';
 import { usePragya } from '../../context/PragyaContext';
 import {
@@ -7,6 +7,14 @@ import {
   normalizeDeltaAction,
   normalizeDeltaTrigger,
 } from '../../utils/deltaFormat';
+import {
+  clearDraft,
+  getDeepenDraftKey,
+  isNoteDraftStale,
+  readDraft,
+  writeDraft,
+  type DeepenDraft,
+} from '../../utils/draftStorage';
 import { generateUniqueSlug } from '../../utils/wikilinks';
 import { showToast } from '../../utils/toast';
 import { Modal } from '../common/Modal';
@@ -26,6 +34,16 @@ export const DeepenNoteModal: React.FC<DeepenNoteModalProps> = ({
   onSaved,
 }) => {
   const { books, notes, updateNote } = usePragya();
+  const baseId = useId();
+  const headingId = `${baseId}-heading`;
+  const titleId = `${baseId}-title`;
+  const slugId = `${baseId}-slug`;
+  const takeawayId = `${baseId}-takeaway`;
+  const contextId = `${baseId}-context`;
+  const triggerId = `${baseId}-trigger`;
+  const actionId = `${baseId}-action`;
+  const deltaStatusId = `${baseId}-delta-status`;
+  const critiqueId = `${baseId}-critique`;
 
   const [title, setTitle] = useState('');
   const [slug, setSlug] = useState('');
@@ -36,6 +54,8 @@ export const DeepenNoteModal: React.FC<DeepenNoteModalProps> = ({
   const [deltaStatus, setDeltaStatus] = useState<DeltaStatus>('none');
   const [critique, setCritique] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [draftRestored, setDraftRestored] = useState(false);
+  const [baseUpdatedAt, setBaseUpdatedAt] = useState('');
 
   const [takeawayCursor, setTakeawayCursor] = useState<number | null>(null);
   const [contextCursor, setContextCursor] = useState<number | null>(null);
@@ -47,11 +67,81 @@ export const DeepenNoteModal: React.FC<DeepenNoteModalProps> = ({
 
   const wasOpenRef = useRef(false);
   const initializedIdRef = useRef<string | null>(null);
+  const submittedOrDiscardedRef = useRef(false);
+  const canonicalRef = useRef({
+    title: '',
+    slug: '',
+    takeaway: '',
+    contextMechanism: '',
+    deltaTrigger: '',
+    deltaAction: '',
+    deltaStatus: 'none' as DeltaStatus,
+    critique: '',
+  });
+
+  const isDirty = useMemo(() => {
+    const c = canonicalRef.current;
+    return (
+      title !== c.title ||
+      slug !== c.slug ||
+      takeaway !== c.takeaway ||
+      contextMechanism !== c.contextMechanism ||
+      deltaTrigger !== c.deltaTrigger ||
+      deltaAction !== c.deltaAction ||
+      deltaStatus !== c.deltaStatus ||
+      critique !== c.critique
+    );
+  }, [title, slug, takeaway, contextMechanism, deltaTrigger, deltaAction, deltaStatus, critique]);
+
+  const draftStateRef = useRef<{
+    key: string;
+    isDirty: boolean;
+    payload: DeepenDraft;
+  }>({
+    key: '',
+    isDirty: false,
+    payload: {
+      baseUpdatedAt: '',
+      title: '',
+      slug: '',
+      takeaway: '',
+      contextMechanism: '',
+      deltaTrigger: '',
+      deltaAction: '',
+      deltaStatus: 'none',
+      critique: '',
+      savedAt: '',
+    },
+  });
+  draftStateRef.current = {
+    key: note ? getDeepenDraftKey(note.id) : '',
+    isDirty,
+    payload: {
+      baseUpdatedAt: baseUpdatedAt || note?.updatedAt || '',
+      title,
+      slug,
+      takeaway,
+      contextMechanism,
+      deltaTrigger,
+      deltaAction,
+      deltaStatus,
+      critique,
+      savedAt: new Date().toISOString(),
+    },
+  };
 
   useEffect(() => {
     if (!isOpen || !note) {
+      if (wasOpenRef.current && draftStateRef.current.key && !submittedOrDiscardedRef.current) {
+        if (draftStateRef.current.isDirty) {
+          writeDraft(draftStateRef.current.key, draftStateRef.current.payload);
+        } else {
+          clearDraft(draftStateRef.current.key);
+        }
+      }
       wasOpenRef.current = false;
       initializedIdRef.current = null;
+      submittedOrDiscardedRef.current = false;
       return;
     }
     if (wasOpenRef.current && initializedIdRef.current === note.id) {
@@ -59,21 +149,126 @@ export const DeepenNoteModal: React.FC<DeepenNoteModalProps> = ({
     }
     wasOpenRef.current = true;
     initializedIdRef.current = note.id;
+    submittedOrDiscardedRef.current = false;
 
     const formattedDelta = formatWhenDoDisplay(note.deltaTrigger, note.deltaAction);
-    setTitle(note.meta?.title || '');
-    setSlug(note.slug);
-    setTakeaway(note.takeaway || '');
-    setContextMechanism(note.contextMechanism || '');
-    setDeltaTrigger(formattedDelta.triggerBody);
-    setDeltaAction(formattedDelta.actionBody);
-    setDeltaStatus(note.deltaStatus || 'none');
-    setCritique(note.critique || '');
+    const canonical = {
+      title: note.meta?.title || '',
+      slug: note.slug,
+      takeaway: note.takeaway || '',
+      contextMechanism: note.contextMechanism || '',
+      deltaTrigger: formattedDelta.triggerBody,
+      deltaAction: formattedDelta.actionBody,
+      deltaStatus: (note.deltaStatus || 'none') as DeltaStatus,
+      critique: note.critique || '',
+    };
+    canonicalRef.current = canonical;
+    setBaseUpdatedAt(note.updatedAt);
+
+    const draftKey = getDeepenDraftKey(note.id);
+    const savedDraft = readDraft<DeepenDraft>(draftKey);
+    if (savedDraft && isNoteDraftStale(savedDraft.baseUpdatedAt, note.updatedAt)) {
+      clearDraft(draftKey);
+    }
+
+    const validDraft =
+      savedDraft && !isNoteDraftStale(savedDraft.baseUpdatedAt, note.updatedAt) ? savedDraft : null;
+    const draftHasEdits =
+      validDraft &&
+      (validDraft.title !== canonical.title ||
+        validDraft.slug !== canonical.slug ||
+        validDraft.takeaway !== canonical.takeaway ||
+        validDraft.contextMechanism !== canonical.contextMechanism ||
+        validDraft.deltaTrigger !== canonical.deltaTrigger ||
+        validDraft.deltaAction !== canonical.deltaAction ||
+        validDraft.deltaStatus !== canonical.deltaStatus ||
+        validDraft.critique !== canonical.critique);
+
+    if (validDraft && draftHasEdits) {
+      setTitle(validDraft.title);
+      setSlug(validDraft.slug);
+      setTakeaway(validDraft.takeaway);
+      setContextMechanism(validDraft.contextMechanism);
+      setDeltaTrigger(validDraft.deltaTrigger);
+      setDeltaAction(validDraft.deltaAction);
+      setDeltaStatus(validDraft.deltaStatus || 'none');
+      setCritique(validDraft.critique);
+      setDraftRestored(true);
+    } else {
+      setTitle(canonical.title);
+      setSlug(canonical.slug);
+      setTakeaway(canonical.takeaway);
+      setContextMechanism(canonical.contextMechanism);
+      setDeltaTrigger(canonical.deltaTrigger);
+      setDeltaAction(canonical.deltaAction);
+      setDeltaStatus(canonical.deltaStatus);
+      setCritique(canonical.critique);
+      setDraftRestored(false);
+    }
+
     setTakeawayCursor(null);
     setContextCursor(null);
     setCritiqueCursor(null);
     setSubmitting(false);
   }, [isOpen, note]);
+
+  // Debounced (250ms) draft autosave
+  useEffect(() => {
+    if (!isOpen || !note || !wasOpenRef.current) return;
+    if (isDirty) {
+      submittedOrDiscardedRef.current = false;
+    }
+    const key = getDeepenDraftKey(note.id);
+    const timer = window.setTimeout(() => {
+      if (draftStateRef.current.isDirty) {
+        writeDraft(key, draftStateRef.current.payload);
+      } else {
+        clearDraft(key);
+      }
+    }, 250);
+    return () => window.clearTimeout(timer);
+  }, [
+    isOpen,
+    note,
+    isDirty,
+    title,
+    slug,
+    takeaway,
+    contextMechanism,
+    deltaTrigger,
+    deltaAction,
+    deltaStatus,
+    critique,
+  ]);
+
+  useEffect(() => {
+    if (!isOpen || !isDirty) return;
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (draftStateRef.current.key && draftStateRef.current.isDirty) {
+        writeDraft(draftStateRef.current.key, draftStateRef.current.payload);
+      }
+      e.preventDefault();
+      e.returnValue = '';
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [isOpen, isDirty]);
+
+  const handleDiscardDraft = () => {
+    if (!note) return;
+    submittedOrDiscardedRef.current = true;
+    clearDraft(getDeepenDraftKey(note.id));
+    const c = canonicalRef.current;
+    setTitle(c.title);
+    setSlug(c.slug);
+    setTakeaway(c.takeaway);
+    setContextMechanism(c.contextMechanism);
+    setDeltaTrigger(c.deltaTrigger);
+    setDeltaAction(c.deltaAction);
+    setDeltaStatus(c.deltaStatus);
+    setCritique(c.critique);
+    setDraftRestored(false);
+  };
 
   const book = useMemo(
     () => (note ? books.find(b => b.id === note.bookId) || null : null),
@@ -115,22 +310,28 @@ export const DeepenNoteModal: React.FC<DeepenNoteModalProps> = ({
         note.slug
       );
 
-      const saved = await updateNote({
-        ...note,
-        slug: nextSlug,
-        status: 'atomic',
-        takeaway: takeaway.trim(),
-        contextMechanism: contextMechanism.trim(),
-        critique: critique.trim(),
-        deltaTrigger: normalizedTrigger,
-        deltaAction: normalizedAction,
-        deltaStatus,
-        meta: {
-          ...note.meta,
-          ...(title.trim() ? { title: title.trim() } : { title: undefined }),
+      const saved = await updateNote(
+        {
+          ...note,
+          slug: nextSlug,
+          status: 'atomic',
+          takeaway: takeaway.trim(),
+          contextMechanism: contextMechanism.trim(),
+          critique: critique.trim(),
+          deltaTrigger: normalizedTrigger,
+          deltaAction: normalizedAction,
+          deltaStatus,
+          meta: {
+            ...note.meta,
+            ...(title.trim() ? { title: title.trim() } : { title: undefined }),
+          },
         },
-      });
+        { expectedBaseUpdatedAt: baseUpdatedAt || note.updatedAt }
+      );
 
+      submittedOrDiscardedRef.current = true;
+      clearDraft(getDeepenDraftKey(note.id));
+      setDraftRestored(false);
       showToast('Note deepened to Atomic', 'success');
       onSaved?.(saved);
       onClose();
@@ -151,11 +352,14 @@ export const DeepenNoteModal: React.FC<DeepenNoteModalProps> = ({
       onClose={onClose}
       dataTestId="deepen-note-modal"
       title="Deepen to Atomic Note"
+      headingId={headingId}
       maxWidth="max-w-2xl"
     >
       <div className="flex items-center justify-between gap-3 mb-4">
         <div className="min-w-0">
-          <h2 className="text-title text-foreground">Deepen to Atomic Note</h2>
+          <h2 id={headingId} className="text-title text-foreground">
+            Deepen to Atomic Note
+          </h2>
           {book && (
             <p className="text-label text-muted-foreground truncate">
               {book.title} · {book.kind === 'fiction' ? 'Fiction Lens' : 'Non-Fiction Lens'}
@@ -171,6 +375,24 @@ export const DeepenNoteModal: React.FC<DeepenNoteModalProps> = ({
           <X className="w-4 h-4" />
         </button>
       </div>
+
+      {draftRestored && (
+        <div
+          data-testid="draft-restored-banner"
+          className="mb-4 px-3 py-2 rounded-[10px] bg-surface2 border border-border flex items-center justify-between gap-2 text-label"
+        >
+          <span className="text-foreground">Draft restored from earlier session</span>
+          <button
+            type="button"
+            data-testid="draft-discard-btn"
+            onClick={handleDiscardDraft}
+            className="inline-flex items-center gap-1 font-semibold text-muted-foreground hover:text-foreground"
+          >
+            <RotateCcw className="w-3 h-3" />
+            <span>Discard</span>
+          </button>
+        </div>
+      )}
 
       {note.status === 'in-reflection' && socraticQuestions && socraticQuestions.length > 0 && (
         <div className="mb-4 rounded-[12px] bg-surface2 border border-border p-4 space-y-2">
@@ -189,10 +411,14 @@ export const DeepenNoteModal: React.FC<DeepenNoteModalProps> = ({
       <form onSubmit={e => void handleSubmit(e)} className="space-y-4">
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <div className="space-y-1.5">
-            <label className="block text-eyebrow uppercase text-muted-foreground">
+            <label
+              htmlFor={titleId}
+              className="block text-eyebrow uppercase text-muted-foreground"
+            >
               Concept Title
             </label>
             <input
+              id={titleId}
               type="text"
               data-testid="deepen-title-input"
               value={title}
@@ -203,10 +429,11 @@ export const DeepenNoteModal: React.FC<DeepenNoteModalProps> = ({
           </div>
 
           <div className="space-y-1.5">
-            <label className="block text-eyebrow uppercase text-muted-foreground">
+            <label htmlFor={slugId} className="block text-eyebrow uppercase text-muted-foreground">
               Wikilink Slug
             </label>
             <input
+              id={slugId}
               type="text"
               data-testid="deepen-slug-input"
               value={slug}
@@ -218,10 +445,14 @@ export const DeepenNoteModal: React.FC<DeepenNoteModalProps> = ({
         </div>
 
         <div className="space-y-1.5 relative">
-          <label className="block text-eyebrow uppercase text-muted-foreground">
+          <label
+            htmlFor={takeawayId}
+            className="block text-eyebrow uppercase text-muted-foreground"
+          >
             Core Takeaway / Own Words (supports [[wikilinks]])
           </label>
           <textarea
+            id={takeawayId}
             ref={takeawayRef}
             rows={3}
             data-testid="deepen-takeaway-input"
@@ -251,10 +482,14 @@ export const DeepenNoteModal: React.FC<DeepenNoteModalProps> = ({
         </div>
 
         <div className="space-y-1.5 relative">
-          <label className="block text-eyebrow uppercase text-muted-foreground">
+          <label
+            htmlFor={contextId}
+            className="block text-eyebrow uppercase text-muted-foreground"
+          >
             Context &amp; Mechanism (supports [[wikilinks]])
           </label>
           <textarea
+            id={contextId}
             ref={contextRef}
             rows={3}
             data-testid="deepen-context-input"
@@ -300,10 +535,14 @@ export const DeepenNoteModal: React.FC<DeepenNoteModalProps> = ({
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div className="space-y-1">
-              <label className="block text-[11px] font-semibold uppercase text-muted-foreground">
+              <label
+                htmlFor={triggerId}
+                className="block text-[11px] font-semibold uppercase text-muted-foreground"
+              >
                 WHEN (Trigger Condition)
               </label>
               <input
+                id={triggerId}
                 type="text"
                 data-testid="deepen-trigger-input"
                 value={deltaTrigger}
@@ -314,10 +553,14 @@ export const DeepenNoteModal: React.FC<DeepenNoteModalProps> = ({
             </div>
 
             <div className="space-y-1">
-              <label className="block text-[11px] font-semibold uppercase text-muted-foreground">
+              <label
+                htmlFor={actionId}
+                className="block text-[11px] font-semibold uppercase text-muted-foreground"
+              >
                 DO (Concrete Action)
               </label>
               <input
+                id={actionId}
                 type="text"
                 data-testid="deepen-action-input"
                 value={deltaAction}
@@ -330,10 +573,14 @@ export const DeepenNoteModal: React.FC<DeepenNoteModalProps> = ({
 
           <div className="flex flex-col sm:flex-row sm:items-center gap-3">
             <div className="sm:w-56 space-y-1">
-              <label className="block text-[11px] font-semibold uppercase text-muted-foreground">
+              <label
+                htmlFor={deltaStatusId}
+                className="block text-[11px] font-semibold uppercase text-muted-foreground"
+              >
                 Delta Status
               </label>
               <select
+                id={deltaStatusId}
                 data-testid="deepen-delta-status-select"
                 value={deltaStatus}
                 onChange={e => setDeltaStatus(e.target.value as DeltaStatus)}
@@ -348,7 +595,8 @@ export const DeepenNoteModal: React.FC<DeepenNoteModalProps> = ({
 
             {capReached && deltaStatus !== 'active' && (
               <p className="text-label text-muted-foreground sm:pt-5">
-                5/5 active delta slots are full; graduate or pause an active delta in Practice before activating another.
+                5/5 active delta slots are full; graduate or pause an active delta in Practice
+                before activating another.
               </p>
             )}
           </div>
@@ -360,17 +608,22 @@ export const DeepenNoteModal: React.FC<DeepenNoteModalProps> = ({
             >
               <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
               <span>
-                Active Behavioral Delta cap (5/5) reached. Select Paused/None or graduate an active delta in Practice first.
+                Active Behavioral Delta cap (5/5) reached. Select Paused/None or graduate an active
+                delta in Practice first.
               </span>
             </div>
           )}
         </div>
 
         <div className="space-y-1.5 relative">
-          <label className="block text-eyebrow uppercase text-muted-foreground">
+          <label
+            htmlFor={critiqueId}
+            className="block text-eyebrow uppercase text-muted-foreground"
+          >
             Socratic Critique &amp; Boundary Conditions (supports [[wikilinks]])
           </label>
           <textarea
+            id={critiqueId}
             ref={critiqueRef}
             rows={2}
             data-testid="deepen-critique-input"

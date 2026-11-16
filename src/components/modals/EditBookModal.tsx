@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useId, useState } from 'react';
 import { X } from 'lucide-react';
 import type { Book, BookFormat, BookKind, BookStatus, PosUnit } from '../../types/pragya';
 import { usePragya } from '../../context/PragyaContext';
@@ -12,6 +12,8 @@ export interface EditBookModalProps {
 
 export const EditBookModal: React.FC<EditBookModalProps> = ({ book, onClose }) => {
   const { updateBook } = usePragya();
+  const uid = useId();
+  const fid = (name: string) => `${uid}-${name}`;
 
   const [title, setTitle] = useState('');
   const [author, setAuthor] = useState('');
@@ -79,9 +81,17 @@ export const EditBookModal: React.FC<EditBookModalProps> = ({ book, onClose }) =
   };
 
   return (
-    <Modal isOpen={Boolean(book)} onClose={onClose} dataTestId="edit-book-modal" title="Edit Book">
+    <Modal
+      isOpen={Boolean(book)}
+      onClose={onClose}
+      dataTestId="edit-book-modal"
+      title="Edit Book"
+      headingId={fid('heading')}
+    >
       <div className="flex items-center justify-between mb-4">
-        <h2 className="text-title text-foreground">Edit Book</h2>
+        <h2 id={fid('heading')} className="text-title text-foreground">
+          Edit Book
+        </h2>
         <button
           type="button"
           onClick={onClose}
@@ -94,8 +104,9 @@ export const EditBookModal: React.FC<EditBookModalProps> = ({ book, onClose }) =
 
       <form onSubmit={handleSubmit} className="space-y-4">
         <div className="space-y-1.5">
-          <label className="block text-eyebrow uppercase text-muted-foreground">Title *</label>
+          <label htmlFor={fid('title')} className="block text-eyebrow uppercase text-muted-foreground">Title *</label>
           <input
+            id={fid('title')}
             type="text"
             data-testid="edit-book-title-input"
             value={title}
@@ -106,8 +117,9 @@ export const EditBookModal: React.FC<EditBookModalProps> = ({ book, onClose }) =
         </div>
 
         <div className="space-y-1.5">
-          <label className="block text-eyebrow uppercase text-muted-foreground">Author</label>
+          <label htmlFor={fid('author')} className="block text-eyebrow uppercase text-muted-foreground">Author</label>
           <input
+            id={fid('author')}
             type="text"
             data-testid="edit-book-author-input"
             value={author}
@@ -116,10 +128,11 @@ export const EditBookModal: React.FC<EditBookModalProps> = ({ book, onClose }) =
           />
         </div>
 
-        <div className="grid grid-cols-3 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
           <div className="space-y-1.5">
-            <label className="block text-eyebrow uppercase text-muted-foreground">Format</label>
+            <label htmlFor={fid('format')} className="block text-eyebrow uppercase text-muted-foreground">Format</label>
             <select
+              id={fid('format')}
               value={format}
               onChange={e => setFormat(e.target.value as BookFormat)}
               className="w-full h-10 px-2.5 rounded-[10px] bg-background border border-input text-body text-foreground focus:outline-none focus:ring-2 focus:ring-ring/40"
@@ -130,8 +143,9 @@ export const EditBookModal: React.FC<EditBookModalProps> = ({ book, onClose }) =
           </div>
 
           <div className="space-y-1.5">
-            <label className="block text-eyebrow uppercase text-muted-foreground">Kind</label>
+            <label htmlFor={fid('kind')} className="block text-eyebrow uppercase text-muted-foreground">Kind</label>
             <select
+              id={fid('kind')}
               value={kind}
               onChange={e => setKind(e.target.value as BookKind)}
               className="w-full h-10 px-2.5 rounded-[10px] bg-background border border-input text-body text-foreground focus:outline-none focus:ring-2 focus:ring-ring/40"
@@ -142,8 +156,9 @@ export const EditBookModal: React.FC<EditBookModalProps> = ({ book, onClose }) =
           </div>
 
           <div className="space-y-1.5">
-            <label className="block text-eyebrow uppercase text-muted-foreground">Status</label>
+            <label htmlFor={fid('status')} className="block text-eyebrow uppercase text-muted-foreground">Status</label>
             <select
+              id={fid('status')}
               value={status}
               onChange={e => setStatus(e.target.value as BookStatus)}
               className="w-full h-10 px-2.5 rounded-[10px] bg-background border border-input text-body text-foreground focus:outline-none focus:ring-2 focus:ring-ring/40"
@@ -156,10 +171,11 @@ export const EditBookModal: React.FC<EditBookModalProps> = ({ book, onClose }) =
           </div>
         </div>
 
-        <div className="grid grid-cols-3 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
           <div className="space-y-1.5">
-            <label className="block text-eyebrow uppercase text-muted-foreground">Current Pos</label>
+            <label htmlFor={fid('pos')} className="block text-eyebrow uppercase text-muted-foreground">Current Pos</label>
             <input
+              id={fid('pos')}
               type="number"
               min="0"
               value={currentPos}
@@ -169,8 +185,9 @@ export const EditBookModal: React.FC<EditBookModalProps> = ({ book, onClose }) =
           </div>
 
           <div className="space-y-1.5">
-            <label className="block text-eyebrow uppercase text-muted-foreground">Total Pos</label>
+            <label htmlFor={fid('total')} className="block text-eyebrow uppercase text-muted-foreground">Total Pos</label>
             <input
+              id={fid('total')}
               type="number"
               min="0"
               value={totalPos}
@@ -180,8 +197,9 @@ export const EditBookModal: React.FC<EditBookModalProps> = ({ book, onClose }) =
           </div>
 
           <div className="space-y-1.5">
-            <label className="block text-eyebrow uppercase text-muted-foreground">Unit</label>
+            <label htmlFor={fid('unit')} className="block text-eyebrow uppercase text-muted-foreground">Unit</label>
             <select
+              id={fid('unit')}
               value={posUnit}
               onChange={e => setPosUnit(e.target.value as PosUnit)}
               className="w-full h-10 px-2.5 rounded-[10px] bg-background border border-input text-body text-foreground focus:outline-none focus:ring-2 focus:ring-ring/40"
@@ -194,10 +212,11 @@ export const EditBookModal: React.FC<EditBookModalProps> = ({ book, onClose }) =
         </div>
 
         <div className="space-y-1.5">
-          <label className="block text-eyebrow uppercase text-muted-foreground">
+          <label htmlFor={fid('docurl')} className="block text-eyebrow uppercase text-muted-foreground">
             Companion Google Doc URL
           </label>
           <input
+            id={fid('docurl')}
             type="url"
             value={docUrl}
             onChange={e => setDocUrl(e.target.value)}

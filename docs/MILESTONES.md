@@ -157,3 +157,34 @@ All milestones enforce the contracts in [`SPEC.md`](./SPEC.md), zero AI/voice co
 - Clean working tree, all M1–M3 checks green, final commit pushed to `origin/main` (or current branch per orchestrator instructions).
 - **M3 Checkpoint & Final Ship Status: PASSED** — `reviewer` (`APPROVE`, including verification of all 4 security/port/AST blockers and 6 hardening nits across `scripts/pragya_cli.py`, `README.md`, `.agents/skills/pragya-companion/`, `.github/workflows/deploy.yml`, `tests/unit/test_pragya_cli.py`, and `tests/specs/tier4_companion_and_regression.spec.ts`), `qa` (`PASS` across all M1–M3 gates: `python3 -m unittest discover -s tests/unit -v` `7/7` passed; `npm run build` & `VITE_BASE_PATH='/pragya/' npm run build` exit `0`; `npm run lint` `0` errors / `0` warnings; `npm run test:unit` `14/14` passed; `npm run test:e2e` `14/14` passed across Tiers 1–4 Desktop & Mobile `390×844` Dark/Light; `~/.gemini/skills/pragya-companion/SKILL.md` installed; `0` legacy brand leaks; live Light/Dark/Mobile/CLI-synced screenshots visually verified).
 
+---
+
+## Milestone 4 (P0): Production Readiness, Accessibility, Offline Resilience & Data Integrity
+
+### Scope & Deliverables
+1. **WCAG AA Contrast & Accessibility (`src/index.css`, `Modal.tsx`, `QuickCaptureModal.tsx`, `AddBookModal.tsx`, `EditBookModal.tsx`, `DeepenNoteModal.tsx`, `EditNoteModal.tsx`, `ImportConfirmModal.tsx`, `SessionExpiredModal.tsx`, `ShelfView.tsx`):**
+   - Raise `--faint` and `.light` semantic status colors (`--c-nonmonthly`, `--c-saved`, `--destructive`/`--c-negative`) to WCAG AA contrast (`>= 4.5:1`).
+   - Bind modal `aria-labelledby={headingId}` and `useId()` `htmlFor`/`id` pairs across all modal forms plus accessible group/dot labels on 30-day activity dots.
+2. **OAuth UX, Return-Route Preservation & Guided Setup (`src/context/AuthContext.tsx`, `src/utils/navigation.ts`, `src/components/common/OAuthSetupGuide.tsx`, `src/components/views/LoginView.tsx`, `src/components/views/SettingsView.tsx`):**
+   - Preserve in-app route across OAuth redirects (`pragya_oauth_return_route`).
+   - Suppress missing Client ID error toast; expand inline setup guide calmly with dynamic runtime Authorized JavaScript Origin & Redirect URI copy controls, GCP APIs, Test Users reminder, and plain-English `drive.readonly` rationale.
+3. **Cloud Offline Cached Read-Only Resilience (`src/utils/offline.ts`, `src/services/googleSheetsAdapter.ts`, `src/context/PragyaContext.tsx`, `App.tsx`, `Sidebar.tsx`, `BottomNav.tsx`, `SettingsView.tsx`):**
+   - Serve `pragya_sheets_cache_v1` in Cloud Mode when offline with `Offline · Cached Read-Only` indicators (`offline-readonly-badge`, `sidebar-offline-badge`, `drawer-offline-badge`, `settings-offline-badge`) and write guards blocking stale Cloud mutations while keeping Demo Mode 100% writable offline.
+4. **Installable PWA App Shell (`public/manifest.webmanifest`, `public/sw.js`, `public/icon-192.png`, `public/icon-512.png`, `public/apple-touch-icon.png`, `index.html`, `src/main.tsx`):**
+   - Register production-only `sw.js` under `import.meta.env.BASE_URL` with strict bypass of cross-origin Google APIs, `drive-media`, and `pragya-media-v1`.
+5. **Silent Debounced Modal Draft Autosave (`src/utils/draftStorage.ts`, `QuickCaptureModal.tsx`, `DeepenNoteModal.tsx`, `EditNoteModal.tsx`):**
+   - `250ms` debounced local draft autosave + synchronous dirty-close flush, preserving instant `Escape`, stale-draft auto-invalidation on remote updates, `Draft restored · Discard` banner, and dirty-only `beforeunload` warning.
+6. **Write-Before-Clear Snapshot Import & Pre-Import Backup (`src/utils/importSafety.ts`, `GoogleSheetsAdapter.replaceWorkspace`, `PragyaContext.replaceWorkspaceFromSnapshot`, `ImportConfirmModal.tsx`, `SettingsView.tsx`):**
+   - Snapshot pre-import `pragya_pre_import_backup_v1` with 1-click restore in Settings + optional download in `ImportConfirmModal`, plus atomic `values:batchUpdate` before trailing `values:batchClear`.
+7. **Data Fidelity & Parity (`PragyaContext.tsx`, `GoogleSheetsAdapter.ts`, `scripts/pragya_cli.py`, `src/utils/positionClamp.ts`):**
+   - `preserveUpdatedAt` on `Mark Reviewed` in both PWA & CLI (`recall --mode shuffle --mark-reviewed`).
+   - Pre-write row-level `updatedAt` conflict guard (`RowConflictError` / CLI `CliError` + `--force`).
+   - Consistent position clamping (`clampNotePos` / `clamp_note_pos`) and `UNFORMATTED_VALUE` Sheet reads across PWA & CLI.
+8. **CI/CD Quality Gates (`.github/workflows/deploy.yml`):**
+   - Node 24, Python 3.12, `npm run lint`, `npm run test:unit`, and `python3 -m unittest discover -s tests/unit -v` before `npm run build`.
+
+### Acceptance Criteria (Done)
+- [x] `npm run lint`, `npm run build`, `VITE_BASE_PATH='/pragya/' npm run build`, JS unit tests, Python `unittest`, and Playwright E2E tiers pass 100% with 0 warnings and 0 legacy brand leaks.
+- [x] WCAG AA contrast verified across dark & light modes; zero unlabeled modal controls or missing `aria-labelledby` dialogs.
+- [x] Production PWA manifest/icons/SW verified under `vite preview` (`/pragya/`), and Google APIs remain unintercepted.
+- [x] Offline Cloud Read-Only fallback, Write-Before-Clear import + rollback, draft autosave + stale discard, `preserveUpdatedAt`, and row conflict guards covered by automated unit & E2E suites.

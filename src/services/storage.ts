@@ -50,10 +50,18 @@ export interface StorageLoadOptions {
   forceRefresh?: boolean;
 }
 
+export interface SaveOptions {
+  /**
+   * `updatedAt` of the row as loaded on this device. Cloud adapters abort the
+   * overwrite when the remote row is strictly newer (M4.9 conflict guard).
+   */
+  expectedBaseUpdatedAt?: string;
+}
+
 export interface StorageAdapter {
   loadWorkspace(options?: StorageLoadOptions): Promise<WorkspaceState>;
-  saveBook(book: Book): Promise<Book>;
-  saveNote(note: Note): Promise<Note>;
+  saveBook(book: Book, options?: SaveOptions): Promise<Book>;
+  saveNote(note: Note, options?: SaveOptions): Promise<Note>;
   saveSession(session: ReadingSession): Promise<ReadingSession>;
   saveDeltaLog(log: DeltaLog): Promise<DeltaLog>;
   replaceWorkspace(snapshot: PragyaSnapshot): Promise<WorkspaceState>;

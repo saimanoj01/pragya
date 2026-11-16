@@ -205,13 +205,17 @@ export const PracticeView: React.FC = () => {
 
   const handleMarkReviewed = async (note: Note) => {
     try {
-      await updateNote({
-        ...note,
-        meta: {
-          ...note.meta,
-          lastReviewedAt: todayDate,
+      await updateNote(
+        {
+          ...note,
+          meta: {
+            ...note.meta,
+            lastReviewedAt: todayDate,
+          },
         },
-      });
+        // Reviewing is not editing: keep Notes!E updatedAt untouched.
+        { preserveUpdatedAt: true }
+      );
       showToast('Marked reviewed for today', 'success');
     } catch (err) {
       showToast(err instanceof Error ? err.message : 'Failed to mark reviewed', 'error');
@@ -370,6 +374,7 @@ export const PracticeView: React.FC = () => {
                       <div className="flex flex-col sm:flex-row gap-2">
                         <input
                           type="text"
+                          aria-label="Refine WHEN trigger condition"
                           data-testid={`delta-trigger-edit-input-${note.id}`}
                           value={triggerDraft}
                           onChange={e => setTriggerDraft(e.target.value)}

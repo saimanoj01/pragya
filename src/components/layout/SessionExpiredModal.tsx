@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useId } from 'react';
 import { ShieldAlert } from 'lucide-react';
 import { Modal } from '../common/Modal';
 
@@ -15,12 +15,15 @@ export const SessionExpiredModal: React.FC<SessionExpiredModalProps> = ({
   onContinueDemo,
   onClose,
 }) => {
+  const headingId = useId();
+
   return (
     <Modal
       isOpen={isOpen}
       onClose={onClose}
       dataTestId="session-expired-modal"
       title="Google Session Expired"
+      headingId={headingId}
       maxWidth="max-w-sm"
       overlayClassName="z-[70]"
     >
@@ -29,9 +32,12 @@ export const SessionExpiredModal: React.FC<SessionExpiredModalProps> = ({
           <ShieldAlert className="w-5 h-5" />
         </div>
         <div>
-          <h3 className="text-heading text-foreground">Session Expired</h3>
+          <h3 id={headingId} className="text-heading text-foreground">
+            Session Expired
+          </h3>
           <p className="text-body text-muted-foreground mt-1">
-            Your Google OAuth token expired or was revoked. Reconnect to sync your sheet, or switch to offline Demo Mode.
+            Your Google OAuth token expired or was revoked. Reconnect to sync your sheet, or switch
+            to offline Demo Mode.
           </p>
         </div>
 

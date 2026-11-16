@@ -123,4 +123,6 @@ export interface WorkspaceState {
   spreadsheetId?: string;
   modifiedTime?: string;
   mediaFolderId?: string;
+  /** True when served from pragya_sheets_cache_v1 because the network is unavailable. */
+  isOfflineReadOnly?: boolean;
 }

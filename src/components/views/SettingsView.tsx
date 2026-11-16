@@ -1,38 +1,39 @@
-import React, { useRef, useState } from 'react';
+import React, { useId, useRef, useState } from 'react';
 import {
+  ChevronDown,
+  ChevronUp,
   Cloud,
   Download,
   ExternalLink,
   FolderOpen,
+  History,
   LogOut,
   Moon,
   RefreshCw,
   RotateCcw,
   Sun,
   Upload,
+  WifiOff,
 } from 'lucide-react';
 import type { PragyaSnapshot } from '../../types/pragya';
 import { useAuth } from '../../context/AuthContext';
 import { usePragya } from '../../context/PragyaContext';
 import { useTheme } from '../../context/ThemeContext';
+import { readPreImportBackup } from '../../utils/importSafety';
 import { buildSnapshot, validateSnapshotPayload } from '../../utils/snapshot';
 import { showToast } from '../../utils/toast';
+import { OAuthSetupGuide } from '../common/OAuthSetupGuide';
 import { ImportConfirmModal } from '../modals/ImportConfirmModal';
 
 export const SettingsView: React.FC = () => {
-  const {
-    user,
-    isMockMode,
-    googleClientId,
-    saveGoogleClientId,
-    logout,
-  } = useAuth();
+  const { user, isMockMode, googleClientId, saveGoogleClientId, logout } = useAuth();
   const {
     books,
     notes,
     sessions,
     deltaLogs,
     isSyncing,
+    isOfflineReadOnly,
     lastSyncedAt,
     spreadsheetId,
     mediaFolderId,
@@ -43,8 +44,13 @@ export const SettingsView: React.FC = () => {
   const { theme, toggleTheme } = useTheme();
 
   const [clientIdDraft, setClientIdDraft] = useState(googleClientId || '');
+  const [showSetupGuide, setShowSetupGuide] = useState(false);
   const [pendingSnapshot, setPendingSnapshot] = useState<PragyaSnapshot | null>(null);
+  const [restoringBackup, setRestoringBackup] = useState(false);
   const importInputRef = useRef<HTMLInputElement>(null);
+  const clientIdInputId = useId();
+
+  const preImportBackup = readPreImportBackup();
 
   const handleSaveClientId = (e: React.FormEvent) => {
     e.preventDefault();
@@ -83,6 +89,20 @@ export const SettingsView: React.FC = () => {
     }
   };
 
+  const handleRestorePreImportBackup = async () => {
+    const backup = readPreImportBackup();
+    if (!backup) return;
+    setRestoringBackup(true);
+    try {
+      await replaceWorkspaceFromSnapshot(backup.snapshot, { backup: false });
+      showToast('Restored workspace from pre-import backup', 'success');
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'Failed to restore backup', 'error');
+    } finally {
+      setRestoringBackup(false);
+    }
+  };
+
   return (
     <div data-testid="settings-view" className="py-6 space-y-6">
       <div>
@@ -97,12 +117,26 @@ export const SettingsView: React.FC = () => {
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-3 min-w-0">
             <div className="w-10 h-10 rounded-[10px] bg-surface2 border border-border flex items-center justify-center shrink-0">
-              <Cloud className="w-5 h-5 text-foreground" />
+              {!isMockMode && isOfflineReadOnly ? (
+                <WifiOff className="w-5 h-5 text-warning" />
+              ) : (
+                <Cloud className="w-5 h-5 text-foreground" />
+              )}
             </div>
             <div className="min-w-0">
-              <h2 className="text-heading text-foreground">
-                {isMockMode ? 'Demo Workspace (Offline)' : 'Google Workspace Connected'}
-              </h2>
+              <div className="flex flex-wrap items-center gap-2">
+                <h2 className="text-heading text-foreground">
+                  {isMockMode ? 'Demo Workspace (Offline)' : 'Google Workspace Connected'}
+                </h2>
+                {!isMockMode && isOfflineReadOnly && (
+                  <span
+                    data-testid="settings-offline-badge"
+                    className="px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide rounded-md bg-warning/15 border border-warning/30 text-warning"
+                  >
+                    Offline · Cached Read-Only
+                  </span>
+                )}
+              </div>
               <p className="text-label text-muted-foreground truncate">
                 {isMockMode
                   ? 'Stored locally in pragya_demo_state_v1 and IndexedDB.'
@@ -172,13 +206,16 @@ export const SettingsView: React.FC = () => {
       {/* Google OAuth Client ID */}
       <section className="bg-card border border-border rounded-[14px] p-5 space-y-3">
         <div>
-          <h2 className="text-heading text-foreground">Google OAuth Client ID</h2>
+          <label htmlFor={clientIdInputId} className="text-heading text-foreground block">
+            Google OAuth Client ID
+          </label>
           <p className="text-label text-muted-foreground mt-0.5">
             Optional runtime override persisted to localStorage (&lsquo;pragya_google_client_id&rsquo;).
           </p>
         </div>
         <form onSubmit={handleSaveClientId} className="flex flex-col sm:flex-row gap-2">
           <input
+            id={clientIdInputId}
             type="text"
             data-testid="settings-client-id-input"
             value={clientIdDraft}
@@ -193,11 +230,33 @@ export const SettingsView: React.FC = () => {
             Save Client ID
           </button>
         </form>
+
+        <div className="pt-1">
+          <button
+            type="button"
+            data-testid="settings-oauth-guide-toggle"
+            onClick={() => setShowSetupGuide(prev => !prev)}
+            aria-expanded={showSetupGuide}
+            className="inline-flex items-center gap-1.5 text-label font-medium text-muted-foreground hover:text-foreground transition-colors"
+          >
+            <span>Google OAuth Setup Guide &amp; Scope Details</span>
+            {showSetupGuide ? (
+              <ChevronUp className="w-3.5 h-3.5" />
+            ) : (
+              <ChevronDown className="w-3.5 h-3.5" />
+            )}
+          </button>
+          {showSetupGuide && (
+            <div className="mt-2.5">
+              <OAuthSetupGuide />
+            </div>
+          )}
+        </div>
       </section>
 
       {/* Preferences & Portability */}
       <section className="bg-card border border-border rounded-[14px] p-5 space-y-4">
-        <h2 className="text-heading text-foreground">Appearance & Portability</h2>
+        <h2 className="text-heading text-foreground">Appearance &amp; Portability</h2>
 
         <div className="flex flex-wrap items-center gap-3">
           <button
@@ -234,6 +293,22 @@ export const SettingsView: React.FC = () => {
             <span>Import JSON Snapshot</span>
           </button>
 
+          {preImportBackup && (
+            <button
+              type="button"
+              data-testid="restore-pre-import-backup-btn"
+              disabled={restoringBackup}
+              onClick={() => void handleRestorePreImportBackup()}
+              className="h-10 px-4 rounded-[10px] bg-surface2 hover:bg-secondary border border-border text-body font-medium text-foreground inline-flex items-center gap-2 disabled:opacity-50"
+              title={`Saved ${new Date(preImportBackup.savedAt).toLocaleString()}`}
+            >
+              <History className="w-4 h-4" />
+              <span>
+                {restoringBackup ? 'Restoring…' : 'Restore Last Pre-Import Backup'}
+              </span>
+            </button>
+          )}
+
           {isMockMode && (
             <button
               type="button"
@@ -255,6 +330,14 @@ export const SettingsView: React.FC = () => {
             <span>Log out</span>
           </button>
         </div>
+
+        {preImportBackup && (
+          <div className="text-[11px] text-muted-foreground num">
+            Last pre-import backup saved: {new Date(preImportBackup.savedAt).toLocaleString()} (
+            {preImportBackup.snapshot.books.length} books, {preImportBackup.snapshot.notes.length}{' '}
+            notes)
+          </div>
+        )}
       </section>
 
       <ImportConfirmModal
