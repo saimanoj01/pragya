@@ -30,7 +30,7 @@ import sys
 import tempfile
 import urllib.parse
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 
@@ -367,9 +367,10 @@ def format_pos_display(pos: float, pos_unit: str) -> str:
 def clean_num(val: Any, fallback: float = 0.0) -> int | float:
     try:
         f = float(val)
-        if f != f:
-            return fallback
     except (TypeError, ValueError):
+        return fallback
+    if not math.isfinite(f):
+        # NaN/Infinity cells fall back like TS asNumber (int(inf) would raise).
         return fallback
     return int(f) if f == int(f) else f
 
@@ -383,9 +384,385 @@ def safe_json_parse(raw: Any, fallback: Any) -> Any:
     if not trimmed:
         return fallback
     try:
-        return json.loads(trimmed)
-    except json.JSONDecodeError:
+        # Reject NaN/Infinity like JS JSON.parse does (parity + never re-emit invalid JSON).
+        return json.loads(trimmed, parse_constant=_reject_json_constant)
+    except ValueError:
         return fallback
+
+
+def _reject_json_constant(token: str) -> Any:
+    raise ValueError(f"Non-standard JSON constant: {token}")
+
+
+def _strip_non_finite(value: Any) -> Any:
+    """Drops NaN/Infinity (dict values omitted, list items -> None) so output is strict JSON."""
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    if isinstance(value, dict):
+        return {
+            k: _strip_non_finite(v)
+            for k, v in value.items()
+            if not (isinstance(v, float) and not math.isfinite(v))
+        }
+    if isinstance(value, (list, tuple)):
+        return [_strip_non_finite(v) for v in value]
+    return value
+
+
+def json_dumps_strict(value: Any, **kwargs: Any) -> str:
+    """json.dumps that never emits NaN/Infinity (JS JSON.parse would reject the whole cell)."""
+    try:
+        return json.dumps(value, allow_nan=False, **kwargs)
+    except ValueError:
+        return json.dumps(_strip_non_finite(value), allow_nan=False, **kwargs)
+
+
+# ---------------------------------------------------------------------------
+# Defensive Drift Codecs (parity with src/utils/metaCodecs.ts)
+#
+# Unknown metaJson keys are always preserved. Known keys are re-validated and
+# dropped only when empty or invalid. Legacy aliases are canonicalized
+# (chapterNote -> currentChapter, q1/q2/q3 -> socraticQuestions). Never raises.
+# Idempotent.
+#
+# Agent-owned structures are stored verbatim and filtered only at render/creation
+# time (decisions.md, Batch 1 fix-up): `attachments` (all entries, any count; see
+# renderable_attachments), `capstone` (see get_book_capstone) and `sparStage`.
+# ---------------------------------------------------------------------------
+
+BOOK_META_STRING_KEYS = ("coverUrl", "startedAt", "finishedAt", "currentChapter")
+NOTE_META_STRING_KEYS = ("title", "exportedAt", "lastReviewedAt", "chapter")
+NOTE_META_BOOLEAN_KEYS = ("isPrediction", "ocrBackfilled")
+LEGACY_QUESTION_KEYS = ("q1", "q2", "q3")
+MAX_SOCRATIC_QUESTIONS = 3
+MAX_ATTACHMENTS = 3
+
+BOOK_FORMAT_ALIASES = {"kindle": "kindle", "ebook": "kindle"}
+NOTE_SOURCE_AGENT_ALIASES = ("agent", "companion", "assistant", "cli", "skill")
+
+SHEET_SERIAL_MAX = 2_958_466  # exclusive upper bound (10000-01-01)
+SHEET_SERIAL_UNIX_EPOCH = 25569  # 1970-01-01 as days since 1899-12-30
+SHEET_SERIAL_STRING_RE = re.compile(r"^[0-9]{5}(\.[0-9]+)?$")  # ASCII only (JS \d parity)
+_UNIX_EPOCH_UTC = datetime(1970, 1, 1, tzinfo=timezone.utc)
+
+
+def _js_number_str(value: float) -> str:
+    """String(n) parity for finite numbers (integral floats render without '.0')."""
+    if isinstance(value, float) and value.is_integer() and abs(value) < 1e21:
+        return str(int(value))
+    return str(value)
+
+
+def _coerce_meta_string(value: Any) -> str | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, str):
+        return value if value.strip() else None
+    if isinstance(value, (int, float)):
+        if isinstance(value, float) and not math.isfinite(value):
+            return None
+        return _js_number_str(value)
+    return None
+
+
+def _coerce_meta_bool(value: Any) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        if isinstance(value, float) and not math.isfinite(value):
+            return None
+        return value != 0
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in ("true", "1", "yes"):
+            return True
+        if lowered in ("false", "0", "no"):
+            return False
+    return None
+
+
+def _apply_meta_string(out: dict[str, Any], key: str) -> None:
+    if key not in out:
+        return
+    coerced = _coerce_meta_string(out[key])
+    if coerced is None:
+        del out[key]
+    else:
+        out[key] = coerced
+
+
+def _to_question_list(value: Any) -> list[str]:
+    if isinstance(value, list):
+        items = value
+    elif isinstance(value, str):
+        items = [value]
+    else:
+        items = []
+    out: list[str] = []
+    for item in items:
+        if not isinstance(item, str):
+            continue
+        trimmed = item.strip()
+        if trimmed:
+            out.append(trimmed)
+        if len(out) >= MAX_SOCRATIC_QUESTIONS:
+            break
+    return out
+
+
+def get_book_capstone(meta: Any) -> dict[str, Any] | None:
+    """Typed, render-safe view of meta.capstone (the stored object is never rewritten).
+
+    Parity with getBookCapstone in src/utils/metaCodecs.ts.
+    """
+    value = meta.get("capstone") if isinstance(meta, dict) else None
+    if not isinstance(value, dict):
+        return None
+    raw_learnings = value.get("keyLearnings")
+    if isinstance(raw_learnings, list):
+        learnings_list = raw_learnings
+    elif raw_learnings is None:
+        learnings_list = []
+    else:
+        learnings_list = [raw_learnings]
+    learnings: list[str] = []
+    for item in learnings_list:
+        if isinstance(item, str):
+            text = item.strip()
+        elif isinstance(item, (int, float)) and not isinstance(item, bool):
+            text = _coerce_meta_string(item) or ""
+        else:
+            text = ""
+        if text:
+            learnings.append(text)
+    return {
+        "arcOrThesis": _coerce_meta_string(value.get("arcOrThesis")) or "",
+        "keyLearnings": learnings,
+        "perspectiveShift": _coerce_meta_string(value.get("perspectiveShift")) or "",
+        "completedAt": _coerce_meta_string(value.get("completedAt")) or "",
+    }
+
+
+def _parse_meta_input(raw: Any) -> dict[str, Any]:
+    parsed = safe_json_parse(raw, {})
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def normalize_book_meta(raw: Any) -> dict[str, Any]:
+    src = _parse_meta_input(raw)
+    out: dict[str, Any] = dict(src)
+
+    if "chapterNote" in out:
+        if _coerce_meta_string(out.get("currentChapter")) is None:
+            legacy = _coerce_meta_string(out.get("chapterNote"))
+            if legacy is not None:
+                out["currentChapter"] = legacy
+        del out["chapterNote"]
+
+    for key in BOOK_META_STRING_KEYS:
+        _apply_meta_string(out, key)
+
+    # capstone passes through verbatim (see get_book_capstone for the typed view).
+
+    out["updatedAt"] = _coerce_meta_string(src.get("updatedAt")) or ""
+    return out
+
+
+def _to_valid_attachment(item: Any) -> dict[str, Any] | None:
+    if not isinstance(item, dict):
+        return None
+    att_id = item.get("id")
+    if not isinstance(att_id, str) or not att_id.strip():
+        return None
+    att_type = item.get("type")
+    if att_type == "image":
+        att = dict(item)
+        file_name = item.get("fileName")
+        mime_type = item.get("mimeType")
+        att["fileName"] = file_name if isinstance(file_name, str) and file_name.strip() else "image.webp"
+        att["mimeType"] = mime_type if isinstance(mime_type, str) and mime_type.strip() else "image/webp"
+        return att
+    if att_type in ("doc", "link"):
+        url = item.get("url")
+        if not isinstance(url, str) or not url.strip():
+            return None
+        att = dict(item)
+        if not isinstance(att.get("title"), str):
+            att["title"] = ""
+        return att
+    return None
+
+
+def normalize_attachments(raw: Any) -> list[dict[str, Any]]:
+    """Render/creation-time validation (<=3 valid image/doc/link objects).
+
+    Never used on the storage round-trip, which keeps every entry verbatim.
+    """
+    if not isinstance(raw, list):
+        return []
+    out: list[dict[str, Any]] = []
+    for item in raw:
+        if len(out) >= MAX_ATTACHMENTS:
+            break
+        att = _to_valid_attachment(item)
+        if att is not None:
+            out.append(att)
+    return out
+
+
+def renderable_attachments(meta: Any) -> list[dict[str, Any]]:
+    return normalize_attachments(meta.get("attachments") if isinstance(meta, dict) else None)
+
+
+def _normalize_links(raw: Any) -> list[str]:
+    if not isinstance(raw, list):
+        return []
+    out: list[str] = []
+    for item in raw:
+        coerced = _coerce_meta_string(item)
+        if coerced is not None:
+            out.append(coerced)
+    return out
+
+
+def normalize_note_meta(raw: Any) -> dict[str, Any]:
+    src = _parse_meta_input(raw)
+    out: dict[str, Any] = dict(src)
+
+    for key in NOTE_META_STRING_KEYS:
+        _apply_meta_string(out, key)
+
+    for key in NOTE_META_BOOLEAN_KEYS:
+        if key not in out:
+            continue
+        coerced = _coerce_meta_bool(out[key])
+        if coerced is None:
+            del out[key]
+        else:
+            out[key] = coerced
+
+    questions = _to_question_list(out.get("socraticQuestions"))
+    if not questions:
+        questions = _to_question_list([out.get(k) for k in LEGACY_QUESTION_KEYS])
+    for key in LEGACY_QUESTION_KEYS:
+        out.pop(key, None)
+    if questions:
+        out["socraticQuestions"] = questions
+    else:
+        out.pop("socraticQuestions", None)
+
+    # Stored verbatim (every entry, any count); filtered only at render/creation time.
+    raw_attachments = out.get("attachments")
+    out["attachments"] = list(raw_attachments) if isinstance(raw_attachments, list) else []
+    out["links"] = _normalize_links(out.get("links"))
+    return out
+
+
+def normalize_book_format(raw: Any) -> str:
+    value = raw.strip().lower() if isinstance(raw, str) else ""
+    return BOOK_FORMAT_ALIASES.get(value, "physical")
+
+
+def normalize_note_source(raw: Any) -> str:
+    value = raw.strip().lower() if isinstance(raw, str) else ""
+    return "agent" if value in NOTE_SOURCE_AGENT_ALIASES else "app"
+
+
+def _to_sheet_serial(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        if isinstance(value, float) and not math.isfinite(value):
+            return None
+        return float(value) if 0 < value < SHEET_SERIAL_MAX else None
+    if isinstance(value, str):
+        trimmed = value.strip()
+        if not SHEET_SERIAL_STRING_RE.match(trimmed):
+            return None
+        n = float(trimmed)
+        return n if 0 < n < SHEET_SERIAL_MAX else None
+    return None
+
+
+def _cell_str(value: Any) -> str:
+    """String(v) parity with the TS codecs for raw Sheet cells."""
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, float) and math.isfinite(value):
+        return _js_number_str(value)
+    return str(value)
+
+
+def decode_sheet_date(value: Any) -> str:
+    """Sheets serial date -> UTC 'YYYY-MM-DD'; anything else -> trimmed string.
+
+    Parity with decodeSheetDate in src/utils/sheetCodecs.ts.
+    """
+    serial = _to_sheet_serial(value)
+    if serial is None:
+        return _cell_str(value).strip()
+    days = int(math.floor(serial)) - SHEET_SERIAL_UNIX_EPOCH
+    return (_UNIX_EPOCH_UTC + timedelta(days=days)).strftime("%Y-%m-%d")
+
+
+def decode_sheet_timestamp(value: Any) -> str:
+    """Sheets serial date-time -> ISO-8601 UTC with milliseconds; else trimmed string.
+
+    Parity with decodeSheetTimestamp in src/utils/sheetCodecs.ts.
+    """
+    serial = _to_sheet_serial(value)
+    if serial is None:
+        return _cell_str(value).strip()
+    # math.floor(x + 0.5) == JS Math.round (half-up), not Python's banker's round().
+    ms = int(math.floor((serial - SHEET_SERIAL_UNIX_EPOCH) * 86_400_000 + 0.5))
+    dt = _UNIX_EPOCH_UTC + timedelta(milliseconds=ms)
+    return dt.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def _safe_float(value: Any, fallback: float = 0.0) -> float:
+    if isinstance(value, bool):
+        return float(value)
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return fallback
+    return f if math.isfinite(f) else fallback
+
+
+def normalize_book_dict(book: dict[str, Any]) -> dict[str, Any]:
+    """Idempotent drift normalization for snapshot/state-file book dicts.
+
+    Unknown top-level and meta keys are preserved.
+    """
+    out = dict(book)
+    out["format"] = normalize_book_format(book.get("format"))
+    if out.get("kind") not in ("nonfiction", "fiction"):
+        out["kind"] = "nonfiction"
+    if out.get("status") not in ("reading", "queued", "finished", "paused"):
+        out["status"] = "reading"
+    if out.get("posUnit") not in ("page", "percent", "loc"):
+        out["posUnit"] = "page"
+    out["meta"] = normalize_book_meta(book.get("meta"))
+    return out
+
+
+def normalize_note_dict(note: dict[str, Any]) -> dict[str, Any]:
+    """Idempotent drift normalization for snapshot/state-file note dicts.
+
+    Unknown top-level and meta keys are preserved.
+    """
+    out = dict(note)
+    out["source"] = normalize_note_source(note.get("source"))
+    if out.get("status") not in ("saved", "inbox", "in-reflection", "atomic"):
+        out["status"] = "saved"
+    if out.get("deltaStatus") not in ("none", "active", "graduated", "paused"):
+        out["deltaStatus"] = "none"
+    if "normalizedPos" in out:
+        out["normalizedPos"] = clamp01(_safe_float(out.get("normalizedPos"), 0.0))
+    out["meta"] = normalize_note_meta(note.get("meta"))
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -406,7 +783,12 @@ def book_to_row(book: dict[str, Any]) -> list[Any]:
         book["posUnit"],
         round(float(book.get("normalizedPos", 0.0)), 6),
         book.get("docUrl") or "",
-        json.dumps(book.get("meta") or {"updatedAt": now_iso_utc()}, ensure_ascii=False),
+        json_dumps_strict(
+            normalize_book_meta(book["meta"])
+            if book.get("meta") is not None
+            else {"updatedAt": now_iso_utc()},
+            ensure_ascii=False,
+        ),
     ]
 
 
@@ -420,9 +802,7 @@ def row_to_book(row: list[Any]) -> dict[str, Any] | None:
     def col(i: int, default: Any = "") -> Any:
         return row[i] if i < len(row) else default
 
-    fmt = str(col(3, "physical")).strip()
-    if fmt not in ("physical", "kindle"):
-        fmt = "physical"
+    fmt = normalize_book_format(col(3, "physical"))
     kind = str(col(4, "nonfiction")).strip()
     if kind not in ("nonfiction", "fiction"):
         kind = "nonfiction"
@@ -444,13 +824,8 @@ def row_to_book(row: list[Any]) -> dict[str, Any] | None:
     else:
         normalized_pos = 1.0 if status == "finished" else compute_normalized_pos(current_pos, total_pos, pos_unit)
 
-    meta_raw = safe_json_parse(col(11, "{}"), {})
-    meta: dict[str, Any] = {
-        "updatedAt": str(meta_raw.get("updatedAt") or "1970-01-01T00:00:00.000Z"),
-    }
-    for k in ("coverUrl", "startedAt", "finishedAt"):
-        if meta_raw.get(k):
-            meta[k] = str(meta_raw[k])
+    # Unknown keys pass through; missing updatedAt reads as "" (conflict guards fail open).
+    meta = normalize_book_meta(col(11, "{}"))
 
     return {
         "id": bid,
@@ -471,9 +846,8 @@ def row_to_book(row: list[Any]) -> dict[str, Any] | None:
 def note_to_row(note: dict[str, Any]) -> list[Any]:
     trigger = normalize_delta_trigger(note.get("deltaTrigger") or "")
     action = normalize_delta_action(note.get("deltaAction") or "")
-    meta_in = dict(note.get("meta") or {})
-    meta_in["attachments"] = list(meta_in.get("attachments") or [])[:3]
-    meta_in["links"] = list(meta_in.get("links") or [])
+    # Canonical write: unknown keys kept, legacy q1/q2 dropped, attachments stored verbatim.
+    meta_in = normalize_note_meta(note.get("meta") or {})
     return [
         note["id"],
         note["slug"],
@@ -492,7 +866,7 @@ def note_to_row(note: dict[str, Any]) -> list[Any]:
         trigger,
         action,
         note.get("deltaStatus") or "none",
-        json.dumps(meta_in, ensure_ascii=False),
+        json_dumps_strict(meta_in, ensure_ascii=False),
     ]
 
 
@@ -509,49 +883,26 @@ def row_to_note(row: list[Any]) -> dict[str, Any] | None:
     status = str(col(7, "saved")).strip()
     if status not in ("saved", "inbox", "in-reflection", "atomic"):
         status = "saved"
-    source = str(col(8, "app")).strip()
-    if source not in ("app", "agent"):
-        source = "app"
+    source = normalize_note_source(col(8, "app"))
     delta_status = str(col(16, "none")).strip()
     if delta_status not in ("none", "active", "graduated", "paused"):
         delta_status = "none"
 
     pos = clean_num(col(5, 0), 0)
-    normalized_pos = clamp01(float(col(6, 0) or 0))
-    raw_meta = safe_json_parse(col(17, "{}"), {})
-    meta: dict[str, Any] = {
-        "attachments": list(raw_meta.get("attachments") or [])[:3]
-        if isinstance(raw_meta.get("attachments"), list)
-        else [],
-        "links": [str(x) for x in (raw_meta.get("links") or [])]
-        if isinstance(raw_meta.get("links"), list)
-        else [],
-    }
-    if raw_meta.get("title"):
-        meta["title"] = str(raw_meta["title"])
-    if "isPrediction" in raw_meta:
-        meta["isPrediction"] = bool(raw_meta["isPrediction"])
-    if (
-        isinstance(raw_meta.get("socraticQuestions"), list)
-        and len(raw_meta["socraticQuestions"]) == 2
-    ):
-        meta["socraticQuestions"] = [
-            str(raw_meta["socraticQuestions"][0]),
-            str(raw_meta["socraticQuestions"][1]),
-        ]
-    if "ocrBackfilled" in raw_meta:
-        meta["ocrBackfilled"] = bool(raw_meta["ocrBackfilled"])
-    if raw_meta.get("exportedAt"):
-        meta["exportedAt"] = str(raw_meta["exportedAt"])
-    if raw_meta.get("lastReviewedAt"):
-        meta["lastReviewedAt"] = str(raw_meta["lastReviewedAt"])
+    try:
+        normalized_pos = clamp01(float(col(6, 0) or 0))
+    except (TypeError, ValueError):
+        # B4.6: a corrupt Notes!G cell must not abort the whole workspace load.
+        normalized_pos = 0.0
+    # Unknown keys pass through; legacy q1/q2 -> socraticQuestions (1-3 kept).
+    meta = normalize_note_meta(col(17, "{}"))
 
     return {
         "id": nid,
         "slug": str(col(1, "")).strip() or nid,
         "bookId": str(col(2, "")).strip(),
-        "createdAt": str(col(3, "")),
-        "updatedAt": str(col(4, "")),
+        "createdAt": decode_sheet_timestamp(col(3, "")),
+        "updatedAt": decode_sheet_timestamp(col(4, "")),
         "pos": pos,
         "normalizedPos": normalized_pos,
         "status": status,
@@ -593,10 +944,10 @@ def row_to_session(row: list[Any]) -> dict[str, Any] | None:
     return {
         "id": sid,
         "bookId": str(col(1, "")).strip(),
-        "date": str(col(2, "")).strip(),
+        "date": decode_sheet_date(col(2, "")),
         "startPos": clean_num(col(3, 0)),
         "endPos": clean_num(col(4, 0)),
-        "updatedAt": str(col(5, "")).strip(),
+        "updatedAt": decode_sheet_timestamp(col(5, "")),
         "note": str(col(6, "")),
     }
 
@@ -628,7 +979,7 @@ def row_to_delta_log(row: list[Any]) -> dict[str, Any] | None:
     return {
         "id": lid,
         "noteId": str(col(1, "")).strip(),
-        "date": str(col(2, "")).strip(),
+        "date": decode_sheet_date(col(2, "")),
         "outcome": outcome,
         "reflection": str(col(4, "")),
     }
@@ -846,7 +1197,7 @@ class WorkspaceBackend:
 def _upsert_by_id(items: list[dict[str, Any]], item: dict[str, Any]) -> list[dict[str, Any]]:
     out = list(items)
     for idx, existing in enumerate(out):
-        if existing.get("id") == item.get("id"):
+        if isinstance(existing, dict) and existing.get("id") == item.get("id"):
             out[idx] = item
             return out
     out.append(item)
@@ -880,7 +1231,7 @@ class StateFileBackend(WorkspaceBackend):
         )
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                json.dump(data, fh, indent=2, ensure_ascii=False)
+                fh.write(json_dumps_strict(data, indent=2, ensure_ascii=False))
                 fh.write("\n")
             os.replace(tmp_name, self.path)
         finally:
@@ -889,9 +1240,10 @@ class StateFileBackend(WorkspaceBackend):
 
     def load_workspace(self) -> dict[str, Any]:
         raw = self._read_raw()
+        # Same drift codecs as the Sheets path (print/companion/q1-q2/chapterNote).
         return {
-            "books": list(raw["books"]),
-            "notes": list(raw["notes"]),
+            "books": [normalize_book_dict(b) if isinstance(b, dict) else b for b in raw["books"]],
+            "notes": [normalize_note_dict(n) if isinstance(n, dict) else n for n in raw["notes"]],
             "sessions": list(raw["sessions"]),
             "deltaLogs": list(raw["deltaLogs"]),
         }
@@ -904,18 +1256,20 @@ class StateFileBackend(WorkspaceBackend):
         force: bool = False,
     ) -> dict[str, Any]:
         raw = self._read_raw()
+        normalized = normalize_book_dict(book)
         if expected_base_updated_at and not force:
             for existing in raw["books"]:
-                if existing.get("id") == book.get("id"):
-                    remote_ts = (existing.get("meta") or {}).get("updatedAt")
+                if isinstance(existing, dict) and existing.get("id") == book.get("id"):
+                    # Stored meta may be a JSON string or malformed (QA-1).
+                    remote_ts = normalize_book_meta(existing.get("meta")).get("updatedAt")
                     if _is_remote_newer(remote_ts, expected_base_updated_at):
                         raise CliError(
                             f"Row conflict on Books {book.get('id')}: remote updatedAt ({remote_ts}) is newer than loaded base ({expected_base_updated_at}). Re-run or pass --force to overwrite."
                         )
                     break
-        raw["books"] = _upsert_by_id(raw["books"], book)
+        raw["books"] = _upsert_by_id(raw["books"], normalized)
         self._write_raw(raw)
-        return book
+        return normalized
 
     def save_note(
         self,
@@ -925,18 +1279,19 @@ class StateFileBackend(WorkspaceBackend):
         force: bool = False,
     ) -> dict[str, Any]:
         raw = self._read_raw()
+        normalized = normalize_note_dict(note)
         if expected_base_updated_at and not force:
             for existing in raw["notes"]:
-                if existing.get("id") == note.get("id"):
+                if isinstance(existing, dict) and existing.get("id") == note.get("id"):
                     remote_ts = existing.get("updatedAt")
                     if _is_remote_newer(remote_ts, expected_base_updated_at):
                         raise CliError(
                             f"Row conflict on Notes {note.get('id')}: remote updatedAt ({remote_ts}) is newer than loaded base ({expected_base_updated_at}). Re-run or pass --force to overwrite."
                         )
                     break
-        raw["notes"] = _upsert_by_id(raw["notes"], note)
+        raw["notes"] = _upsert_by_id(raw["notes"], normalized)
         self._write_raw(raw)
-        return note
+        return normalized
 
     def save_session(self, session: dict[str, Any]) -> dict[str, Any]:
         raw = self._read_raw()
@@ -1112,7 +1467,7 @@ class GoogleWorkspaceBackend(WorkspaceBackend):
         fd, tmp_path = tempfile.mkstemp(prefix=".pragya_batch_", suffix=".json")
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                json.dump(ops, fh, ensure_ascii=False)
+                fh.write(json_dumps_strict(ops, ensure_ascii=False))
             self._run_ok(["gsheets", "mutate", "batch", sid, "-f", tmp_path, "--json"])
         finally:
             if os.path.exists(tmp_path):
@@ -1386,7 +1741,7 @@ class GoogleWorkspaceBackend(WorkspaceBackend):
         fd, tmp_path = tempfile.mkstemp(prefix=".pragya_gdocs_", suffix=".json")
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                json.dump(ops, fh, ensure_ascii=False)
+                fh.write(json_dumps_strict(ops, ensure_ascii=False))
             self._run_ok(["gdocs", "mutate", "batch", doc_id, "-f", tmp_path, "--json"])
         finally:
             if os.path.exists(tmp_path):
@@ -2304,8 +2659,7 @@ def cmd_ocr_backfill(args: argparse.Namespace, backend: WorkspaceBackend) -> dic
         if target_note_id and n["id"] != target_note_id:
             continue
         meta = n.get("meta") or {}
-        attachments = meta.get("attachments") or []
-        img_attachments = [a for a in attachments if a.get("type") == "image"]
+        img_attachments = [a for a in renderable_attachments(meta) if a.get("type") == "image"]
         if not img_attachments:
             continue
         if (n.get("quote") or "").strip():
@@ -2394,7 +2748,7 @@ def _render_note_markdown(note: dict[str, Any], book: dict[str, Any] | None) -> 
         note.get("deltaAction") or "",
     )
     wikilinks = extract_note_wikilinks(note)
-    attachments = meta.get("attachments") or []
+    attachments = renderable_attachments(meta)
 
     def yaml_str(val: str) -> str:
         escaped = val.replace("\\", "\\\\").replace('"', '\\"')

@@ -31,6 +31,7 @@ import {
   upsertCoalescedSession,
 } from '../utils/sessionCoalesce';
 import { normalizeDeltaAction, normalizeDeltaTrigger } from '../utils/deltaFormat';
+import { getRenderableAttachments } from '../utils/metaCodecs';
 import { normalizeTagList } from '../utils/sheetCodecs';
 import { computeNormalizedPos } from '../utils/spoilerMath';
 import { generateUniqueSlug } from '../utils/wikilinks';
@@ -650,12 +651,14 @@ export const PragyaProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
         const existingNote = notesRef.current.find(n => n.id === note.id);
         const book = booksRef.current.find(b => b.id === note.bookId);
-        const attachments = (note.meta?.attachments || []).slice(0, 3);
-        const newAttachmentUrls = attachments
+        // Stored attachments round-trip verbatim (unknown entries / beyond 3 included);
+        // the 3-cap is enforced at creation time in the capture/edit UIs.
+        const attachments = Array.isArray(note.meta?.attachments) ? note.meta.attachments : [];
+        const newAttachmentUrls = getRenderableAttachments(note.meta)
           .filter((a): a is Extract<Attachment, { type: 'link' | 'doc' }> => a.type !== 'image')
           .map(a => a.url);
         const oldAttachmentUrls = new Set(
-          (existingNote?.meta?.attachments || [])
+          getRenderableAttachments(existingNote?.meta)
             .filter((a): a is Extract<Attachment, { type: 'link' | 'doc' }> => a.type !== 'image')
             .map(a => a.url)
         );

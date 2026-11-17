@@ -11,6 +11,7 @@ import {
 } from 'lucide-react';
 import type { Attachment, DeltaStatus, Note } from '../../types/pragya';
 import { usePragya } from '../../context/PragyaContext';
+import { getRenderableAttachments } from '../../utils/metaCodecs';
 import {
   formatWhenDoDisplay,
   normalizeDeltaAction,
@@ -370,7 +371,7 @@ export const DeepenNoteModal: React.FC<DeepenNoteModalProps> = ({
   if (!note) return null;
 
   const socraticQuestions = note.meta?.socraticQuestions;
-  const sourceAttachments = note.meta?.attachments || [];
+  const sourceAttachments = getRenderableAttachments(note.meta);
   const hasSourceReference = Boolean(note.quote?.trim()) || sourceAttachments.length > 0;
 
   return (

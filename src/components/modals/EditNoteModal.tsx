@@ -10,6 +10,7 @@ import {
 } from 'lucide-react';
 import type { Attachment, DeltaStatus, Note, NoteStatus } from '../../types/pragya';
 import { usePragya } from '../../context/PragyaContext';
+import { mergePreservedAttachments, splitAttachments } from '../../utils/metaCodecs';
 import {
   formatWhenDoDisplay,
   normalizeDeltaAction,
@@ -293,7 +294,8 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
       setDraftRestored(false);
     }
 
-    setAttachments(note.meta?.attachments || []);
+    // Only renderable entries are editable; the rest are carried through on save.
+    setAttachments(splitAttachments(note.meta?.attachments).renderable);
     setAttachMode('none');
     setDraftUrl('');
     setDraftTitle('');
@@ -568,7 +570,10 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
           meta: {
             ...note.meta,
             ...(title.trim() ? { title: title.trim() } : { title: undefined }),
-            attachments: attachments.slice(0, 3),
+            attachments: mergePreservedAttachments(
+              attachments.slice(0, 3),
+              splitAttachments(note.meta?.attachments).preserved
+            ),
             ...(book?.kind === 'fiction' ? { isPrediction } : {}),
           },
         },

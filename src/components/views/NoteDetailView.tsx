@@ -13,6 +13,7 @@ import {
 import type { Attachment, Note } from '../../types/pragya';
 import { usePragya } from '../../context/PragyaContext';
 import { isEditableElement } from '../../hooks/useKeyboardShortcuts';
+import { getRenderableAttachments } from '../../utils/metaCodecs';
 import { formatWhenDoDisplay } from '../../utils/deltaFormat';
 import { isSafeHttpUrl, navigateTo } from '../../utils/navigation';
 import {
@@ -54,7 +55,7 @@ export const NoteDetailView: React.FC<NoteDetailViewProps> = ({
 
   const imageAttachments = useMemo(
     () =>
-      (note?.meta?.attachments || []).filter(
+      getRenderableAttachments(note?.meta).filter(
         (a): a is Extract<Attachment, { type: 'image' }> => a.type === 'image'
       ),
     [note]
@@ -62,7 +63,7 @@ export const NoteDetailView: React.FC<NoteDetailViewProps> = ({
 
   const primarySafeExternalUrl = useMemo(() => {
     if (!note) return null;
-    for (const att of note.meta?.attachments || []) {
+    for (const att of getRenderableAttachments(note.meta)) {
       if (att.type !== 'image' && isSafeHttpUrl(att.url)) {
         return att.url.trim();
       }
@@ -351,11 +352,11 @@ export const NoteDetailView: React.FC<NoteDetailViewProps> = ({
           </div>
         )}
 
-        {note.meta.attachments.length > 0 && (
+        {getRenderableAttachments(note.meta).length > 0 && (
           <div className="space-y-2 pt-2 border-t border-border/60">
             <div className="text-eyebrow uppercase text-muted-foreground">Attachments</div>
             <div className="flex flex-wrap gap-3">
-              {note.meta.attachments.map(att =>
+              {getRenderableAttachments(note.meta).map(att =>
                 att.type === 'image' ? (
                   <DriveImage
                     key={att.id}

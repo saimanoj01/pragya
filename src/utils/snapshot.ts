@@ -1,6 +1,5 @@
 import type {
   Book,
-  BookFormat,
   BookKind,
   BookStatus,
   DeltaLog,
@@ -13,9 +12,14 @@ import type {
   ReadingSession,
 } from '../types/pragya';
 import { normalizeDeltaAction, normalizeDeltaTrigger } from './deltaFormat';
+import {
+  normalizeBookFormat,
+  normalizeBookMeta,
+  normalizeNoteMeta,
+  normalizeNoteSource,
+} from './metaCodecs';
 import { computeNormalizedPos } from './spoilerMath';
 
-const BOOK_FORMATS: BookFormat[] = ['physical', 'kindle'];
 const BOOK_KINDS: BookKind[] = ['nonfiction', 'fiction'];
 const BOOK_STATUSES: BookStatus[] = ['reading', 'queued', 'finished', 'paused'];
 const POS_UNITS: PosUnit[] = ['page', 'percent', 'loc'];
@@ -95,9 +99,7 @@ export function validateSnapshotPayload(input: unknown): ValidateSnapshotResult 
     if (typeof b.id !== 'string' || !b.id.trim() || typeof b.title !== 'string') {
       return { ok: false, error: 'Each book must have a string id and title.' };
     }
-    const format = BOOK_FORMATS.includes(b.format as BookFormat)
-      ? (b.format as BookFormat)
-      : 'physical';
+    const format = normalizeBookFormat(b.format);
     const kind = BOOK_KINDS.includes(b.kind as BookKind) ? (b.kind as BookKind) : 'nonfiction';
     const status = BOOK_STATUSES.includes(b.status as BookStatus)
       ? (b.status as BookStatus)
@@ -110,7 +112,6 @@ export function validateSnapshotPayload(input: unknown): ValidateSnapshotResult 
         ? Math.min(1, Math.max(0, b.normalizedPos))
         : computeNormalizedPos(currentPos, totalPos, posUnit);
 
-    const metaObj = (b.meta && typeof b.meta === 'object' ? b.meta : {}) as Record<string, unknown>;
     books.push({
       id: b.id.trim(),
       title: b.title,
@@ -123,15 +124,8 @@ export function validateSnapshotPayload(input: unknown): ValidateSnapshotResult 
       posUnit,
       normalizedPos,
       docUrl: typeof b.docUrl === 'string' ? b.docUrl : '',
-      meta: {
-        ...(typeof metaObj.coverUrl === 'string' ? { coverUrl: metaObj.coverUrl } : {}),
-        ...(typeof metaObj.startedAt === 'string' ? { startedAt: metaObj.startedAt } : {}),
-        ...(typeof metaObj.finishedAt === 'string' ? { finishedAt: metaObj.finishedAt } : {}),
-        updatedAt:
-          typeof metaObj.updatedAt === 'string'
-            ? metaObj.updatedAt
-            : new Date().toISOString(),
-      },
+      // Unknown keys pass through; missing updatedAt reads as '' (conflict guards fail open).
+      meta: normalizeBookMeta(b.meta),
     });
   }
 
@@ -155,7 +149,6 @@ export function validateSnapshotPayload(input: unknown): ValidateSnapshotResult 
     const deltaStatus = DELTA_STATUSES.includes(n.deltaStatus as DeltaStatus)
       ? (n.deltaStatus as DeltaStatus)
       : 'none';
-    const metaObj = (n.meta && typeof n.meta === 'object' ? n.meta : {}) as Record<string, unknown>;
 
     notes.push({
       id: n.id.trim(),
@@ -169,7 +162,7 @@ export function validateSnapshotPayload(input: unknown): ValidateSnapshotResult 
           ? Math.min(1, Math.max(0, n.normalizedPos))
           : 0,
       status,
-      source: n.source === 'agent' ? 'agent' : 'app',
+      source: normalizeNoteSource(n.source),
       tags: Array.isArray(n.tags) ? n.tags.map(t => String(t)) : [],
       quote: typeof n.quote === 'string' ? n.quote : '',
       takeaway: typeof n.takeaway === 'string' ? n.takeaway : '',
@@ -178,29 +171,8 @@ export function validateSnapshotPayload(input: unknown): ValidateSnapshotResult 
       deltaTrigger: normalizeDeltaTrigger(typeof n.deltaTrigger === 'string' ? n.deltaTrigger : ''),
       deltaAction: normalizeDeltaAction(typeof n.deltaAction === 'string' ? n.deltaAction : ''),
       deltaStatus,
-      meta: {
-        ...(typeof metaObj.title === 'string' ? { title: metaObj.title } : {}),
-        attachments: Array.isArray(metaObj.attachments)
-          ? (metaObj.attachments.slice(0, 3) as Note['meta']['attachments'])
-          : [],
-        links: Array.isArray(metaObj.links) ? metaObj.links.map(String) : [],
-        ...(metaObj.isPrediction !== undefined ? { isPrediction: Boolean(metaObj.isPrediction) } : {}),
-        ...(Array.isArray(metaObj.socraticQuestions) && metaObj.socraticQuestions.length === 2
-          ? {
-              socraticQuestions: [
-                String(metaObj.socraticQuestions[0]),
-                String(metaObj.socraticQuestions[1]),
-              ],
-            }
-          : {}),
-        ...(metaObj.ocrBackfilled !== undefined
-          ? { ocrBackfilled: Boolean(metaObj.ocrBackfilled) }
-          : {}),
-        ...(typeof metaObj.exportedAt === 'string' ? { exportedAt: metaObj.exportedAt } : {}),
-        ...(typeof metaObj.lastReviewedAt === 'string'
-          ? { lastReviewedAt: metaObj.lastReviewedAt }
-          : {}),
-      },
+      // Unknown keys pass through; legacy q1/q2 → socraticQuestions (1–3 kept).
+      meta: normalizeNoteMeta(n.meta),
     });
   }
 

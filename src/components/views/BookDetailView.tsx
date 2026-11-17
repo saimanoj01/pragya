@@ -17,6 +17,7 @@ import {
 import type { Book, Note } from '../../types/pragya';
 import { usePragya } from '../../context/PragyaContext';
 import { isEditableElement } from '../../hooks/useKeyboardShortcuts';
+import { getRenderableAttachments } from '../../utils/metaCodecs';
 import { isSafeHttpUrl, navigateTo } from '../../utils/navigation';
 import {
   computePercentDisplay,
@@ -461,7 +462,7 @@ export const BookDetailView: React.FC<BookDetailViewProps> = ({
             {bookNotes.map((note, idx) => {
               const spoiler = isNoteSpoiler(note, book) && !revealedSlugs.has(note.slug);
               const isFocused = idx === focusedIndex;
-              const attachments = note.meta?.attachments || [];
+              const attachments = getRenderableAttachments(note.meta);
 
               return (
                 <article

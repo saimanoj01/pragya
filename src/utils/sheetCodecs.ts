@@ -1,21 +1,22 @@
 import type {
-  Attachment,
   Book,
-  BookFormat,
   BookKind,
-  BookMetaJson,
   BookStatus,
   DeltaLog,
   DeltaOutcome,
   DeltaStatus,
   Note,
-  NoteMetaJson,
-  NoteSource,
   NoteStatus,
   PosUnit,
   ReadingSession,
 } from '../types/pragya';
 import { normalizeDeltaAction, normalizeDeltaTrigger } from './deltaFormat';
+import {
+  normalizeBookFormat,
+  normalizeBookMeta,
+  normalizeNoteMeta,
+  normalizeNoteSource,
+} from './metaCodecs';
 import { computeNormalizedPos } from './spoilerMath';
 
 export const BOOKS_HEADERS = [
@@ -122,12 +123,52 @@ function asNumber(val: unknown, fallback = 0): number {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
-const VALID_FORMATS: BookFormat[] = ['physical', 'kindle'];
+/** Exclusive upper bound for Sheets serial dates (10000-01-01). Mirrors conflictGuard.ts. */
+const SHEET_SERIAL_MAX = 2_958_466;
+const SHEET_SERIAL_STRING_RE = /^\d{5}(\.\d+)?$/;
+const SHEET_SERIAL_UNIX_EPOCH = 25569; // 1970-01-01 as days since 1899-12-30
+const MS_PER_DAY = 86_400_000;
+
+function toSheetSerial(v: unknown): number | null {
+  if (typeof v === 'number') {
+    return Number.isFinite(v) && v > 0 && v < SHEET_SERIAL_MAX ? v : null;
+  }
+  if (typeof v === 'string') {
+    const trimmed = v.trim();
+    if (!SHEET_SERIAL_STRING_RE.test(trimmed)) return null;
+    const n = Number(trimmed);
+    return n > 0 && n < SHEET_SERIAL_MAX ? n : null;
+  }
+  return null;
+}
+
+/**
+ * Decodes a Sheets serial date (days since 1899-12-30, as surfaced by
+ * UNFORMATTED_VALUE after a USER_ENTERED write) into a UTC `YYYY-MM-DD`.
+ * Anything else is returned as a trimmed string. Parity: `decode_sheet_date`.
+ */
+export function decodeSheetDate(v: unknown): string {
+  const serial = toSheetSerial(v);
+  if (serial === null) return asString(v).trim();
+  const ms = (Math.floor(serial) - SHEET_SERIAL_UNIX_EPOCH) * MS_PER_DAY;
+  return new Date(ms).toISOString().slice(0, 10);
+}
+
+/**
+ * Same as {@link decodeSheetDate} for timestamp columns: a serial becomes a full
+ * ISO-8601 UTC string (same math as conflictGuard.ts). Parity: `decode_sheet_timestamp`.
+ */
+export function decodeSheetTimestamp(v: unknown): string {
+  const serial = toSheetSerial(v);
+  if (serial === null) return asString(v).trim();
+  const ms = Math.round((serial - SHEET_SERIAL_UNIX_EPOCH) * MS_PER_DAY);
+  return new Date(ms).toISOString();
+}
+
 const VALID_KINDS: BookKind[] = ['nonfiction', 'fiction'];
 const VALID_BOOK_STATUSES: BookStatus[] = ['reading', 'queued', 'finished', 'paused'];
 const VALID_POS_UNITS: PosUnit[] = ['page', 'percent', 'loc'];
 const VALID_NOTE_STATUSES: NoteStatus[] = ['saved', 'inbox', 'in-reflection', 'atomic'];
-const VALID_NOTE_SOURCES: NoteSource[] = ['app', 'agent'];
 const VALID_DELTA_STATUSES: DeltaStatus[] = ['none', 'active', 'graduated', 'paused'];
 const VALID_DELTA_OUTCOMES: DeltaOutcome[] = ['applied', 'missed', 'no-trigger'];
 
@@ -144,7 +185,9 @@ export function bookToRow(book: Book): (string | number)[] {
     book.posUnit,
     Number(book.normalizedPos.toFixed(6)),
     book.docUrl || '',
-    JSON.stringify(book.meta || { updatedAt: new Date().toISOString() }),
+    JSON.stringify(
+      book.meta != null ? normalizeBookMeta(book.meta) : { updatedAt: new Date().toISOString() }
+    ),
   ];
 }
 
@@ -153,12 +196,11 @@ export function rowToBook(row: unknown[]): Book | null {
   const id = asString(row[0]).trim();
   if (!id || id === 'id') return null;
 
-  const formatRaw = asString(row[3]).trim() as BookFormat;
   const kindRaw = asString(row[4]).trim() as BookKind;
   const statusRaw = asString(row[5]).trim() as BookStatus;
   const posUnitRaw = asString(row[8]).trim() as PosUnit;
 
-  const format: BookFormat = VALID_FORMATS.includes(formatRaw) ? formatRaw : 'physical';
+  const format = normalizeBookFormat(row[3]);
   const kind: BookKind = VALID_KINDS.includes(kindRaw) ? kindRaw : 'nonfiction';
   const status: BookStatus = VALID_BOOK_STATUSES.includes(statusRaw) ? statusRaw : 'reading';
   const posUnit: PosUnit = VALID_POS_UNITS.includes(posUnitRaw) ? posUnitRaw : 'page';
@@ -172,13 +214,8 @@ export function rowToBook(row: unknown[]): Book | null {
       ? 1
       : computeNormalizedPos(currentPos, totalPos, posUnit);
 
-  const metaParsed = safeJsonParse<Partial<BookMetaJson>>(row[11], {});
-  const meta: BookMetaJson = {
-    ...(metaParsed.coverUrl ? { coverUrl: String(metaParsed.coverUrl) } : {}),
-    ...(metaParsed.startedAt ? { startedAt: String(metaParsed.startedAt) } : {}),
-    ...(metaParsed.finishedAt ? { finishedAt: String(metaParsed.finishedAt) } : {}),
-    updatedAt: metaParsed.updatedAt ? String(metaParsed.updatedAt) : new Date(0).toISOString(),
-  };
+  // Unknown keys pass through; missing updatedAt reads as '' (conflict guards fail open).
+  const meta = normalizeBookMeta(row[11]);
 
   return {
     id,
@@ -199,11 +236,8 @@ export function rowToBook(row: unknown[]): Book | null {
 export function noteToRow(note: Note): (string | number)[] {
   const trigger = normalizeDeltaTrigger(note.deltaTrigger);
   const action = normalizeDeltaAction(note.deltaAction);
-  const meta: NoteMetaJson = {
-    ...note.meta,
-    attachments: Array.isArray(note.meta?.attachments) ? note.meta.attachments.slice(0, 3) : [],
-    links: Array.isArray(note.meta?.links) ? note.meta.links : [],
-  };
+  // Canonical write: unknown keys kept, legacy q1/q2 dropped, attachments stored verbatim.
+  const meta = normalizeNoteMeta(note.meta);
   return [
     note.id,
     note.slug,
@@ -232,49 +266,25 @@ export function rowToNote(row: unknown[]): Note | null {
   if (!id || id === 'id') return null;
 
   const statusRaw = asString(row[7]).trim() as NoteStatus;
-  const sourceRaw = asString(row[8]).trim() as NoteSource;
   const deltaStatusRaw = asString(row[16]).trim() as DeltaStatus;
 
   const status: NoteStatus = VALID_NOTE_STATUSES.includes(statusRaw) ? statusRaw : 'saved';
-  const source: NoteSource = VALID_NOTE_SOURCES.includes(sourceRaw) ? sourceRaw : 'app';
+  const source = normalizeNoteSource(row[8]);
   const deltaStatus: DeltaStatus = VALID_DELTA_STATUSES.includes(deltaStatusRaw)
     ? deltaStatusRaw
     : 'none';
 
   const pos = asNumber(row[5], 0);
   const normalizedPos = Math.min(1, Math.max(0, asNumber(row[6], 0)));
-  const rawMeta = safeJsonParse<Partial<NoteMetaJson>>(row[17], {});
-  const attachments: Attachment[] = Array.isArray(rawMeta.attachments)
-    ? rawMeta.attachments.slice(0, 3)
-    : [];
-  const links: string[] = Array.isArray(rawMeta.links)
-    ? rawMeta.links.map(l => String(l))
-    : [];
-
-  const meta: NoteMetaJson = {
-    ...(rawMeta.title ? { title: String(rawMeta.title) } : {}),
-    attachments,
-    links,
-    ...(rawMeta.isPrediction !== undefined ? { isPrediction: Boolean(rawMeta.isPrediction) } : {}),
-    ...(Array.isArray(rawMeta.socraticQuestions) && rawMeta.socraticQuestions.length === 2
-      ? {
-          socraticQuestions: [
-            String(rawMeta.socraticQuestions[0]),
-            String(rawMeta.socraticQuestions[1]),
-          ],
-        }
-      : {}),
-    ...(rawMeta.ocrBackfilled !== undefined ? { ocrBackfilled: Boolean(rawMeta.ocrBackfilled) } : {}),
-    ...(rawMeta.exportedAt ? { exportedAt: String(rawMeta.exportedAt) } : {}),
-    ...(rawMeta.lastReviewedAt ? { lastReviewedAt: String(rawMeta.lastReviewedAt) } : {}),
-  };
+  // Unknown keys pass through; legacy q1/q2 → socraticQuestions (1–3 kept).
+  const meta = normalizeNoteMeta(row[17]);
 
   return {
     id,
     slug: asString(row[1]).trim() || id,
     bookId: asString(row[2]).trim(),
-    createdAt: asString(row[3]),
-    updatedAt: asString(row[4]),
+    createdAt: decodeSheetTimestamp(row[3]),
+    updatedAt: decodeSheetTimestamp(row[4]),
     pos,
     normalizedPos,
     status,
@@ -310,10 +320,10 @@ export function rowToSession(row: unknown[]): ReadingSession | null {
   return {
     id,
     bookId: asString(row[1]).trim(),
-    date: asString(row[2]).trim(),
+    date: decodeSheetDate(row[2]),
     startPos: asNumber(row[3], 0),
     endPos: asNumber(row[4], 0),
-    updatedAt: asString(row[5]).trim(),
+    updatedAt: decodeSheetTimestamp(row[5]),
     note: asString(row[6]),
   };
 }
@@ -333,7 +343,7 @@ export function rowToDeltaLog(row: unknown[]): DeltaLog | null {
   return {
     id,
     noteId: asString(row[1]).trim(),
-    date: asString(row[2]).trim(),
+    date: decodeSheetDate(row[2]),
     outcome,
     reflection: asString(row[4]),
   };

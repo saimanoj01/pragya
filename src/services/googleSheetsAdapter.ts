@@ -53,11 +53,20 @@ const TAB_SPECS: TabSchemaSpec[] = [
   { title: 'DeltaLogs', lastCol: 'E', headers: DELTA_LOGS_HEADERS },
 ];
 
+/**
+ * Bumped whenever the row codecs change what survives decoding. A cache decoded by an
+ * older codec may have already dropped metaJson keys (e.g. `subgenre`, `sparStage`), so
+ * serving it as a fast-reload hit and then saving would wipe those keys from the Sheet.
+ * The storage key name stays `pragya_sheets_cache_v1` (SPEC-locked).
+ */
+export const SHEETS_CACHE_CODEC_VERSION = 2;
+
 interface CachedSheetsPayload {
   spreadsheetId: string;
   modifiedTime: string;
   accountEmail?: string;
   mediaFolderId?: string;
+  codecVersion?: number;
   state: {
     books: Book[];
     notes: Note[];
@@ -66,7 +75,15 @@ interface CachedSheetsPayload {
   };
 }
 
-function readSheetsCache(): CachedSheetsPayload | null {
+interface ReadSheetsCacheOptions {
+  /**
+   * Accept a cache written by an older codec. Only safe for the offline read-only
+   * fallback, which never writes back to the Sheet.
+   */
+  allowStaleCodec?: boolean;
+}
+
+function readSheetsCache(options: ReadSheetsCacheOptions = {}): CachedSheetsPayload | null {
   try {
     const raw = localStorage.getItem(SHEETS_CACHE_STORAGE_KEY);
     if (!raw) return null;
@@ -81,6 +98,9 @@ function readSheetsCache(): CachedSheetsPayload | null {
       Array.isArray(parsed.state.sessions) &&
       Array.isArray(parsed.state.deltaLogs)
     ) {
+      if (parsed.codecVersion !== SHEETS_CACHE_CODEC_VERSION && !options.allowStaleCodec) {
+        return null;
+      }
       return parsed as CachedSheetsPayload;
     }
     return null;
@@ -89,9 +109,20 @@ function readSheetsCache(): CachedSheetsPayload | null {
   }
 }
 
+/**
+ * Always stamps the current {@link SHEETS_CACHE_CODEC_VERSION}.
+ *
+ * INVARIANT: only pass state decoded by the current codec (fresh `rowTo*` output or a
+ * strict `readSheetsCache()` result). Never write back a payload obtained with
+ * `allowStaleCodec: true` — that would promote legacy-decoded data (already missing
+ * unknown metaJson keys) to v2 and re-open the A5.3 wipe hazard.
+ */
 function writeSheetsCache(payload: CachedSheetsPayload): void {
   try {
-    localStorage.setItem(SHEETS_CACHE_STORAGE_KEY, JSON.stringify(payload));
+    localStorage.setItem(
+      SHEETS_CACHE_STORAGE_KEY,
+      JSON.stringify({ ...payload, codecVersion: SHEETS_CACHE_CODEC_VERSION })
+    );
   } catch {
     // Ignore storage quota errors
   }
@@ -356,7 +387,9 @@ export class GoogleSheetsAdapter implements StorageAdapter {
 
   async loadWorkspace(options: StorageLoadOptions = {}): Promise<WorkspaceState> {
     const forceRefresh = Boolean(options.forceRefresh);
-    let cached = readSheetsCache();
+    // A stale-codec cache is still read here for the account check and the offline
+    // read-only fallback, but it never satisfies the fast-reload hit below (A5.3).
+    let cached = readSheetsCache({ allowStaleCodec: true });
     if (
       cached &&
       this.accountEmail &&
@@ -392,7 +425,14 @@ export class GoogleSheetsAdapter implements StorageAdapter {
     };
 
     // Drive modifiedTime fast-reload cache check
-    if (!forceRefresh && knownId && cached && cached.spreadsheetId === knownId && cached.modifiedTime) {
+    if (
+      !forceRefresh &&
+      knownId &&
+      cached &&
+      cached.codecVersion === SHEETS_CACHE_CODEC_VERSION &&
+      cached.spreadsheetId === knownId &&
+      cached.modifiedTime
+    ) {
       try {
         const remoteMeta = await this.fetchApi<{ modifiedTime?: string; trashed?: boolean }>(
           `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(

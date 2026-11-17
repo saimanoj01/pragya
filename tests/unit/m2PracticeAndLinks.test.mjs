@@ -40,6 +40,9 @@ const { extractNoteWikilinks, computeBacklinks } = await import(
 const { buildSnapshot, validateSnapshotPayload } = await import(
   pathToFileURL(path.join(repoRoot, 'src/utils/snapshot.ts')).href
 );
+const { getRenderableAttachments } = await import(
+  pathToFileURL(path.join(repoRoot, 'src/utils/metaCodecs.ts')).href
+);
 const { createDemoSeed } = await import(
   pathToFileURL(path.join(repoRoot, 'src/data/demoSeed.ts')).href
 );
@@ -265,7 +268,10 @@ test('Snapshot schema validator normalizes WHEN/DO, clamps attachments, and reje
     assert.equal(validRes.counts.books, seed.books.length);
     assert.equal(validRes.snapshot.notes[0].deltaTrigger, 'metrics spike');
     assert.equal(validRes.snapshot.notes[0].deltaAction, 'wait before tuning');
-    assert.equal(validRes.snapshot.notes[0].meta.attachments.length, 3);
+    // M6 Batch 1 fix-up (decisions.md override): storage keeps every attachment;
+    // the 3-cap is applied at render/creation time.
+    assert.equal(validRes.snapshot.notes[0].meta.attachments.length, 4);
+    assert.equal(getRenderableAttachments(validRes.snapshot.notes[0].meta).length, 3);
   }
 
   assert.equal(validateSnapshotPayload('{bad json').ok, false);

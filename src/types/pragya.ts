@@ -3,11 +3,23 @@ export type BookKind = 'nonfiction' | 'fiction';
 export type BookStatus = 'reading' | 'queued' | 'finished' | 'paused';
 export type PosUnit = 'page' | 'percent' | 'loc';
 
+export interface BookCapstone {
+  arcOrThesis: string;
+  keyLearnings: string[];
+  perspectiveShift: string;
+  completedAt: string;
+}
+
 export interface BookMetaJson {
   coverUrl?: string;
   startedAt?: string;
   finishedAt?: string;
   updatedAt: string;
+  currentChapter?: string;
+  /** Stored verbatim (agent-owned). Read via `getBookCapstone()` (utils/metaCodecs) for a typed view. */
+  capstone?: unknown;
+  /** Unknown keys (e.g. written by the CLI/skill) are preserved verbatim on round-trip. */
+  [extraKey: string]: unknown;
 }
 
 export interface Book {
@@ -56,13 +68,23 @@ export type Attachment =
 
 export interface NoteMetaJson {
   title?: string;
+  /**
+   * Stored verbatim, including unknown/invalid entries and entries beyond 3.
+   * Render via `getRenderableAttachments()` / edit via `splitAttachments()` (utils/metaCodecs).
+   */
   attachments: Attachment[];
   links: string[];
   isPrediction?: boolean;
-  socraticQuestions?: [string, string];
+  /** 1–3 trimmed, non-empty questions. */
+  socraticQuestions?: string[];
   ocrBackfilled?: boolean;
   exportedAt?: string;
   lastReviewedAt?: string;
+  chapter?: string;
+  /** Agent-owned spar progress marker; passed through verbatim (not validated). */
+  sparStage?: unknown;
+  /** Unknown keys (e.g. written by the CLI/skill) are preserved verbatim on round-trip. */
+  [extraKey: string]: unknown;
 }
 
 export interface Note {

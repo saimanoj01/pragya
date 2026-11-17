@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import type { Book, Note } from '../../types/pragya';
 import { usePragya } from '../../context/PragyaContext';
+import { getRenderableAttachments } from '../../utils/metaCodecs';
 import { isSafeHttpUrl, navigateTo } from '../../utils/navigation';
 import { formatPosDisplay, isNoteSpoiler, isSealedPrediction } from '../../utils/spoilerMath';
 import { extractNoteWikilinks } from '../../utils/wikilinks';
@@ -52,7 +53,7 @@ export const NotesView: React.FC<NotesViewProps> = ({
     for (const n of notes) {
       if (n.status === 'inbox' || n.status === 'in-reflection') toSpar += 1;
       if (n.status === 'atomic') atomic += 1;
-      if ((n.meta?.attachments?.length || 0) > 0 || (n.meta?.links?.length || 0) > 0) media += 1;
+      if (getRenderableAttachments(n.meta).length > 0 || (n.meta?.links?.length || 0) > 0) media += 1;
       if (extractNoteWikilinks(n).length > 0) concepts += 1;
     }
 
@@ -77,7 +78,7 @@ export const NotesView: React.FC<NotesViewProps> = ({
         }
         if (
           filter === 'media' &&
-          (n.meta?.attachments?.length || 0) === 0 &&
+          getRenderableAttachments(n.meta).length === 0 &&
           (n.meta?.links?.length || 0) === 0
         ) {
           return false;
@@ -173,7 +174,7 @@ export const NotesView: React.FC<NotesViewProps> = ({
       } else if (key === 'o') {
         const active = filteredNotes[focusedIndex];
         if (active && !(isNoteSpoiler(active, bookMap.get(active.bookId)) && !revealedSlugs.has(active.slug))) {
-          const docOrLink = active.meta?.attachments?.find(
+          const docOrLink = getRenderableAttachments(active.meta).find(
             (a): a is Extract<typeof a, { type: 'doc' | 'link' }> =>
               a.type !== 'image' && isSafeHttpUrl(a.url)
           );
@@ -341,7 +342,7 @@ export const NotesView: React.FC<NotesViewProps> = ({
             const spoiler = isNoteSpoiler(note, book);
             const isRevealed = revealedSlugs.has(note.slug);
             const showShield = spoiler && !isRevealed;
-            const attachments = note.meta?.attachments || [];
+            const attachments = getRenderableAttachments(note.meta);
             const isFocused = idx === focusedIndex;
 
             return (
