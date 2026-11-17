@@ -1,6 +1,15 @@
 import React, { useEffect, useId, useMemo, useRef, useState } from 'react';
-import { AlertTriangle, RotateCcw, Sparkles, X } from 'lucide-react';
-import type { DeltaStatus, Note } from '../../types/pragya';
+import {
+  AlertTriangle,
+  ChevronDown,
+  ChevronUp,
+  FileText,
+  Link2,
+  RotateCcw,
+  Sparkles,
+  X,
+} from 'lucide-react';
+import type { Attachment, DeltaStatus, Note } from '../../types/pragya';
 import { usePragya } from '../../context/PragyaContext';
 import {
   formatWhenDoDisplay,
@@ -15,10 +24,13 @@ import {
   writeDraft,
   type DeepenDraft,
 } from '../../utils/draftStorage';
+import { isSafeHttpUrl } from '../../utils/navigation';
 import { generateUniqueSlug } from '../../utils/wikilinks';
 import { showToast } from '../../utils/toast';
+import { DriveImage } from '../common/DriveImage';
 import { Modal } from '../common/Modal';
 import { WikilinkAutocomplete } from '../common/WikilinkAutocomplete';
+import { ImageLightbox } from './ImageLightbox';
 
 export interface DeepenNoteModalProps {
   note: Note | null;
@@ -56,6 +68,10 @@ export const DeepenNoteModal: React.FC<DeepenNoteModalProps> = ({
   const [submitting, setSubmitting] = useState(false);
   const [draftRestored, setDraftRestored] = useState(false);
   const [baseUpdatedAt, setBaseUpdatedAt] = useState('');
+  const [showSourceRef, setShowSourceRef] = useState(true);
+  const [lightboxAtt, setLightboxAtt] = useState<Extract<Attachment, { type: 'image' }> | null>(
+    null
+  );
 
   const [takeawayCursor, setTakeawayCursor] = useState<number | null>(null);
   const [contextCursor, setContextCursor] = useState<number | null>(null);
@@ -210,6 +226,8 @@ export const DeepenNoteModal: React.FC<DeepenNoteModalProps> = ({
     setContextCursor(null);
     setCritiqueCursor(null);
     setSubmitting(false);
+    setShowSourceRef(true);
+    setLightboxAtt(null);
   }, [isOpen, note]);
 
   // Debounced (250ms) draft autosave
@@ -283,8 +301,7 @@ export const DeepenNoteModal: React.FC<DeepenNoteModalProps> = ({
   const capReached = otherActiveCount >= 5;
   const isDeltaCapViolation = capReached && deltaStatus === 'active';
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const persistDeepen = async (mode: 'draft' | 'atomic') => {
     if (!note) return;
 
     if (isDeltaCapViolation) {
@@ -314,7 +331,7 @@ export const DeepenNoteModal: React.FC<DeepenNoteModalProps> = ({
         {
           ...note,
           slug: nextSlug,
-          status: 'atomic',
+          status: mode === 'atomic' ? 'atomic' : note.status,
           takeaway: takeaway.trim(),
           contextMechanism: contextMechanism.trim(),
           critique: critique.trim(),
@@ -332,7 +349,10 @@ export const DeepenNoteModal: React.FC<DeepenNoteModalProps> = ({
       submittedOrDiscardedRef.current = true;
       clearDraft(getDeepenDraftKey(note.id));
       setDraftRestored(false);
-      showToast('Note deepened to Atomic', 'success');
+      showToast(
+        mode === 'atomic' ? 'Note deepened to Atomic' : 'Deepening draft saved',
+        mode === 'atomic' ? 'success' : 'info'
+      );
       onSaved?.(saved);
       onClose();
     } catch (err) {
@@ -342,9 +362,16 @@ export const DeepenNoteModal: React.FC<DeepenNoteModalProps> = ({
     }
   };
 
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    await persistDeepen('atomic');
+  };
+
   if (!note) return null;
 
   const socraticQuestions = note.meta?.socraticQuestions;
+  const sourceAttachments = note.meta?.attachments || [];
+  const hasSourceReference = Boolean(note.quote?.trim()) || sourceAttachments.length > 0;
 
   return (
     <Modal
@@ -391,6 +418,89 @@ export const DeepenNoteModal: React.FC<DeepenNoteModalProps> = ({
             <RotateCcw className="w-3 h-3" />
             <span>Discard</span>
           </button>
+        </div>
+      )}
+
+      {hasSourceReference && (
+        <div
+          data-testid="deepen-source-reference"
+          className="mb-4 rounded-[12px] bg-surface2/50 border border-border overflow-hidden"
+        >
+          <button
+            type="button"
+            data-testid="deepen-source-toggle"
+            aria-expanded={showSourceRef}
+            onClick={() => setShowSourceRef(prev => !prev)}
+            className="w-full px-4 py-2.5 flex items-center justify-between gap-2 text-left text-eyebrow uppercase text-muted-foreground hover:text-foreground transition-colors"
+          >
+            <span>
+              Source Passage{sourceAttachments.length > 0 ? ` & Attachments (${sourceAttachments.length})` : ''}
+            </span>
+            {showSourceRef ? (
+              <ChevronUp className="w-4 h-4 shrink-0" />
+            ) : (
+              <ChevronDown className="w-4 h-4 shrink-0" />
+            )}
+          </button>
+
+          {showSourceRef && (
+            <div className="px-4 pb-3.5 pt-1 space-y-3 border-t border-border/50">
+              {note.quote?.trim() && (
+                <blockquote
+                  data-testid="deepen-source-quote"
+                  className="pl-3 border-l-2 border-border italic text-body text-muted-foreground whitespace-pre-wrap"
+                >
+                  &ldquo;{note.quote}&rdquo;
+                </blockquote>
+              )}
+
+              {sourceAttachments.length > 0 && (
+                <div className="flex flex-wrap items-center gap-2">
+                  {sourceAttachments.map(att =>
+                    att.type === 'image' ? (
+                      <button
+                        key={att.id}
+                        type="button"
+                        data-testid={`deepen-attachment-image-${att.id}`}
+                        aria-label={`Preview ${att.fileName}`}
+                        onClick={() => setLightboxAtt(att)}
+                        className="rounded-[8px] border border-border overflow-hidden hover:opacity-90 transition-opacity focus:outline-none focus:ring-2 focus:ring-ring/50"
+                      >
+                        <DriveImage
+                          attachment={att}
+                          alt={att.fileName}
+                          className="w-16 h-16 object-cover"
+                        />
+                      </button>
+                    ) : isSafeHttpUrl(att.url) ? (
+                      <a
+                        key={att.id}
+                        href={att.url.trim()}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-[8px] bg-background border border-border text-label text-foreground hover:bg-surface2"
+                      >
+                        {att.type === 'doc' ? (
+                          <FileText className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
+                        ) : (
+                          <Link2 className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
+                        )}
+                        <span className="truncate max-w-[180px]">{att.title}</span>
+                      </a>
+                    ) : (
+                      <span
+                        key={att.id}
+                        className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-[8px] bg-background border border-border text-label text-muted-foreground"
+                      >
+                        <Link2 className="w-3.5 h-3.5 shrink-0" />
+                        <span className="truncate max-w-[180px]">{att.title}</span>
+                      </span>
+                    )
+                  )}
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
 
@@ -652,13 +762,22 @@ export const DeepenNoteModal: React.FC<DeepenNoteModalProps> = ({
           />
         </div>
 
-        <div className="flex items-center justify-end gap-2 pt-2">
+        <div className="flex flex-wrap items-center justify-end gap-2 pt-2">
           <button
             type="button"
             onClick={onClose}
             className="h-10 px-4 rounded-[10px] text-body font-medium text-muted-foreground hover:text-foreground hover:bg-surface2"
           >
             Cancel
+          </button>
+          <button
+            type="button"
+            disabled={submitting}
+            data-testid="deepen-save-draft-btn"
+            onClick={() => void persistDeepen('draft')}
+            className="h-10 px-4 rounded-[10px] bg-surface2 hover:bg-secondary border border-border text-body font-semibold text-foreground disabled:opacity-50"
+          >
+            Save Draft
           </button>
           <button
             type="submit"
@@ -670,6 +789,8 @@ export const DeepenNoteModal: React.FC<DeepenNoteModalProps> = ({
           </button>
         </div>
       </form>
+
+      <ImageLightbox attachment={lightboxAtt} onClose={() => setLightboxAtt(null)} />
     </Modal>
   );
 };

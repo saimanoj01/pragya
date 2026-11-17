@@ -83,6 +83,22 @@ export interface ReplaceWorkspaceOptions {
   backup?: boolean;
 }
 
+export type BookmarkSessionUndoAction =
+  | { mode: 'created'; sessionId: string }
+  | { mode: 'updated'; prevSession: ReadingSession };
+
+export interface BookmarkAdvanceUndo {
+  prevBook: Book;
+  sessionAction: BookmarkSessionUndoAction;
+}
+
+export interface BookmarkAdvanceResult {
+  book: Book;
+  changed: boolean;
+  rejectedBackward: boolean;
+  undo?: BookmarkAdvanceUndo;
+}
+
 export interface PragyaContextValue {
   books: Book[];
   notes: Note[];
@@ -102,7 +118,9 @@ export interface PragyaContextValue {
     bookId: string,
     incomingPos: number,
     options?: { manualOverride?: boolean; sessionNote?: string }
-  ) => Promise<{ book: Book; changed: boolean; rejectedBackward: boolean }>;
+  ) => Promise<BookmarkAdvanceResult>;
+  revertBookmarkAdvance: (undo: BookmarkAdvanceUndo) => Promise<void>;
+  restoreBook: (prevBook: Book) => Promise<Book>;
   startReadingBook: (bookId: string) => Promise<Book | null>;
   markBookFinished: (bookId: string) => Promise<Book | null>;
   captureNote: (input: QuickCaptureInput) => Promise<Note>;
@@ -355,7 +373,7 @@ export const PragyaProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       bookId: string,
       incomingPos: number,
       options: { manualOverride?: boolean; sessionNote?: string } = {}
-    ): Promise<{ book: Book; changed: boolean; rejectedBackward: boolean }> => {
+    ): Promise<BookmarkAdvanceResult> => {
       const existing = booksRef.current.find(b => b.id === bookId);
       if (!existing) {
         throw new Error('Book not found');
@@ -391,12 +409,28 @@ export const PragyaProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         manualOverride: options.manualOverride,
       });
 
+      const prevSession = sessionRes.isNew
+        ? undefined
+        : sessionsRef.current.find(s => s.id === sessionRes.upserted.id);
+      const sessionAction: BookmarkSessionUndoAction =
+        !sessionRes.isNew && prevSession
+          ? { mode: 'updated', prevSession }
+          : { mode: 'created', sessionId: sessionRes.upserted.id };
+
       const savedSession = await adapter.saveSession(sessionRes.upserted);
       const nextSessions = upsertList(sessionsRef.current, savedSession);
       sessionsRef.current = nextSessions;
       setSessions(nextSessions);
 
-      return { book: savedBook, changed: true, rejectedBackward: false };
+      return {
+        book: savedBook,
+        changed: true,
+        rejectedBackward: false,
+        undo: {
+          prevBook: existing,
+          sessionAction,
+        },
+      };
     },
     [adapter, assertCloudWritable]
   );
@@ -406,9 +440,71 @@ export const PragyaProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       bookId: string,
       incomingPos: number,
       options: { manualOverride?: boolean; sessionNote?: string } = {}
-    ): Promise<{ book: Book; changed: boolean; rejectedBackward: boolean }> =>
+    ): Promise<BookmarkAdvanceResult> =>
       enqueueMutation(() => advanceBookPositionInternal(bookId, incomingPos, options)),
     [advanceBookPositionInternal, enqueueMutation]
+  );
+
+  const revertBookmarkAdvance = useCallback(
+    (undo: BookmarkAdvanceUndo): Promise<void> =>
+      enqueueMutation(async () => {
+        assertCloudWritable();
+        const loaded = booksRef.current.find(b => b.id === undo.prevBook.id);
+        const nowIso = new Date().toISOString();
+        const restoredBook: Book = {
+          ...undo.prevBook,
+          meta: {
+            ...undo.prevBook.meta,
+            updatedAt: nowIso,
+          },
+        };
+        const savedBook = await adapter.saveBook(restoredBook, {
+          expectedBaseUpdatedAt: loaded?.meta?.updatedAt,
+        });
+        const nextBooks = upsertList(booksRef.current, savedBook);
+        booksRef.current = nextBooks;
+        setBooks(nextBooks);
+
+        if (undo.sessionAction.mode === 'created') {
+          const { sessionId } = undo.sessionAction;
+          if (adapter.deleteSession) {
+            await adapter.deleteSession(sessionId);
+          }
+          const nextSessions = sessionsRef.current.filter(s => s.id !== sessionId);
+          sessionsRef.current = nextSessions;
+          setSessions(nextSessions);
+        } else {
+          const savedSession = await adapter.saveSession(undo.sessionAction.prevSession);
+          const nextSessions = upsertList(sessionsRef.current, savedSession);
+          sessionsRef.current = nextSessions;
+          setSessions(nextSessions);
+        }
+      }),
+    [adapter, assertCloudWritable, enqueueMutation]
+  );
+
+  const restoreBook = useCallback(
+    (prevBook: Book): Promise<Book> =>
+      enqueueMutation(async () => {
+        assertCloudWritable();
+        const loaded = booksRef.current.find(b => b.id === prevBook.id);
+        const nowIso = new Date().toISOString();
+        const restored: Book = {
+          ...prevBook,
+          meta: {
+            ...prevBook.meta,
+            updatedAt: nowIso,
+          },
+        };
+        const saved = await adapter.saveBook(restored, {
+          expectedBaseUpdatedAt: loaded?.meta?.updatedAt,
+        });
+        const nextBooks = upsertList(booksRef.current, saved);
+        booksRef.current = nextBooks;
+        setBooks(nextBooks);
+        return saved;
+      }),
+    [adapter, assertCloudWritable, enqueueMutation]
   );
 
   const startReadingBook = useCallback(
@@ -714,6 +810,8 @@ export const PragyaProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         addBook,
         updateBook,
         advanceBookPosition,
+        revertBookmarkAdvance,
+        restoreBook,
         startReadingBook,
         markBookFinished,
         captureNote,

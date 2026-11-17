@@ -673,6 +673,75 @@ export class GoogleSheetsAdapter implements StorageAdapter {
     });
   }
 
+  async deleteRowById(tab: TabSchemaSpec['title'], id: string): Promise<boolean> {
+    const spreadsheetId = await this.getActiveSpreadsheetId();
+    const colARes = await this.fetchApi<{ values?: unknown[][] }>(
+      `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(
+        spreadsheetId
+      )}/values/${encodeURIComponent(`${tab}!A:A`)}`
+    );
+
+    const rows = colARes.values || [];
+    let matchIndex = -1;
+    for (let i = 1; i < rows.length; i += 1) {
+      const cell = String(rows[i]?.[0] ?? '').trim();
+      if (cell === id && cell !== 'id') {
+        matchIndex = i;
+        break;
+      }
+    }
+    if (matchIndex < 1) {
+      return false;
+    }
+
+    const meta = await this.fetchApi<{
+      sheets?: Array<{ properties?: { sheetId?: number; title?: string } }>;
+    }>(
+      `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(
+        spreadsheetId
+      )}?fields=sheets.properties`
+    );
+    const sheetId = (meta.sheets || []).find(s => s.properties?.title === tab)?.properties
+      ?.sheetId;
+    if (typeof sheetId !== 'number') {
+      return false;
+    }
+
+    await this.fetchApi(
+      `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(
+        spreadsheetId
+      )}:batchUpdate`,
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          requests: [
+            {
+              deleteDimension: {
+                range: {
+                  sheetId,
+                  dimension: 'ROWS',
+                  startIndex: matchIndex,
+                  endIndex: matchIndex + 1,
+                },
+              },
+            },
+          ],
+        }),
+      }
+    );
+    return true;
+  }
+
+  async deleteSession(sessionId: string): Promise<void> {
+    return this.enqueueWrite(async () => {
+      await this.deleteRowById('Sessions', sessionId);
+      await this.updateCacheAfterMutation(s => ({
+        ...s,
+        sessions: s.sessions.filter(x => x.id !== sessionId),
+      }));
+    });
+  }
+
   async saveDeltaLog(log: DeltaLog): Promise<DeltaLog> {
     return this.enqueueWrite(async () => {
       await this.upsertRowById('DeltaLogs', 'E', log.id, deltaLogToRow(log));

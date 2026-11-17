@@ -201,6 +201,7 @@ function PragyaShell() {
             theme={theme}
             toggleTheme={toggleTheme}
             onOpenCapture={() => openQuickCapture(null)}
+            onOpenCommandPalette={() => setShowCommandPalette(true)}
             onSyncNow={() => void syncNow(true)}
             onLogout={() => void logout()}
           />
@@ -209,6 +210,7 @@ function PragyaShell() {
             isOpen={showCaptureModal}
             initialBookId={captureBookId}
             onClose={() => setShowCaptureModal(false)}
+            onOpenAddBook={() => setShowAddBookModal(true)}
           />
 
           <AddBookModal

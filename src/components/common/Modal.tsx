@@ -10,6 +10,10 @@ export interface ModalProps {
   headingId?: string;
   dataTestId?: string;
   variant?: 'dialog' | 'sheet';
+  /** When true (and variant='dialog'), docks as a full-width bottom sheet on <640px mobile. */
+  mobileSheet?: boolean;
+  /** Optional explicit control to focus on open instead of the first form field. */
+  initialFocusRef?: React.RefObject<HTMLElement | null>;
   children: React.ReactNode;
   maxWidth?: string;
   className?: string;
@@ -24,6 +28,8 @@ export function Modal({
   headingId,
   dataTestId,
   variant = 'dialog',
+  mobileSheet = false,
+  initialFocusRef,
   children,
   maxWidth = 'max-w-lg',
   className = '',
@@ -33,6 +39,8 @@ export function Modal({
   const previouslyFocusedElementRef = useRef<HTMLElement | null>(null);
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
+  const initialFocusRefHolder = useRef(initialFocusRef);
+  initialFocusRefHolder.current = initialFocusRef;
 
   useEffect(() => {
     if (!isOpen) return;
@@ -42,6 +50,12 @@ export function Modal({
     const focusInitialElement = () => {
       const container = modalRef.current;
       if (!container) return;
+      const explicitTarget = initialFocusRefHolder.current?.current;
+      if (explicitTarget && container.contains(explicitTarget) && explicitTarget.offsetParent !== null) {
+        explicitTarget.focus();
+        return;
+      }
+
       const active = document.activeElement as HTMLElement | null;
       if (active && container.contains(active) && active !== container) {
         return;
@@ -91,8 +105,8 @@ export function Modal({
         if (dialogs.length > 0 && dialogs[dialogs.length - 1] !== modalRef.current) {
           return;
         }
-        // Respect inner popovers if any are open
-        if (document.querySelector('[data-popover="true"]')) {
+        // Respect inner popovers if any are open inside this modal
+        if (modalRef.current?.querySelector('[data-popover="true"]')) {
           return;
         }
         e.preventDefault();
@@ -154,17 +168,27 @@ export function Modal({
       className={
         isSheet
           ? `fixed inset-0 z-50 flex items-end sm:items-stretch sm:justify-end bg-background/60 backdrop-blur-sm ${overlayClassName}`
-          : `fixed inset-0 z-50 flex items-center justify-center p-4 bg-background/80 backdrop-blur-sm overflow-y-auto ${overlayClassName}`
+          : mobileSheet
+            ? `fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4 bg-background/80 backdrop-blur-sm overflow-y-auto ${overlayClassName}`
+            : `fixed inset-0 z-50 flex items-center justify-center p-4 bg-background/80 backdrop-blur-sm overflow-y-auto ${overlayClassName}`
       }
     >
       <motion.div
-        initial={isSheet ? { opacity: 0, x: 24 } : { opacity: 0, scale: 0.96, y: 8 }}
+        initial={
+          isSheet
+            ? { opacity: 0, x: 24 }
+            : mobileSheet
+              ? { opacity: 0, y: 20 }
+              : { opacity: 0, scale: 0.96, y: 8 }
+        }
         animate={isSheet ? { opacity: 1, x: 0 } : { opacity: 1, scale: 1, y: 0 }}
         transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1] }}
         className={
           isSheet
             ? `w-full sm:w-[440px] sm:h-full max-h-[90vh] sm:max-h-screen rounded-t-[18px] sm:rounded-none sm:border-l border-t sm:border-t-0 border-border bg-popover p-6 shadow-2xl relative overflow-y-auto custom-scrollbar ${className}`
-            : `bg-popover text-popover-foreground w-full ${maxWidth} max-h-[90vh] rounded-[14px] p-6 shadow-2xl border border-border relative overflow-y-auto custom-scrollbar ${className}`
+            : mobileSheet
+              ? `bg-popover text-popover-foreground w-full ${maxWidth} max-h-[92dvh] sm:max-h-[90vh] rounded-t-[18px] sm:rounded-[14px] p-4 sm:p-6 shadow-2xl border-t sm:border border-border relative overflow-y-auto custom-scrollbar ${className}`
+              : `bg-popover text-popover-foreground w-full ${maxWidth} max-h-[90vh] rounded-[14px] p-6 shadow-2xl border border-border relative overflow-y-auto custom-scrollbar ${className}`
         }
         onClick={e => e.stopPropagation()}
       >

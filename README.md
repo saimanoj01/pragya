@@ -79,14 +79,25 @@ VITE_BASE_PATH='/pragya/' npm run build
 
 ## `pragya-companion` CLI Examples
 
-Works against live Google Workspace (`gsheets`/`gdrive`/`gdocs`) or offline via `--state-file <snapshot.json>`:
+Works standalone via either `scripts/pragya_cli.py` or `.agents/skills/pragya-companion/scripts/pragya_cli.py` against live Google Workspace (`gsheets`/`gdrive`/`gdocs`) or offline via `--state-file <snapshot.json>` (with Mode B schema fallback in `.agents/skills/pragya-companion/references/schema_and_ops.md`):
 
 ```bash
-# 1. Capture note & advance bookmark
+# 0. Shelf & reading progress primitives
+python3 scripts/pragya_cli.py --state-file pragya.json book-list --status reading
+python3 scripts/pragya_cli.py --state-file pragya.json book-add \
+  --title "The Creative Act" --author "Rick Rubin" --format kindle --pos-unit percent
+python3 scripts/pragya_cli.py --state-file pragya.json book-update --book "book-exhalation" --status finished
+python3 scripts/pragya_cli.py --state-file pragya.json progress --book "book-systems" --delta 15 --session-note "Ch. 3"
+
+# 1. Capture note (quick inbox, or direct conversation-first --atomic capture)
 python3 scripts/pragya_cli.py --state-file pragya.json capture \
   --book "book-systems" --pos 155 --takeaway "Wait out feedback delays." --tags "#systems" --spar
+python3 scripts/pragya_cli.py --state-file pragya.json capture \
+  --book "book-systems" --title "Respecting Lag" --takeaway "Wait one cycle before tuning." \
+  --context "Delayed loops overshoot." --critique "Unsafe for runaway failures." \
+  --trigger "alert fires right after deploy" --action "wait one cycle" --delta-status active --atomic
 
-# 2. 4-stage Socratic reflection (Stage 1 -> wait for reply -> Stage commit)
+# 2. 4-stage Socratic reflection (Stage 1 with optional --q1/--q2 -> wait for reply -> Stage commit)
 python3 scripts/pragya_cli.py --state-file pragya.json reflect --note delays-in-feedback-loops --stage 1
 python3 scripts/pragya_cli.py --state-file pragya.json reflect --note delays-in-feedback-loops --stage commit \
   --context "Delay amplification" --critique "Fails in runaway crises" \

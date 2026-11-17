@@ -35,6 +35,14 @@ interface CommandItem {
   action: () => void;
 }
 
+const CATEGORIES: Array<CommandItem['category']> = ['Actions', 'Views', 'Books', 'Notes'];
+const EMPTY_QUERY_CAPS: Record<CommandItem['category'], number> = {
+  Actions: 5,
+  Views: 5,
+  Books: 6,
+  Notes: 8,
+};
+
 export const CommandPalette: React.FC<CommandPaletteProps> = ({
   isOpen,
   onClose,
@@ -68,7 +76,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
         if (dialogs.length > 0 && dialogs[dialogs.length - 1] !== dialogRef.current) {
           return;
         }
-        if (document.querySelector('[data-popover="true"]')) {
+        if (dialogRef.current?.querySelector('[data-popover="true"]')) {
           return;
         }
         e.preventDefault();
@@ -192,15 +200,36 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
     return list;
   }, [bookMap, books, notes, onOpenCapture, onSyncNow, onToggleTheme]);
 
-  const filteredItems = useMemo(() => {
+  const { groupedItems, flatItems } = useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!q) return items.slice(0, 20);
-    return items.filter(
-      item =>
-        item.title.toLowerCase().includes(q) ||
-        (item.subtitle && item.subtitle.toLowerCase().includes(q)) ||
-        item.keywords.some(k => k.includes(q))
-    );
+    const matches = q
+      ? items.filter(
+          item =>
+            item.title.toLowerCase().includes(q) ||
+            (item.subtitle && item.subtitle.toLowerCase().includes(q)) ||
+            item.keywords.some(k => k.includes(q))
+        )
+      : items;
+
+    const groups: Array<{
+      category: CommandItem['category'];
+      entries: Array<{ item: CommandItem; flatIndex: number }>;
+    }> = [];
+    const flat: CommandItem[] = [];
+
+    for (const cat of CATEGORIES) {
+      const catMatches = matches.filter(item => item.category === cat);
+      const capped = q ? catMatches : catMatches.slice(0, EMPTY_QUERY_CAPS[cat]);
+      if (capped.length === 0) continue;
+      const entries = capped.map(item => {
+        const flatIndex = flat.length;
+        flat.push(item);
+        return { item, flatIndex };
+      });
+      groups.push({ category: cat, entries });
+    }
+
+    return { groupedItems: groups, flatItems: flat };
   }, [items, query]);
 
   useEffect(() => {
@@ -216,15 +245,15 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'ArrowDown') {
       e.preventDefault();
-      setSelectedIndex(prev => (prev + 1) % Math.max(1, filteredItems.length));
+      setSelectedIndex(prev => (prev + 1) % Math.max(1, flatItems.length));
     } else if (e.key === 'ArrowUp') {
       e.preventDefault();
       setSelectedIndex(
-        prev => (prev - 1 + filteredItems.length) % Math.max(1, filteredItems.length)
+        prev => (prev - 1 + flatItems.length) % Math.max(1, flatItems.length)
       );
     } else if (e.key === 'Enter') {
       e.preventDefault();
-      const selected = filteredItems[selectedIndex];
+      const selected = flatItems[selectedIndex];
       if (selected) {
         onClose();
         selected.action();
@@ -286,58 +315,69 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
 
             <div
               ref={listRef}
-              className="max-h-80 overflow-y-auto custom-scrollbar p-2 space-y-1"
+              className="max-h-80 overflow-y-auto custom-scrollbar p-2 space-y-2"
             >
-              {filteredItems.length === 0 ? (
+              {flatItems.length === 0 ? (
                 <div className="py-8 text-center text-muted-foreground text-label">
                   No matching books, notes, or actions found.
                 </div>
               ) : (
-                filteredItems.map((item, idx) => {
-                  const Icon = item.icon;
-                  const isSelected = idx === selectedIndex;
-                  return (
-                    <button
-                      key={item.id}
-                      type="button"
-                      data-cmd-idx={idx}
-                      data-testid={`command-palette-item-${item.id}`}
-                      onClick={() => {
-                        onClose();
-                        item.action();
-                      }}
-                      onMouseEnter={() => setSelectedIndex(idx)}
-                      className={`w-full flex items-center justify-between gap-3 px-3 py-2.5 rounded-[10px] text-left transition-colors ${
-                        isSelected
-                          ? 'bg-surface2 text-foreground border border-border'
-                          : 'text-foreground hover:bg-surface2/60 border border-transparent'
-                      }`}
-                    >
-                      <div className="flex items-center gap-3 min-w-0">
-                        <div
-                          className={`p-1.5 rounded-[8px] shrink-0 ${
+                groupedItems.map(group => (
+                  <div
+                    key={group.category}
+                    data-testid={`command-palette-group-${group.category.toLowerCase()}`}
+                    className="space-y-0.5"
+                  >
+                    <div className="px-3 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                      {group.category}
+                    </div>
+                    {group.entries.map(({ item, flatIndex }) => {
+                      const Icon = item.icon;
+                      const isSelected = flatIndex === selectedIndex;
+                      return (
+                        <button
+                          key={item.id}
+                          type="button"
+                          data-cmd-idx={flatIndex}
+                          data-testid={`command-palette-item-${item.id}`}
+                          onClick={() => {
+                            onClose();
+                            item.action();
+                          }}
+                          onMouseEnter={() => setSelectedIndex(flatIndex)}
+                          className={`w-full flex items-center justify-between gap-3 px-3 py-2.5 rounded-[10px] text-left transition-colors ${
                             isSelected
-                              ? 'bg-primary text-primary-foreground'
-                              : 'bg-surface2 text-muted-foreground'
+                              ? 'bg-surface2 text-foreground border border-border'
+                              : 'text-foreground hover:bg-surface2/60 border border-transparent'
                           }`}
                         >
-                          <Icon className="w-4 h-4" />
-                        </div>
-                        <div className="min-w-0">
-                          <p className="text-body font-medium truncate">{item.title}</p>
-                          {item.subtitle && (
-                            <p className="text-label text-muted-foreground truncate">
-                              {item.subtitle}
-                            </p>
-                          )}
-                        </div>
-                      </div>
-                      <span className="text-[11px] px-1.5 py-0.5 rounded bg-surface2 text-muted-foreground shrink-0 border border-border/60">
-                        {item.category}
-                      </span>
-                    </button>
-                  );
-                })
+                          <div className="flex items-center gap-3 min-w-0">
+                            <div
+                              className={`p-1.5 rounded-[8px] shrink-0 ${
+                                isSelected
+                                  ? 'bg-primary text-primary-foreground'
+                                  : 'bg-surface2 text-muted-foreground'
+                              }`}
+                            >
+                              <Icon className="w-4 h-4" />
+                            </div>
+                            <div className="min-w-0">
+                              <p className="text-body font-medium truncate">{item.title}</p>
+                              {item.subtitle && (
+                                <p className="text-label text-muted-foreground truncate">
+                                  {item.subtitle}
+                                </p>
+                              )}
+                            </div>
+                          </div>
+                          <span className="text-[11px] px-1.5 py-0.5 rounded bg-surface2 text-muted-foreground shrink-0 border border-border/60">
+                            {item.category}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                ))
               )}
             </div>
           </motion.div>

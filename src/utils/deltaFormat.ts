@@ -2,9 +2,9 @@ export function stripDeltaPrefix(value: string, prefix: 'WHEN' | 'DO'): string {
   const trimmed = (value || '').trim();
   if (!trimmed) return '';
   if (prefix === 'WHEN') {
-    return trimmed.replace(/^(?:when\s*:?\s*)+/i, '').trim();
+    return trimmed.replace(/^(?:when(?:\s+|:\s*|$))+/i, '').trim();
   }
-  return trimmed.replace(/^(?:do\s*:?\s*)+/i, '').trim();
+  return trimmed.replace(/^(?:do(?:\s+|:\s*|$))+/i, '').trim();
 }
 
 export function normalizeDeltaTrigger(value: string): string {

@@ -21,6 +21,7 @@ import { isSafeHttpUrl, navigateTo } from '../../utils/navigation';
 import {
   computePercentDisplay,
   formatPosDisplay,
+  getQuickAdvanceSpec,
   isNoteSpoiler,
   isSealedPrediction,
   isUnlockedPrediction,
@@ -39,7 +40,8 @@ export const BookDetailView: React.FC<BookDetailViewProps> = ({
   onEditBook,
   onOpenCaptureForBook,
 }) => {
-  const { books, notes, advanceBookPosition, markBookFinished } = usePragya();
+  const { books, notes, advanceBookPosition, revertBookmarkAdvance, markBookFinished, restoreBook } =
+    usePragya();
 
   const book = useMemo(() => books.find(b => b.id === bookId) || null, [books, bookId]);
   const bookNotes = useMemo(
@@ -141,19 +143,40 @@ export const BookDetailView: React.FC<BookDetailViewProps> = ({
   }
 
   const pct = computePercentDisplay(book);
-  const stepLabel =
-    book.posUnit === 'percent' ? '+10%' : book.posUnit === 'loc' ? '+10' : '+10p';
+  const { step, label: stepLabel } = getQuickAdvanceSpec(book.posUnit);
 
   const handleAdvance10 = async () => {
-    const nextPos =
-      book.totalPos > 0 ? Math.min(book.totalPos, book.currentPos + 10) : book.currentPos + 10;
+    const maxPos =
+      book.totalPos > 0 ? book.totalPos : book.posUnit === 'percent' ? 100 : Number.POSITIVE_INFINITY;
+    const nextPos = Number.isFinite(maxPos)
+      ? Math.min(maxPos, book.currentPos + step)
+      : book.currentPos + step;
     try {
       const res = await advanceBookPosition(book.id, nextPos);
       if (res.changed) {
         setExactInput(String(res.book.currentPos));
         showToast(
           `Updated "${book.title}" to ${formatPosDisplay(res.book.currentPos, book.posUnit)}`,
-          'success'
+          'success',
+          res.undo
+            ? {
+                id: `bookmark-undo-${book.id}`,
+                action: {
+                  label: 'Undo',
+                  testId: 'toast-undo-btn',
+                  onClick: () => {
+                    void revertBookmarkAdvance(res.undo!)
+                      .then(() => showToast('Reverted bookmark update', 'info'))
+                      .catch(err =>
+                        showToast(
+                          err instanceof Error ? err.message : 'Failed to undo bookmark update',
+                          'error'
+                        )
+                      );
+                  },
+                },
+              }
+            : undefined
         );
       }
     } catch (err) {
@@ -182,7 +205,26 @@ export const BookDetailView: React.FC<BookDetailViewProps> = ({
         setExactInput(String(res.book.currentPos));
         showToast(
           `Updated "${book.title}" to ${formatPosDisplay(res.book.currentPos, book.posUnit)}`,
-          'success'
+          'success',
+          res.undo
+            ? {
+                id: `bookmark-undo-${book.id}`,
+                action: {
+                  label: 'Undo',
+                  testId: 'toast-undo-btn',
+                  onClick: () => {
+                    void revertBookmarkAdvance(res.undo!)
+                      .then(() => showToast('Reverted bookmark update', 'info'))
+                      .catch(err =>
+                        showToast(
+                          err instanceof Error ? err.message : 'Failed to undo bookmark update',
+                          'error'
+                        )
+                      );
+                  },
+                },
+              }
+            : undefined
         );
       }
     } catch (err) {
@@ -191,9 +233,25 @@ export const BookDetailView: React.FC<BookDetailViewProps> = ({
   };
 
   const handleMarkFinished = async () => {
+    const prevBook = book;
     try {
       await markBookFinished(book.id);
-      showToast(`"${book.title}" marked finished — predictions unlocked!`, 'success');
+      showToast(`"${book.title}" marked finished — predictions unlocked!`, 'success', {
+        action: {
+          label: 'Undo',
+          testId: 'toast-undo-btn',
+          onClick: () => {
+            void restoreBook(prevBook)
+              .then(() => showToast(`Restored "${prevBook.title}" to ${prevBook.status}`, 'info'))
+              .catch(err =>
+                showToast(
+                  err instanceof Error ? err.message : 'Failed to undo mark finished',
+                  'error'
+                )
+              );
+          },
+        },
+      });
     } catch (err) {
       showToast(err instanceof Error ? err.message : 'Failed to mark finished', 'error');
     }
@@ -331,7 +389,7 @@ export const BookDetailView: React.FC<BookDetailViewProps> = ({
                 type="button"
                 data-testid={`advance-10p-btn-${book.id}`}
                 onClick={() => void handleAdvance10()}
-                className="h-9 px-3 rounded-[8px] bg-surface2 hover:bg-secondary border border-border text-label font-semibold text-foreground num whitespace-nowrap"
+                className="h-11 sm:h-9 px-3 rounded-[8px] bg-surface2 hover:bg-secondary border border-border text-label font-semibold text-foreground num whitespace-nowrap"
               >
                 {stepLabel}
               </button>
@@ -341,15 +399,16 @@ export const BookDetailView: React.FC<BookDetailViewProps> = ({
                 min="0"
                 data-testid="book-detail-advance-input"
                 value={exactInput}
+                onFocus={e => e.currentTarget.select()}
                 onChange={e => setExactInput(e.target.value)}
                 aria-label="Exact reading position"
-                className="w-24 h-9 px-3 rounded-[8px] bg-background border border-input text-label text-foreground num focus:outline-none focus:ring-2 focus:ring-ring/40"
+                className="w-24 h-11 sm:h-9 px-3 rounded-[8px] bg-background border border-input text-label text-foreground num focus:outline-none focus:ring-2 focus:ring-ring/40"
               />
 
               <button
                 type="submit"
                 data-testid="book-detail-advance-btn"
-                className="h-9 px-3.5 rounded-[8px] bg-surface2 hover:bg-secondary border border-border text-label font-semibold text-foreground inline-flex items-center gap-1 whitespace-nowrap"
+                className="h-11 sm:h-9 px-3.5 rounded-[8px] bg-surface2 hover:bg-secondary border border-border text-label font-semibold text-foreground inline-flex items-center gap-1 whitespace-nowrap"
               >
                 <span>Advance</span>
                 <ArrowRight className="w-3.5 h-3.5" />

@@ -61,3 +61,9 @@ export function computePercentDisplay(book: Book): number {
   if (book.totalPos > 0) return Math.round(clamp01(book.currentPos / book.totalPos) * 100);
   return Math.round(clamp01(book.normalizedPos) * 100);
 }
+
+export function getQuickAdvanceSpec(posUnit: PosUnit): { step: number; label: string } {
+  if (posUnit === 'percent') return { step: 5, label: '+5%' };
+  if (posUnit === 'loc') return { step: 50, label: '+50 loc' };
+  return { step: 10, label: '+10p' };
+}

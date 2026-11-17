@@ -11,6 +11,7 @@ import {
   Sun,
   Moon,
   LogOut,
+  Search,
   X,
   WifiOff,
 } from 'lucide-react';
@@ -23,6 +24,7 @@ export interface BottomNavProps {
   theme: 'light' | 'dark';
   toggleTheme: () => void;
   onOpenCapture: () => void;
+  onOpenCommandPalette: () => void;
   onSyncNow: () => void;
   onLogout: () => void;
 }
@@ -33,6 +35,7 @@ export const BottomNav: React.FC<BottomNavProps> = ({
   theme,
   toggleTheme,
   onOpenCapture,
+  onOpenCommandPalette,
   onSyncNow,
   onLogout,
 }) => {
@@ -184,6 +187,24 @@ export const BottomNav: React.FC<BottomNavProps> = ({
               </div>
 
               <div className="grid grid-cols-2 gap-2 pt-1">
+                <button
+                  type="button"
+                  data-testid="drawer-search-btn"
+                  onClick={() => {
+                    setShowMoreMenu(false);
+                    onOpenCommandPalette();
+                  }}
+                  className="col-span-2 flex items-center justify-between gap-2.5 p-3 rounded-[10px] bg-surface2/60 hover:bg-surface2 border border-border text-label font-semibold text-foreground"
+                >
+                  <span className="inline-flex items-center gap-2.5">
+                    <Search className="w-4 h-4 shrink-0" />
+                    <span>Search &amp; Commands</span>
+                  </span>
+                  <kbd className="px-1.5 py-0.5 text-[10px] rounded bg-background text-muted-foreground border border-border">
+                    ⌘K
+                  </kbd>
+                </button>
+
                 <button
                   type="button"
                   data-testid="drawer-nav-settings"

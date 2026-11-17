@@ -423,29 +423,32 @@ Single-key / chord shortcuts MUST NOT fire when `document.activeElement` is `<in
 
 ## 8. Unified Agent Skill (`pragya-companion`)
 
-Location: `.agents/skills/pragya-companion/SKILL.md` + Python CLI `scripts/pragya_cli.py` (Python 3 stdlib + subprocess adapters for `gsheets`, `gdrive`, `gdocs`, plus `--state-file <path.json>` offline/test backend).
+Location: `.agents/skills/pragya-companion/` (self-contained skill bundle with `SKILL.md`, `references/schema_and_ops.md`, and a standalone byte-synced `scripts/pragya_cli.py` alongside repo `scripts/pragya_cli.py` — Python 3 stdlib + subprocess adapters for `gsheets`, `gdrive`, `gdocs`, plus `--state-file <path.json>` offline/test backend and graceful `FileNotFoundError` Mode B fallback guidance).
 
 ### Supported Modes & CLI Subcommands
 
-1. **`CAPTURE` (`pragya_cli.py capture`):**
-   - Inputs: `--book <id|title>`, `--pos <num>`, `--quote <text>`, `--takeaway <text>`, `--tags <csv>`, `--spar` (`status='inbox'`), `--prediction`, `--image <path>`, `--doc-url <url>`, `--link <url>`, `--force-pos`.
-   - Enforces `Math.max` bookmark ceiling (unless `--force-pos`), 30-min session coalescing, optional upload of local image to `Pragya Media/`, and UUID-resolved write to `Notes!A:R` (`source = 'agent'`).
-2. **`REFLECT` (`pragya_cli.py reflect` — 4-Stage Socratic State Machine):**
-   - **Stage 1 (`--stage 1`):** Persists note with `status = 'in-reflection'`, generates 2 genre-aware Socratic questions (`[Application, Critique]` for non-fiction; `[Resonance, Subtext/Prediction]` for fiction strictly clamped to `<= book.normalizedPos`), stores them in `metaJson.socraticQuestions`, and prints a blocking prompt for Stage 2.
+1. **`SHELF & PROGRESS` (`book-list`, `book-add`, `book-update`, `progress`):**
+   - `book-list`: `[--status] [--kind] [--query]` returning `{ count, activeDeltaCount, books }`.
+   - `book-add`: `--title`, optional `--author` (`"Unknown Author"` default), `--format`, `--kind`, `--status`, `--pos`, `--total-pos` (`100` default for `percent`), `--pos-unit`, `--doc-url`, `--cover-url`, `--allow-duplicate` (URL safety checks, duplicate normalized title guard, `finished` sets `normalizedPos=1.0`, zero synthetic `Sessions`).
+   - `book-update`: `--book` + mutable metadata/status/position flags (`--force-pos` to lower `currentPos`, pre-write `updatedAt` conflict guard, `finished` unlocks fiction predictions and returns `unlockedPredictionsCount`).
+   - `progress`: `--book`, mutually exclusive `--pos` or `--delta`, `--finish`, `--session-note`, `--force-pos`, `--force` (resumes `queued`/`paused -> reading`, enforces monotonic `Math.max` unless `--force-pos`, saves `Books` before 30-min coalesced `Sessions`).
+2. **`CAPTURE` (`pragya_cli.py capture`):**
+   - Inputs: `--book <id|title>`, optional `--pos <num>` (defaults to `book.currentPos` without creating a synthetic session), `--quote <text>`, `--takeaway <text>`, `--title <text>`, `--slug <slug>`, `--tags <csv>`, `--spar` (`status='inbox'`), `--atomic` (`status='atomic'` with optional `--context`, `--critique`, `--trigger`, `--action`, `--delta-status`), `--prediction`, `--image <path>`, `--doc-url <url>`, `--link <url>`, `--force-pos`.
+   - Validates attachment count (`<= 3`), URL safety, local image existence, and active delta cap (`<= 5`) before uploading images; enforces `Math.max` bookmark ceiling (unless `--force-pos`), 30-min session coalescing, optional upload to `Pragya Media/`, and UUID-resolved write to `Notes!A:R` (`source = 'agent'`).
+3. **`REFLECT` (`pragya_cli.py reflect` — 4-Stage Socratic State Machine):**
+   - **Stage 1 (`--stage 1 [--q1 <text>] [--q2 <text>]`):** Persists note with `status = 'in-reflection'`, generates 2 genre-aware Socratic questions (or uses custom `--q1`/`--q2`; fiction strictly clamped to `<= book.normalizedPos`), stores them in `metaJson.socraticQuestions`, and prints a blocking prompt for Stage 2.
    - **Stage 2 (Blocking Wait):** Assistant MUST stop and await user's reply before proceeding.
    - **Stage 3/4 (`--stage commit`):** Commits user's distilled phrasing into `takeaway`, `contextMechanism`, `critique`, `deltaTrigger`, `deltaAction`, `deltaStatus` (enforcing `<= 5` active delta cap; refuses `'active'` if 5 already active unless another is paused/graduated), and upgrades `status = 'atomic'` via UUID-resolved write.
-3. **`RECALL` (`pragya_cli.py recall`):**
-   - Modes: `--mode qa` (spoiler-safe cross-book context query clamping fiction books to `<= currentPos`), `--mode checkin` (logs `DeltaLogs` `applied|missed|no-trigger` for active deltas), `--mode shuffle` (returns deterministic daily Takeaway Shuffle candidates).
-4. **`ocr-backfill` (`pragya_cli.py ocr-backfill`):**
+4. **`RECALL` (`pragya_cli.py recall`):**
+   - Modes: `--mode qa` (spoiler-safe cross-book context query clamping fiction books to `<= currentPos`), `--mode checkin` (logs `DeltaLogs` `applied|missed|no-trigger` for active deltas), `--mode shuffle` (returns deterministic daily Takeaway Shuffle candidates; `--mark-reviewed` preserves `updatedAt`).
+5. **`ocr-backfill` (`pragya_cli.py ocr-backfill`):**
    - Scans `Notes` where `metaJson.attachments` contains an image (`driveFileId` or `localPath`), `quote` is empty, and `!metaJson.ocrBackfilled`.
    - Downloads Drive image via `gdrive readonly download` (or reads local file in `--state-file` mode), applies OCR text (`--ocr-text` / `--ocr-map-json` / pluggable OCR command), writes `quote` and sets `metaJson.ocrBackfilled = true` via UUID-resolved update.
-5. **`export-md` (`pragya_cli.py export-md`):**
+6. **`export-md` (`pragya_cli.py export-md`):**
    - Idempotent incremental 1-way Markdown export to `<output_dir>/<slug>.md` (default `./reading-notes/<slug>.md`).
-   - Processes ONLY rows with `status === 'atomic'` where `!metaJson.exportedAt || updatedAt > metaJson.exportedAt`.
-   - Generates clean Markdown with YAML frontmatter (`id`, `slug`, `book`, `author`, `pos`, `tags`, `updatedAt`), Quote, Core Takeaway, Context & Mechanism, Behavioral Delta (single `WHEN` / `DO` lines), Critique, Attachments, and `[[wikilinks]]`.
-   - Atomically stamps `metaJson.exportedAt = nowIso` on the `Notes` row via UUID-resolved write **only after** the `.md` file is successfully written. Re-running with no newer `updatedAt` performs zero writes (idempotent no-op).
-6. **`book-doc-sync` (`pragya_cli.py book-doc-sync`):**
-   - Creates or updates a Book Companion Google Doc via `gdocs` (or records synced summary in `--state-file` mode), links `Books.docUrl` via UUID-resolved update, and appends distilled atomic notes for that book without creating duplicate replacement Docs.
+   - Processes ONLY rows with `status === 'atomic'` where `!metaJson.exportedAt || updatedAt > exportedAt`, atomically stamping `metaJson.exportedAt` without bumping `updatedAt` after disk write succeeds.
+7. **`book-doc-sync` (`pragya_cli.py book-doc-sync`):**
+   - Creates or updates a Book Companion Google Doc via `gdocs` (`gdocs mutate batch` structured headings/paragraphs deduplicated by `[note:<id>]` markers), links `Books.docUrl` via UUID-resolved update, and appends distilled atomic notes without creating duplicate replacement Docs.
 
 ---
 
@@ -469,21 +472,21 @@ Location: `.agents/skills/pragya-companion/SKILL.md` + Python CLI `scripts/pragy
 ### Shell & Auth
 - `login-view`, `google-login-btn`, `demo-login-btn`, `client-id-input`, `client-id-save-btn`, `missing-client-id-prompt`, `oauth-setup-guide`, `oauth-guide-origin`, `oauth-guide-redirect`, `oauth-copy-origin-btn`, `oauth-copy-redirect-btn`, `session-expired-modal`, `session-reauth-btn`, `session-demo-btn`
 - `sidebar`, `sidebar-toggle-btn`, `sidebar-expand-btn`, `sidebar-capture-btn`, `sidebar-offline-badge`, `demo-badge`, `nav-item-shelf`, `nav-item-notes`, `nav-item-practice`, `nav-item-settings`, `command-palette-trigger`, `theme-toggle-btn`, `logout-btn`
-- `bottom-nav`, `bottom-nav-shelf`, `bottom-nav-notes`, `bottom-nav-capture`, `bottom-nav-practice`, `bottom-nav-more`, `mobile-more-drawer`, `drawer-offline-badge`, `drawer-nav-settings`, `drawer-theme-toggle`, `drawer-sync-btn`, `drawer-logout-btn`, `offline-readonly-badge`, `offline-retry-sync-btn`
+- `bottom-nav`, `bottom-nav-shelf`, `bottom-nav-notes`, `bottom-nav-capture`, `bottom-nav-practice`, `bottom-nav-more`, `mobile-more-drawer`, `drawer-offline-badge`, `drawer-search-btn`, `drawer-nav-settings`, `drawer-theme-toggle`, `drawer-sync-btn`, `drawer-logout-btn`, `offline-readonly-badge`, `offline-retry-sync-btn`, `notification-toast`, `toast-undo-btn`
 
 ### Modals & Overlays
-- `command-palette`, `command-palette-input`, `command-palette-item-{id}`
-- `quick-capture-modal`, `capture-book-select`, `capture-pos-input`, `capture-quote-input`, `capture-takeaway-input`, `capture-tags-input`, `capture-spar-checkbox`, `capture-prediction-checkbox`, `capture-attach-photo-btn`, `capture-photo-input`, `capture-attach-doc-btn`, `capture-attach-link-btn`, `capture-attachment-list`, `capture-submit-btn`
+- `command-palette`, `command-palette-input`, `command-palette-group-{category}`, `command-palette-item-{id}`
+- `quick-capture-modal`, `capture-empty-shelf`, `capture-empty-add-book-btn`, `capture-book-select`, `capture-pos-input`, `kindle-pos-chip`, `kindle-pos-apply-btn`, `capture-quote-input`, `capture-takeaway-input`, `capture-tags-input`, `capture-spar-checkbox`, `capture-prediction-checkbox`, `capture-attach-photo-btn`, `capture-photo-input`, `capture-attach-doc-btn`, `capture-attach-link-btn`, `capture-attachment-url-input`, `capture-attachment-title-input`, `capture-attachment-confirm-btn`, `capture-attachment-list`, `capture-sticky-footer`, `capture-submit-btn`
 - `draft-restored-banner`, `draft-discard-btn`
 - `add-book-modal`, `book-title-input`, `book-author-input`, `book-format-select`, `book-kind-select`, `book-status-select`, `book-pos-input`, `book-total-input`, `book-unit-select`, `book-docurl-input`, `book-submit-btn`
 - `edit-book-modal`
-- `deepen-note-modal`, `deepen-title-input`, `deepen-slug-input`, `deepen-takeaway-input`, `deepen-context-input`, `deepen-trigger-input`, `deepen-action-input`, `deepen-delta-status-select`, `deepen-delta-cap-warning`, `deepen-critique-input`, `deepen-submit-btn`
+- `deepen-note-modal`, `deepen-source-reference`, `deepen-source-toggle`, `deepen-source-quote`, `deepen-attachment-image-{id}`, `deepen-title-input`, `deepen-slug-input`, `deepen-takeaway-input`, `deepen-context-input`, `deepen-trigger-input`, `deepen-action-input`, `deepen-delta-status-select`, `deepen-delta-cap-warning`, `deepen-critique-input`, `deepen-save-draft-btn`, `deepen-submit-btn`
 - `edit-note-modal`, `wikilink-autocomplete`, `wikilink-option-{slug}`, `image-lightbox`, `import-confirm-modal`, `import-download-backup-btn`, `import-confirm-btn`
 
 ### Views & Actions
-- `shelf-view`, `add-book-btn`, `activity-dots`, `activity-dot-{i}`, `activity-count`, `now-reading-section`, `book-card-{id}`, `advance-10p-btn-{id}`, `advance-exact-input-{id}`, `advance-exact-btn-{id}`, `book-capture-btn-{id}`, `book-start-btn-{id}`
+- `shelf-view`, `add-book-btn`, `activity-dots`, `activity-dot-{i}`, `activity-count`, `now-reading-section`, `empty-now-reading-cta`, `empty-shelf-add-book-btn`, `empty-shelf-start-{id}`, `book-card-{id}`, `advance-10p-btn-{id}`, `advance-exact-input-{id}`, `advance-exact-btn-{id}`, `book-capture-btn-{id}`, `book-start-btn-{id}`
 - `book-detail-view`, `back-to-shelf-btn`, `manual-pos-override-checkbox`, `book-detail-advance-input`, `book-detail-advance-btn`, `mark-finished-btn`
 - `notes-view`, `notes-search-input`, `notes-filter-all`, `notes-filter-to-spar`, `notes-filter-atomic`, `notes-filter-media`, `notes-filter-concepts`, `note-card-{slug}`, `spoiler-shield-{slug}`, `spoiler-reveal-btn-{slug}`
 - `note-detail-view`, `back-to-notes-btn`, `edit-note-btn`, `deepen-note-btn`, `socratic-recovery-banner`, `wikilink-chip-{slug}`, `backlinks-section`, `backlink-item-{slug}`, `attachment-image-{id}`
-- `practice-view`, `active-deltas-section`, `active-deltas-count`, `delta-card-{id}`, `delta-apply-btn-{id}`, `delta-missed-btn-{id}`, `delta-notrigger-btn-{id}`, `delta-trigger-edit-input-{id}`, `delta-trigger-save-btn-{id}`, `delta-graduate-btn-{id}`, `delta-pause-btn-{id}`, `delta-reactivate-btn-{id}`, `takeaway-shuffle-section`, `shuffle-card-{slug}`, `shuffle-review-btn-{slug}`, `unlocked-predictions-section`, `export-json-btn`, `import-json-input`
+- `practice-view`, `active-deltas-section`, `active-deltas-count`, `delta-card-{id}`, `delta-checked-today-{id}`, `delta-apply-btn-{id}`, `delta-missed-btn-{id}`, `delta-notrigger-btn-{id}`, `delta-trigger-edit-input-{id}`, `delta-trigger-save-btn-{id}`, `delta-graduate-btn-{id}`, `delta-pause-btn-{id}`, `delta-reactivate-btn-{id}`, `takeaway-shuffle-section`, `shuffle-empty-state`, `shuffle-card-{slug}`, `shuffle-review-btn-{slug}`, `unlocked-predictions-section`, `export-json-btn`, `import-json-input`
 - `settings-view`, `sync-now-btn`, `settings-offline-badge`, `settings-client-id-input`, `settings-oauth-guide-toggle`, `settings-spreadsheet-id`, `restore-pre-import-backup-btn`, `reset-demo-btn`

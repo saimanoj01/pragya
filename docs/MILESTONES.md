@@ -188,3 +188,31 @@ All milestones enforce the contracts in [`SPEC.md`](./SPEC.md), zero AI/voice co
 - [x] WCAG AA contrast verified across dark & light modes; zero unlabeled modal controls or missing `aria-labelledby` dialogs.
 - [x] Production PWA manifest/icons/SW verified under `vite preview` (`/pragya/`), and Google APIs remain unintercepted.
 - [x] Offline Cloud Read-Only fallback, Write-Before-Clear import + rollback, draft autosave + stale discard, `preserveUpdatedAt`, and row conflict guards covered by automated unit & E2E suites.
+
+---
+
+## Milestone 5 (P1): Daily Flow, Mobile Ergonomics, Conversation-First CLI & Self-Contained Skill Bundle
+
+### Scope & Deliverables
+1. **Quick Capture Mobile Sheet, Context Focus, Kindle Paste & Empty-Shelf CTA (`Modal.tsx`, `QuickCaptureModal.tsx`, `src/utils/kindlePaste.ts`):**
+   - Bottom-docked full-width `<640px` mobile sheet with sticky Save/Cancel footer, context-aware focus (`capture-takeaway-input` when preselected for a book, `capture-book-select` globally), inline `Add Your First Book` CTA when empty, and 1-tap Kindle position suggestion chip (`Location`, `Page`, `%`).
+2. **Shelf & BookDetail Ergonomics (`ShelfView.tsx`, `BookDetailView.tsx`, `spoilerMath.ts`, `sessionCoalesce.ts`):**
+   - `>=44px` mobile hit targets, select-on-focus numeric inputs, unit-aware step buttons (`+10p`, `+5%`, `+50 loc`), automatic `paused -> reading` transition on progress advance, and actionable empty `Now Reading` CTA.
+3. **DeepenNoteModal Source Reference & Save Draft (`DeepenNoteModal.tsx`):**
+   - Collapsible read-only `Source Passage & Attachments` header with clickable image thumbnails opening `ImageLightbox`, plus `Save Draft` persisting edits while keeping `inbox` / `in-reflection` status.
+4. **Practice Honest Shuffle & Checked-in-Today Badge (`PracticeView.tsx`, `takeawayShuffle.ts`):**
+   - Distinct empty-shuffle diagnostics (`All eligible takeaways reviewed for today!` vs `No eligible notes yet...`) and non-blocking `Checked in today` pill while keeping `1`/`2`/`3` check-ins clickable.
+5. **Compensating `ToastAction` Undo (`PragyaContext.tsx`, `demoAdapter.ts`, `googleSheetsAdapter.ts`, `ShelfView.tsx`, `BookDetailView.tsx`, `PracticeView.tsx`):**
+   - Immediate writes with `Undo` toast (`toast-undo-btn`) for bookmark advances (with UUID-resolved `Sessions` `deleteDimension`), `Mark Finished`, `Graduate`/`Pause` delta, and `Mark Reviewed` shuffle (`1`/`2`/`3` check-ins excluded).
+6. **Grouped Command Palette, Mobile Entry & PR E2E Workflow (`CommandPalette.tsx`, `BottomNav.tsx`, `.github/workflows/e2e.yml`):**
+   - `Actions`, `Views`, `Books`, `Notes` grouped palette results, `Search & Commands` inside mobile `More` drawer, and PR Playwright CI workflow.
+7. **Conversation-First CLI Primitives & Live Workspace Smoke Suite (`scripts/pragya_cli.py`, `tests/integration/test_live_workspace.py`):**
+   - Added `book-list`, `book-add`, `book-update`, `progress`, extended `capture` (`--atomic`, `--slug`, `--context`, `--critique`, `--trigger`, `--action`, `--delta-status`, optional `--pos`, pre-upload validation), `reflect --stage 1 --q1 --q2`, `FileNotFoundError` `CliError` wrapping, `_extract_id`, and `gdocs mutate batch` companion formatting.
+   - Verified real Google Workspace CLIs via `test_live_workspace.py` (confirming `gsheets mutate batch` `USER_ENTERED` coercion for M6.4).
+8. **Self-Contained Skill Bundle & Documentation Sync (`.agents/skills/pragya-companion/`, `docs/`, `README.md`):**
+   - Byte-identical standalone CLI inside `.agents/skills/pragya-companion/scripts/pragya_cli.py`, Mode B schema reference (`references/schema_and_ops.md`), Dual-Mode + Voice-Fidelity `SKILL.md`, and synced `SPEC.md` / `ENGINEERING_SPEC.md` / `README.md`.
+
+### Acceptance Criteria (Done)
+- [x] `npm run lint`, `npm run build`, `VITE_BASE_PATH='/pragya/' npm run build`, `npm run test:unit` (27/27), `python3 -m unittest discover -s tests/unit -v`, and `npm run test:e2e` (Tiers 1–6) pass 100% with zero warnings.
+- [x] Opt-in live Google Workspace smoke suite (`PRAGYA_RUN_LIVE_INTEGRATION=1`) verified cleanly against real Sheets, Drive, and Docs CLIs with zero leftover scratch artifacts.
+- [x] `.agents/skills/pragya-companion/` executes standalone in an isolated directory outside repo checkout and aligns with `scripts/pragya_cli.py`.

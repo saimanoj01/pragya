@@ -12,7 +12,12 @@ import type { Book } from '../../types/pragya';
 import { usePragya } from '../../context/PragyaContext';
 import { isSafeHttpUrl, navigateTo } from '../../utils/navigation';
 import { getLocalDateString } from '../../utils/sessionCoalesce';
-import { computePercentDisplay, formatPosDisplay, isNoteSpoiler } from '../../utils/spoilerMath';
+import {
+  computePercentDisplay,
+  formatPosDisplay,
+  getQuickAdvanceSpec,
+  isNoteSpoiler,
+} from '../../utils/spoilerMath';
 import { showToast } from '../../utils/toast';
 
 export interface ShelfViewProps {
@@ -26,7 +31,8 @@ export const ShelfView: React.FC<ShelfViewProps> = ({
   onEditBook,
   onOpenCaptureForBook,
 }) => {
-  const { books, notes, sessions, advanceBookPosition, startReadingBook } = usePragya();
+  const { books, notes, sessions, advanceBookPosition, revertBookmarkAdvance, startReadingBook } =
+    usePragya();
   const [exactInputs, setExactInputs] = useState<Record<string, string>>({});
 
   const readingBooks = useMemo(() => books.filter(b => b.status === 'reading'), [books]);
@@ -80,15 +86,38 @@ export const ShelfView: React.FC<ShelfViewProps> = ({
   };
 
   const handleAdvance10 = async (book: Book) => {
-    const step = 10;
-    const nextPos = book.totalPos > 0 ? Math.min(book.totalPos, book.currentPos + step) : book.currentPos + step;
+    const { step } = getQuickAdvanceSpec(book.posUnit);
+    const maxPos =
+      book.totalPos > 0 ? book.totalPos : book.posUnit === 'percent' ? 100 : Number.POSITIVE_INFINITY;
+    const nextPos = Number.isFinite(maxPos)
+      ? Math.min(maxPos, book.currentPos + step)
+      : book.currentPos + step;
     try {
       const res = await advanceBookPosition(book.id, nextPos);
       if (res.changed) {
         clearExactInput(book.id);
         showToast(
           `Updated "${book.title}" to ${formatPosDisplay(res.book.currentPos, book.posUnit)}`,
-          'success'
+          'success',
+          res.undo
+            ? {
+                id: `bookmark-undo-${book.id}`,
+                action: {
+                  label: 'Undo',
+                  testId: 'toast-undo-btn',
+                  onClick: () => {
+                    void revertBookmarkAdvance(res.undo!)
+                      .then(() => showToast('Reverted bookmark update', 'info'))
+                      .catch(err =>
+                        showToast(
+                          err instanceof Error ? err.message : 'Failed to undo bookmark update',
+                          'error'
+                        )
+                      );
+                  },
+                },
+              }
+            : undefined
         );
       }
     } catch (err) {
@@ -118,7 +147,26 @@ export const ShelfView: React.FC<ShelfViewProps> = ({
         clearExactInput(book.id);
         showToast(
           `Updated "${book.title}" to ${formatPosDisplay(res.book.currentPos, book.posUnit)}`,
-          'success'
+          'success',
+          res.undo
+            ? {
+                id: `bookmark-undo-${book.id}`,
+                action: {
+                  label: 'Undo',
+                  testId: 'toast-undo-btn',
+                  onClick: () => {
+                    void revertBookmarkAdvance(res.undo!)
+                      .then(() => showToast('Reverted bookmark update', 'info'))
+                      .catch(err =>
+                        showToast(
+                          err instanceof Error ? err.message : 'Failed to undo bookmark update',
+                          'error'
+                        )
+                      );
+                  },
+                },
+              }
+            : undefined
         );
       }
     } catch (err) {
@@ -157,10 +205,10 @@ export const ShelfView: React.FC<ShelfViewProps> = ({
 
       {/* 30-Day Reading Activity Card (responsive grid: 15x2 mobile, 30x1 sm+) */}
       <section className="bg-card border border-border rounded-[14px] p-4 space-y-3">
-        <div className="flex items-center justify-between gap-3">
-          <div className="flex items-center gap-2 text-label font-medium text-foreground min-w-0">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-2 text-label font-medium text-foreground">
             <Calendar className="w-4 h-4 text-muted-foreground shrink-0" />
-            <span className="truncate">Reading Activity (Last 30 Days)</span>
+            <span>Reading Activity (Last 30 Days)</span>
           </div>
           <span
             data-testid="activity-count"
@@ -202,8 +250,36 @@ export const ShelfView: React.FC<ShelfViewProps> = ({
         </h2>
 
         {readingBooks.length === 0 ? (
-          <div className="bg-card border border-border rounded-[14px] p-6 text-center text-body text-muted-foreground">
-            No active books right now. Start one from your queue or add a new book.
+          <div
+            data-testid="empty-now-reading-cta"
+            className="bg-card border border-border rounded-[14px] p-6 text-center space-y-4"
+          >
+            <p className="text-body text-muted-foreground">
+              No active books right now. Add a new book or start reading one from your queue.
+            </p>
+            <div className="flex flex-wrap items-center justify-center gap-2">
+              <button
+                type="button"
+                data-testid="empty-shelf-add-book-btn"
+                onClick={onOpenAddBook}
+                className="h-10 px-4 rounded-full bg-primary text-primary-foreground text-label font-semibold hover:opacity-90 transition-opacity inline-flex items-center gap-1.5"
+              >
+                <Plus className="w-4 h-4" />
+                <span>Add Book</span>
+              </button>
+              {[...queuedBooks, ...pausedBooks].slice(0, 3).map(b => (
+                <button
+                  key={b.id}
+                  type="button"
+                  data-testid={`empty-shelf-start-${b.id}`}
+                  onClick={() => void handleStartReading(b.id)}
+                  className="h-10 px-3.5 rounded-full bg-surface2 hover:bg-secondary border border-border text-label font-medium text-foreground inline-flex items-center gap-1.5"
+                >
+                  <Play className="w-3.5 h-3.5" />
+                  <span className="truncate max-w-[180px]">Start {b.title}</span>
+                </button>
+              ))}
+            </div>
           </div>
         ) : (
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
@@ -211,7 +287,7 @@ export const ShelfView: React.FC<ShelfViewProps> = ({
               const pct = computePercentDisplay(book);
               const reEntry = getReEntryContext(book);
               const inputValue = exactInputs[book.id] ?? String(book.currentPos);
-              const stepLabel = book.posUnit === 'percent' ? '+10%' : book.posUnit === 'loc' ? '+10' : '+10p';
+              const { label: stepLabel } = getQuickAdvanceSpec(book.posUnit);
 
               return (
                 <article
@@ -234,7 +310,7 @@ export const ShelfView: React.FC<ShelfViewProps> = ({
                         type="button"
                         onClick={() => onEditBook(book)}
                         aria-label={`Edit ${book.title}`}
-                        className="p-1.5 rounded-[8px] text-muted-foreground hover:text-foreground hover:bg-surface2 transition-colors"
+                        className="min-w-[44px] min-h-[44px] sm:min-w-0 sm:min-h-0 sm:p-1.5 rounded-[8px] text-muted-foreground hover:text-foreground hover:bg-surface2 transition-colors inline-flex items-center justify-center"
                       >
                         <Edit3 className="w-4 h-4" />
                       </button>
@@ -289,7 +365,7 @@ export const ShelfView: React.FC<ShelfViewProps> = ({
                         type="button"
                         data-testid={`advance-10p-btn-${book.id}`}
                         onClick={() => void handleAdvance10(book)}
-                        className="h-8 px-2.5 rounded-[8px] bg-surface2 hover:bg-secondary border border-border text-label font-semibold text-foreground num transition-colors whitespace-nowrap"
+                        className="h-11 sm:h-8 px-3 sm:px-2.5 rounded-[8px] bg-surface2 hover:bg-secondary border border-border text-label font-semibold text-foreground num transition-colors whitespace-nowrap"
                       >
                         {stepLabel}
                       </button>
@@ -298,17 +374,18 @@ export const ShelfView: React.FC<ShelfViewProps> = ({
                         min="0"
                         data-testid={`advance-exact-input-${book.id}`}
                         value={inputValue}
+                        onFocus={e => e.currentTarget.select()}
                         onChange={e =>
                           setExactInputs(prev => ({ ...prev, [book.id]: e.target.value }))
                         }
                         aria-label={`Current position for ${book.title}`}
-                        className="w-16 h-8 px-2 rounded-[8px] bg-background border border-input text-label text-foreground num focus:outline-none focus:ring-2 focus:ring-ring/40"
+                        className="w-16 h-11 sm:h-8 px-2 rounded-[8px] bg-background border border-input text-label text-foreground num focus:outline-none focus:ring-2 focus:ring-ring/40"
                       />
                       <button
                         type="submit"
                         data-testid={`advance-exact-btn-${book.id}`}
                         aria-label={`Set position for ${book.title}`}
-                        className="w-8 h-8 rounded-[8px] bg-surface2 hover:bg-secondary border border-border text-foreground inline-flex items-center justify-center transition-colors"
+                        className="w-11 h-11 sm:w-8 sm:h-8 rounded-[8px] bg-surface2 hover:bg-secondary border border-border text-foreground inline-flex items-center justify-center transition-colors"
                       >
                         <ArrowRight className="w-3.5 h-3.5" />
                       </button>
@@ -320,7 +397,7 @@ export const ShelfView: React.FC<ShelfViewProps> = ({
                           href={book.docUrl.trim()}
                           target="_blank"
                           rel="noopener noreferrer"
-                          className="h-8 px-2.5 rounded-[8px] text-label font-medium text-muted-foreground hover:text-foreground hover:bg-surface2 inline-flex items-center gap-1 transition-colors whitespace-nowrap"
+                          className="h-11 sm:h-8 px-2.5 rounded-[8px] text-label font-medium text-muted-foreground hover:text-foreground hover:bg-surface2 inline-flex items-center gap-1 transition-colors whitespace-nowrap"
                         >
                           <span>Book Doc</span>
                           <ExternalLink className="w-3 h-3" />
@@ -330,7 +407,7 @@ export const ShelfView: React.FC<ShelfViewProps> = ({
                         type="button"
                         data-testid={`book-capture-btn-${book.id}`}
                         onClick={() => onOpenCaptureForBook(book.id)}
-                        className="h-8 px-3 rounded-[8px] bg-primary text-primary-foreground text-label font-semibold hover:opacity-90 transition-opacity inline-flex items-center gap-1 whitespace-nowrap"
+                        className="h-11 sm:h-8 px-3.5 sm:px-3 rounded-[8px] bg-primary text-primary-foreground text-label font-semibold hover:opacity-90 transition-opacity inline-flex items-center gap-1 whitespace-nowrap"
                       >
                         <Plus className="w-3.5 h-3.5" />
                         <span>Capture</span>
@@ -372,7 +449,7 @@ export const ShelfView: React.FC<ShelfViewProps> = ({
                     type="button"
                     onClick={() => onEditBook(book)}
                     aria-label={`Edit ${book.title}`}
-                    className="p-1 rounded-[8px] text-muted-foreground hover:text-foreground hover:bg-surface2"
+                    className="min-w-[44px] min-h-[44px] sm:min-w-0 sm:min-h-0 p-2 sm:p-1 flex items-center justify-center rounded-[8px] text-muted-foreground hover:text-foreground hover:bg-surface2"
                   >
                     <Edit3 className="w-3.5 h-3.5" />
                   </button>

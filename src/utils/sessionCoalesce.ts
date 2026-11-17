@@ -84,8 +84,8 @@ export function applyBookmarkAdvance(
 
   const updatedBook: Book = {
     ...book,
-    // Parity with pragya_cli.py: advancing a queued book starts reading it.
-    status: book.status === 'queued' ? 'reading' : book.status,
+    // Parity with pragya_cli.py: advancing a queued or paused book resumes reading.
+    status: book.status === 'queued' || book.status === 'paused' ? 'reading' : book.status,
     currentPos: nextPos,
     normalizedPos: nextNorm,
     meta: {

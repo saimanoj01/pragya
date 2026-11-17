@@ -39,7 +39,7 @@ export function getToastStyle(type: ToastType | undefined | null): ToastVisualSt
   }
   return {
     variant,
-    containerClass: 'notification-info bg-popover/95 border-border text-foreground',
+    containerClass: 'notification-info bg-popover border-border text-foreground',
     dotClass: 'bg-muted-foreground',
     actionClass:
       'border border-border bg-surface2 hover:bg-secondary text-foreground focus-visible:ring-2 focus-visible:ring-ring/50',

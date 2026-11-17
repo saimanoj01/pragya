@@ -18,7 +18,7 @@ import { navigateTo } from '../../utils/navigation';
 import { getLocalDateString } from '../../utils/sessionCoalesce';
 import { buildSnapshot, validateSnapshotPayload } from '../../utils/snapshot';
 import { formatPosDisplay, isUnlockedPrediction } from '../../utils/spoilerMath';
-import { selectTakeawayShuffle } from '../../utils/takeawayShuffle';
+import { getShuffleEmptyReason, selectTakeawayShuffle } from '../../utils/takeawayShuffle';
 import { showToast } from '../../utils/toast';
 import { ImportConfirmModal } from '../modals/ImportConfirmModal';
 
@@ -63,10 +63,23 @@ export const PracticeView: React.FC = () => {
     [books, notes, todayDate]
   );
 
+  const shuffleEmptyReason = useMemo(
+    () => getShuffleEmptyReason(notes, books, todayDate),
+    [books, notes, todayDate]
+  );
+
   const unlockedPredictions = useMemo(
     () => notes.filter(n => isUnlockedPrediction(n, bookMap.get(n.bookId))),
     [bookMap, notes]
   );
+
+  const checkedInTodayNoteIds = useMemo(() => {
+    const set = new Set<string>();
+    for (const log of deltaLogs) {
+      if (log.date === todayDate) set.add(log.noteId);
+    }
+    return set;
+  }, [deltaLogs, todayDate]);
 
   const deltaStatsByNoteId = useMemo(() => {
     const map = new Map<string, { applied: number; missed: number; noTrigger: number }>();
@@ -182,16 +195,35 @@ export const PracticeView: React.FC = () => {
     note: Note,
     nextStatus: 'active' | 'paused' | 'graduated'
   ) => {
+    const prevStatus = note.deltaStatus;
     try {
-      await updateNote({
+      const saved = await updateNote({
         ...note,
         deltaStatus: nextStatus,
       });
       setReactivateCapWarning(false);
-      if (nextStatus === 'graduated') {
-        showToast('Behavioral Delta graduated!', 'success');
-      } else if (nextStatus === 'paused') {
-        showToast('Behavioral Delta paused', 'info');
+      if (nextStatus === 'graduated' || nextStatus === 'paused') {
+        const msg =
+          nextStatus === 'graduated' ? 'Behavioral Delta graduated!' : 'Behavioral Delta paused';
+        showToast(msg, nextStatus === 'graduated' ? 'success' : 'info', {
+          action: {
+            label: 'Undo',
+            testId: 'toast-undo-btn',
+            onClick: () => {
+              void updateNote({
+                ...saved,
+                deltaStatus: prevStatus,
+              })
+                .then(() => showToast('Restored Behavioral Delta status', 'info'))
+                .catch(err =>
+                  showToast(
+                    err instanceof Error ? err.message : 'Failed to undo delta transition',
+                    'error'
+                  )
+                );
+            },
+          },
+        });
       } else {
         showToast('Behavioral Delta reactivated', 'success');
       }
@@ -204,8 +236,9 @@ export const PracticeView: React.FC = () => {
   };
 
   const handleMarkReviewed = async (note: Note) => {
+    const prevLastReviewedAt = note.meta?.lastReviewedAt;
     try {
-      await updateNote(
+      const saved = await updateNote(
         {
           ...note,
           meta: {
@@ -216,7 +249,31 @@ export const PracticeView: React.FC = () => {
         // Reviewing is not editing: keep Notes!E updatedAt untouched.
         { preserveUpdatedAt: true }
       );
-      showToast('Marked reviewed for today', 'success');
+      showToast('Marked reviewed for today', 'success', {
+        action: {
+          label: 'Undo',
+          testId: 'toast-undo-btn',
+          onClick: () => {
+            const nextMeta = { ...saved.meta };
+            if (prevLastReviewedAt) {
+              nextMeta.lastReviewedAt = prevLastReviewedAt;
+            } else {
+              delete nextMeta.lastReviewedAt;
+            }
+            void updateNote(
+              {
+                ...saved,
+                meta: nextMeta,
+              },
+              { preserveUpdatedAt: true }
+            )
+              .then(() => showToast('Restored takeaway to Today Shuffle', 'info'))
+              .catch(err =>
+                showToast(err instanceof Error ? err.message : 'Failed to undo review', 'error')
+              );
+          },
+        },
+      });
     } catch (err) {
       showToast(err instanceof Error ? err.message : 'Failed to mark reviewed', 'error');
     }
@@ -350,7 +407,16 @@ export const PracticeView: React.FC = () => {
                       </span>
                     </div>
 
-                    <div className="flex items-center gap-3 text-[11px] text-muted-foreground num shrink-0">
+                    <div className="flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground num shrink-0">
+                      {checkedInTodayNoteIds.has(note.id) && (
+                        <span
+                          data-testid={`delta-checked-today-${note.id}`}
+                          className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide rounded-md bg-positive/15 border border-positive/30 text-positive font-sans"
+                        >
+                          <CheckCircle2 className="w-3 h-3" />
+                          <span>Checked in today</span>
+                        </span>
+                      )}
                       <span>{stats.applied} applied</span>
                       <span>·</span>
                       <span>{stats.missed} missed</span>
@@ -538,8 +604,13 @@ export const PracticeView: React.FC = () => {
         </div>
 
         {shuffleCandidates.length === 0 ? (
-          <div className="bg-card border border-border rounded-[14px] p-6 text-center text-body text-muted-foreground">
-            All eligible takeaways have been reviewed for today!
+          <div
+            data-testid="shuffle-empty-state"
+            className="bg-card border border-border rounded-[14px] p-6 text-center text-body text-muted-foreground"
+          >
+            {shuffleEmptyReason === 'all-reviewed-today'
+              ? 'All eligible takeaways reviewed for today!'
+              : 'No eligible notes yet — notes qualify once 14 days old or tagged #favorite (and unlocked from spoilers).'}
           </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">

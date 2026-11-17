@@ -4,12 +4,14 @@ import importlib.util
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CLI_PATH = REPO_ROOT / "scripts" / "pragya_cli.py"
@@ -1040,8 +1042,10 @@ class TestPragyaCli(unittest.TestCase):
             if cmd[:3] == ["gdocs", "mutate", "create"]:
                 created_doc_calls.append(cmd)
                 return 0, json.dumps({"documentId": "doc-live-555"}), ""
-            if cmd[:3] == ["gdocs", "mutate", "append"]:
-                appended_doc_calls.append(cmd)
+            if cmd[:3] == ["gdocs", "mutate", "batch"]:
+                batch_file = Path(cmd[cmd.index("-f") + 1])
+                ops = json.loads(batch_file.read_text(encoding="utf-8"))
+                appended_doc_calls.append(ops)
                 return 0, json.dumps({"ok": True}), ""
             if cmd[:3] == ["gdocs", "readonly", "read"]:
                 return 0, json.dumps(gdoc_read_payload), ""
@@ -1146,6 +1150,10 @@ class TestPragyaCli(unittest.TestCase):
             self.assertEqual(rc_doc, 0)
             self.assertEqual(len(created_doc_calls), 1)
             self.assertEqual(len(appended_doc_calls), 1)
+            gdoc_ops = appended_doc_calls[0]
+            self.assertTrue(any(op.get("op") == "heading" and op.get("level") == "1" for op in gdoc_ops))
+            self.assertTrue(any(op.get("op") == "heading" and op.get("level") == "2" for op in gdoc_ops))
+            self.assertTrue(any(op.get("op") == "append" for op in gdoc_ops))
 
             # Update Books row with created docUrl and test Google Docs split-run + tabs AST detection
             book_rows[1][10] = "https://docs.google.com/document/d/doc-live-555/edit"
@@ -1423,6 +1431,411 @@ class TestPragyaCli(unittest.TestCase):
         self.assertTrue(pragya_cli._is_remote_newer(46342.5, "2026-11-15T12:00:00Z"))
         self.assertFalse(pragya_cli._is_remote_newer(46340.5, "2026-11-15T12:00:00Z"))
         self.assertFalse(pragya_cli._is_remote_newer("not-a-date", "2026-11-15T12:00:00Z"))
+
+    def test_paused_book_resumes_to_reading_on_bookmark_advance(self) -> None:
+        paused_book = {
+            "id": "book-paused",
+            "title": "Paused Book",
+            "author": "Author",
+            "format": "physical",
+            "kind": "nonfiction",
+            "status": "paused",
+            "currentPos": 30,
+            "totalPos": 200,
+            "posUnit": "page",
+            "normalizedPos": 0.15,
+            "docUrl": "",
+            "meta": {},
+        }
+        updated, changed, rejected, prev_pos, next_pos = pragya_cli.apply_bookmark_advance(
+            paused_book, 45, now_iso="2026-11-16T12:00:00Z"
+        )
+        self.assertTrue(changed)
+        self.assertFalse(rejected)
+        self.assertEqual(prev_pos, 30)
+        self.assertEqual(next_pos, 45)
+        self.assertEqual(updated["status"], "reading")
+        self.assertEqual(updated["meta"]["startedAt"], "2026-11-16T12:00:00Z")
+
+    def test_m5_book_list_add_update_and_progress_primitives(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_dir = Path(tmp)
+            state_path = tmp_dir / "state.json"
+            snap = _make_sample_snapshot()
+            state_path.write_text(json.dumps(snap), encoding="utf-8")
+
+            # 1. book-list filters & activeDeltaCount
+            rc, r_list, err = _run_cli_json(
+                ["--state-file", str(state_path), "book-list", "--kind", "nonfiction", "--query", "systems"]
+            )
+            self.assertEqual(rc, 0, err)
+            self.assertEqual(r_list["count"], 1)
+            self.assertEqual(r_list["activeDeltaCount"], 1)
+            self.assertEqual(r_list["books"][0]["id"], "book-systems")
+
+            # 2. book-add defaults, URL safety, duplicate guard & NO synthetic session
+            sessions_before = len(json.loads(state_path.read_text(encoding="utf-8"))["sessions"])
+            rc_bad_url, err_url, _ = _run_cli_json(
+                [
+                    "--state-file",
+                    str(state_path),
+                    "book-add",
+                    "--title",
+                    "Bad URL Book",
+                    "--doc-url",
+                    "javascript:alert(1)",
+                ]
+            )
+            self.assertNotEqual(rc_bad_url, 0)
+            self.assertIn("unsafe", err_url.get("error", "").lower())
+
+            rc_neg, _, _ = _run_cli_json(
+                ["--state-file", str(state_path), "book-add", "--title", "Neg", "--pos", "-5"]
+            )
+            self.assertNotEqual(rc_neg, 0)
+
+            rc_add, r_add, err_add = _run_cli_json(
+                [
+                    "--state-file",
+                    str(state_path),
+                    "book-add",
+                    "--title",
+                    "The Creative Act",
+                    "--format",
+                    "kindle",
+                    "--pos-unit",
+                    "percent",
+                    "--pos",
+                    "25",
+                ]
+            )
+            self.assertEqual(rc_add, 0, err_add)
+            new_book = r_add["book"]
+            self.assertEqual(new_book["author"], "Unknown Author")
+            self.assertEqual(new_book["totalPos"], 100)
+            self.assertEqual(new_book["normalizedPos"], 0.25)
+            self.assertEqual(
+                len(json.loads(state_path.read_text(encoding="utf-8"))["sessions"]),
+                sessions_before,
+            )
+
+            # Duplicate normalized title rejected unless --allow-duplicate
+            rc_dup, _, _ = _run_cli_json(
+                ["--state-file", str(state_path), "book-add", "--title", "  the   creative act "]
+            )
+            self.assertNotEqual(rc_dup, 0)
+            rc_dup_ok, _, err_dup_ok = _run_cli_json(
+                [
+                    "--state-file",
+                    str(state_path),
+                    "book-add",
+                    "--title",
+                    "The Creative Act",
+                    "--status",
+                    "finished",
+                    "--allow-duplicate",
+                ]
+            )
+            self.assertEqual(rc_dup_ok, 0, err_dup_ok)
+            state_after_dup = json.loads(state_path.read_text(encoding="utf-8"))
+            fin_copy = state_after_dup["books"][-1]
+            self.assertEqual(fin_copy["normalizedPos"], 1.0)
+            self.assertTrue(fin_copy["meta"].get("finishedAt"))
+
+            # 3. book-update validation, monotonic guard, fiction prediction unlock & conflict guard
+            rc_empty_upd, _, _ = _run_cli_json(
+                ["--state-file", str(state_path), "book-update", "--book", "book-systems"]
+            )
+            self.assertNotEqual(rc_empty_upd, 0)
+
+            rc_back_upd, _, _ = _run_cli_json(
+                ["--state-file", str(state_path), "book-update", "--book", "book-systems", "--pos", "10"]
+            )
+            self.assertNotEqual(rc_back_upd, 0)
+
+            rc_upd, r_upd, err_upd = _run_cli_json(
+                ["--state-file", str(state_path), "book-update", "--book", "book-exhalation", "--status", "finished"]
+            )
+            self.assertEqual(rc_upd, 0, err_upd)
+            self.assertEqual(r_upd["book"]["normalizedPos"], 1.0)
+            self.assertTrue(r_upd["book"]["meta"].get("finishedAt"))
+            self.assertEqual(r_upd["unlockedPredictionsCount"], 1)
+
+            # Pre-write updatedAt row conflict guard on book-update
+            stale_backend = pragya_cli.StateFileBackend(state_path)
+            loaded_ws = stale_backend.load_workspace()
+            stale_book = copy.deepcopy(next(b for b in loaded_ws["books"] if b["id"] == "book-systems"))
+            stale_book["meta"]["updatedAt"] = "2020-01-01T00:00:00.000Z"
+            with self.assertRaises(pragya_cli.CliError) as ctx_conflict:
+                stale_backend.save_book(
+                    stale_book,
+                    expected_base_updated_at="2020-01-01T00:00:00.000Z",
+                    force=False,
+                )
+            self.assertIn("Row conflict", str(ctx_conflict.exception))
+
+            # 4. progress: queued/paused resume, negative/backward guard without mutation, 30-min coalescing & idempotent no-op
+            rc_neg_prog, _, _ = _run_cli_json(
+                ["--state-file", str(state_path), "progress", "--book", new_book["id"], "--delta", "-50"]
+            )
+            self.assertNotEqual(rc_neg_prog, 0)
+            rc_back_prog, _, _ = _run_cli_json(
+                ["--state-file", str(state_path), "progress", "--book", new_book["id"], "--pos", "10"]
+            )
+            self.assertNotEqual(rc_back_prog, 0)
+            self.assertEqual(
+                len(json.loads(state_path.read_text(encoding="utf-8"))["sessions"]),
+                sessions_before,
+            )
+
+            # First advance creates session
+            rc_p1, r_p1, err_p1 = _run_cli_json(
+                [
+                    "--state-file",
+                    str(state_path),
+                    "progress",
+                    "--book",
+                    new_book["id"],
+                    "--delta",
+                    "10",
+                    "--session-note",
+                    "First read",
+                ]
+            )
+            self.assertEqual(rc_p1, 0, err_p1)
+            self.assertTrue(r_p1["bookmarkChanged"])
+            self.assertFalse(r_p1["coalesced"])
+            self.assertEqual(r_p1["book"]["currentPos"], 35)
+
+            # Second advance within 30 mins coalesces
+            rc_p2, r_p2, err_p2 = _run_cli_json(
+                [
+                    "--state-file",
+                    str(state_path),
+                    "progress",
+                    "--book",
+                    new_book["id"],
+                    "--pos",
+                    "50",
+                ]
+            )
+            self.assertEqual(rc_p2, 0, err_p2)
+            self.assertTrue(r_p2["bookmarkChanged"])
+            self.assertTrue(r_p2["coalesced"])
+            self.assertEqual(r_p2["session"]["endPos"], 50)
+
+            # Idempotent no-op when pos == currentPos and not --finish
+            rc_noop, r_noop, err_noop = _run_cli_json(
+                ["--state-file", str(state_path), "progress", "--book", new_book["id"], "--pos", "50"]
+            )
+            self.assertEqual(rc_noop, 0, err_noop)
+            self.assertFalse(r_noop["bookmarkChanged"])
+            self.assertIsNone(r_noop["session"])
+
+            # --finish updates status='finished' and normalizedPos=1.0
+            rc_fin, r_fin, err_fin = _run_cli_json(
+                ["--state-file", str(state_path), "progress", "--book", new_book["id"], "--finish"]
+            )
+            self.assertEqual(rc_fin, 0, err_fin)
+            self.assertEqual(r_fin["book"]["status"], "finished")
+            self.assertEqual(r_fin["book"]["normalizedPos"], 1.0)
+            self.assertTrue(r_fin["finished"])
+
+    def test_m5_conversation_first_capture_atomic_reflect_overrides_and_missing_cli_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_dir = Path(tmp)
+            state_path = tmp_dir / "state.json"
+            img_path = tmp_dir / "page.webp"
+            img_path.write_bytes(b"RIFF\x00\x00\x00\x00WEBP")
+            state_path.write_text(json.dumps(_make_sample_snapshot()), encoding="utf-8")
+
+            # 1. Optional --pos uses book currentPos without creating synthetic session
+            sessions_before = len(json.loads(state_path.read_text(encoding="utf-8"))["sessions"])
+            rc_cap, r_cap, err_cap = _run_cli_json(
+                [
+                    "--state-file",
+                    str(state_path),
+                    "capture",
+                    "--book",
+                    "book-systems",
+                    "--slug",
+                    "custom-lag-note",
+                    "--title",
+                    "Respecting Lag",
+                    "--takeaway",
+                    "Wait out lag before retuning.",
+                    "--context",
+                    "Delays destabilize high-gain loops.",
+                    "--critique",
+                    "Unsafe during exponential cascades.",
+                    "--trigger",
+                    "WHEN deploy metrics wobble",
+                    "--action",
+                    "DO wait one full cycle",
+                    "--delta-status",
+                    "active",
+                    "--atomic",
+                ]
+            )
+            self.assertEqual(rc_cap, 0, err_cap)
+            note = r_cap["note"]
+            self.assertEqual(note["slug"], "custom-lag-note")
+            self.assertEqual(note["pos"], 142)
+            self.assertEqual(note["status"], "atomic")
+            self.assertEqual(note["deltaTrigger"], "deploy metrics wobble")
+            self.assertEqual(note["deltaAction"], "wait one full cycle")
+            self.assertEqual(note["deltaStatus"], "active")
+            self.assertFalse(r_cap["bookmarkChanged"])
+            self.assertIsNone(r_cap["session"])
+            self.assertEqual(
+                len(json.loads(state_path.read_text(encoding="utf-8"))["sessions"]),
+                sessions_before,
+            )
+
+            # Directly captured atomic note exports & syncs to companion doc cleanly
+            out_dir = tmp_dir / "md_out"
+            rc_exp, r_exp, err_exp = _run_cli_json(
+                ["--state-file", str(state_path), "export-md", "--output-dir", str(out_dir)]
+            )
+            self.assertEqual(rc_exp, 0, err_exp)
+            self.assertTrue((out_dir / "custom-lag-note.md").exists())
+            doc_out = tmp_dir / "doc.md"
+            rc_doc, r_doc, err_doc = _run_cli_json(
+                [
+                    "--state-file",
+                    str(state_path),
+                    "book-doc-sync",
+                    "--book",
+                    "book-systems",
+                    "--doc-out",
+                    str(doc_out),
+                ]
+            )
+            self.assertEqual(rc_doc, 0, err_doc)
+            self.assertIn("Respecting Lag", doc_out.read_text(encoding="utf-8"))
+
+            # 2. Pre-upload validation gate: ALL failures must abort BEFORE upload_image runs
+            class GuardedUploadBackend(pragya_cli.StateFileBackend):
+                def __init__(self, p: Path) -> None:
+                    super().__init__(p)
+                    self.upload_calls = 0
+
+                def upload_image(self, local_path: Path) -> dict:
+                    self.upload_calls += 1
+                    return super().upload_image(local_path)
+
+            guarded = GuardedUploadBackend(state_path)
+            parser = pragya_cli.build_parser()
+            bad_arg_sets = [
+                # --spar + --atomic conflict
+                ["capture", "--book", "book-systems", "--takeaway", "X", "--spar", "--atomic", "--image", str(img_path)],
+                # --delta-status active without --atomic
+                ["capture", "--book", "book-systems", "--takeaway", "X", "--delta-status", "active", "--trigger", "t", "--image", str(img_path)],
+                # > 3 attachments
+                ["capture", "--book", "book-systems", "--takeaway", "X", "--image", str(img_path), "--link", "https://a.com", "--link", "https://b.com", "--link", "https://c.com"],
+                # missing image path alongside valid image path
+                ["capture", "--book", "book-systems", "--takeaway", "X", "--image", str(img_path), "--image", str(tmp_dir / "missing.webp")],
+            ]
+            for bad_args in bad_arg_sets:
+                with self.assertRaises(pragya_cli.CliError):
+                    pragya_cli.cmd_capture(parser.parse_args(bad_args), guarded)
+            self.assertEqual(guarded.upload_calls, 0, "upload_image must NOT run when pre-flight validation fails")
+
+            # 3. reflect --stage 1 --q1/--q2 overrides & softened non-fiction defaults
+            rc_ref, r_ref, err_ref = _run_cli_json(
+                [
+                    "--state-file",
+                    str(state_path),
+                    "reflect",
+                    "--note",
+                    "memory-prism-digital-remembrance",
+                    "--stage",
+                    "1",
+                    "--q1",
+                    "Custom prompt one?",
+                    "--q2",
+                    "Custom prompt two?",
+                ]
+            )
+            self.assertEqual(rc_ref, 0, err_ref)
+            self.assertEqual(
+                r_ref["socraticQuestions"],
+                ["Custom prompt one?", "Custom prompt two?"],
+            )
+            nf_qs = pragya_cli._build_socratic_questions(
+                {"slug": "memoir-moment", "pos": 12, "meta": {"title": "Grief & Memory"}},
+                {"title": "Memoir", "kind": "nonfiction", "posUnit": "page", "currentPos": 50},
+            )
+            self.assertNotIn("WHEN trigger -> DO action", nf_qs[0])
+
+            # 4. default_cmd_runner wraps FileNotFoundError cleanly into CliError
+            with patch("subprocess.run", side_effect=FileNotFoundError("gsheets")):
+                with self.assertRaises(pragya_cli.CliError) as ctx_fnf:
+                    pragya_cli.default_cmd_runner(["gsheets", "readonly", "list"])
+                self.assertIn("Mode B", str(ctx_fnf.exception))
+                self.assertIn("--state-file", str(ctx_fnf.exception))
+
+    def test_m5_skill_cli_is_self_contained_and_byte_synced(self) -> None:
+        self.assertEqual(
+            CLI_PATH.read_bytes(),
+            SKILL_CLI_PATH.read_bytes(),
+            ".agents/skills/pragya-companion/scripts/pragya_cli.py must be byte-identical to scripts/pragya_cli.py",
+        )
+        skill_dir = REPO_ROOT / ".agents" / "skills" / "pragya-companion"
+        self.assertTrue((skill_dir / "references" / "schema_and_ops.md").is_file())
+
+        # Copy ONLY the skill folder into an isolated temp directory outside the git repo
+        with tempfile.TemporaryDirectory() as tmp:
+            isolated_skill = Path(tmp) / "pragya-companion"
+            shutil.copytree(skill_dir, isolated_skill)
+            isolated_cli = isolated_skill / "scripts" / "pragya_cli.py"
+            state_path = Path(tmp) / "isolated_state.json"
+            state_path.write_text(json.dumps(_make_sample_snapshot()), encoding="utf-8")
+
+            p_help = subprocess.run(
+                [sys.executable, str(isolated_cli), "--help"],
+                cwd=str(isolated_skill),
+                text=True,
+                capture_output=True,
+            )
+            self.assertEqual(p_help.returncode, 0, p_help.stderr)
+            self.assertIn("book-add", p_help.stdout)
+            self.assertIn("progress", p_help.stdout)
+
+            p_list = subprocess.run(
+                [sys.executable, str(isolated_cli), "--state-file", str(state_path), "book-list"],
+                cwd=str(tmp),
+                text=True,
+                capture_output=True,
+            )
+            self.assertEqual(p_list.returncode, 0, p_list.stderr)
+            parsed = json.loads(p_list.stdout)
+            self.assertEqual(parsed["count"], 2)
+
+    def test_m5_when_do_word_boundary_normalization(self) -> None:
+        self.assertEqual(pragya_cli.normalize_delta_trigger("WHEN WHEN foo"), "foo")
+        self.assertEqual(pragya_cli.normalize_delta_trigger("WHEN: foo"), "foo")
+        self.assertEqual(
+            pragya_cli.normalize_delta_trigger("whenever latency spikes"),
+            "whenever latency spikes",
+        )
+        self.assertEqual(pragya_cli.normalize_delta_trigger("WHEN"), "")
+
+        self.assertEqual(pragya_cli.normalize_delta_action("DO DO bar"), "bar")
+        self.assertEqual(pragya_cli.normalize_delta_action("DO: bar"), "bar")
+        self.assertEqual(
+            pragya_cli.normalize_delta_action("document the failure"),
+            "document the failure",
+        )
+        self.assertEqual(
+            pragya_cli.normalize_delta_action("double-check metrics"),
+            "double-check metrics",
+        )
+        self.assertEqual(
+            pragya_cli.normalize_delta_action("don't interrupt"),
+            "don't interrupt",
+        )
+        self.assertEqual(pragya_cli.normalize_delta_action("DO"), "")
 
 
 if __name__ == "__main__":

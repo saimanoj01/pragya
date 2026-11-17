@@ -37,13 +37,24 @@ function fnv1aHash(input: string): number {
   return hash >>> 0;
 }
 
-export function isEligibleForShuffle(
+export function isStructurallyEligibleForShuffle(
   note: Note,
   book: Book | undefined,
   todayDate: string
 ): boolean {
   if (isNoteSpoiler(note, book)) return false;
   if (isSealedPrediction(note, book)) return false;
+  if (!note.takeaway?.trim() && !note.quote?.trim()) return false;
+  if (isFavoriteNote(note)) return true;
+  return getCalendarDaysBetween(note.createdAt, todayDate) >= 14;
+}
+
+export function isEligibleForShuffle(
+  note: Note,
+  book: Book | undefined,
+  todayDate: string
+): boolean {
+  if (!isStructurallyEligibleForShuffle(note, book, todayDate)) return false;
   const lastReviewed = note.meta?.lastReviewedAt;
   if (lastReviewed) {
     if (lastReviewed.includes('T')) {
@@ -59,9 +70,22 @@ export function isEligibleForShuffle(
       return false;
     }
   }
-  if (!note.takeaway?.trim() && !note.quote?.trim()) return false;
-  if (isFavoriteNote(note)) return true;
-  return getCalendarDaysBetween(note.createdAt, todayDate) >= 14;
+  return true;
+}
+
+export function getShuffleEmptyReason(
+  notes: Note[],
+  books: Book[],
+  todayDate: string = getLocalDateString()
+): 'all-reviewed-today' | 'none-eligible' {
+  const bookMap = new Map<string, Book>();
+  for (const b of books) {
+    bookMap.set(b.id, b);
+  }
+  const hasAnyStructural = notes.some(n =>
+    isStructurallyEligibleForShuffle(n, bookMap.get(n.bookId), todayDate)
+  );
+  return hasAnyStructural ? 'all-reviewed-today' : 'none-eligible';
 }
 
 export function selectTakeawayShuffle(

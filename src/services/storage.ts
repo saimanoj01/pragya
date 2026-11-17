@@ -63,6 +63,7 @@ export interface StorageAdapter {
   saveBook(book: Book, options?: SaveOptions): Promise<Book>;
   saveNote(note: Note, options?: SaveOptions): Promise<Note>;
   saveSession(session: ReadingSession): Promise<ReadingSession>;
+  deleteSession?(sessionId: string): Promise<void>;
   saveDeltaLog(log: DeltaLog): Promise<DeltaLog>;
   replaceWorkspace(snapshot: PragyaSnapshot): Promise<WorkspaceState>;
   uploadImage?(

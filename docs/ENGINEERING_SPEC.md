@@ -224,6 +224,20 @@
   2. Group `CommandPalette` results by `Actions`, `Views`, `Books`, and `Notes` section headers (increasing empty-query cap sensibly per group rather than flat `items.slice(0, 20)` truncation).
   3. Add `.github/workflows/e2e.yml` triggered on `pull_request` (targeting `main`) and `workflow_dispatch`: Node 24, `npm ci`, `npx playwright install --with-deps chromium`, `npm run test:e2e`, uploading `playwright-report` on failure.
 
+### M5.7 — Conversation-First CLI Primitives & Live Workspace Probe (`scripts/pragya_cli.py`, `tests/integration/test_live_workspace.py`)
+- **Files:** [pragya_cli.py](file:///home/antigravity/saimanoj01/pragya/scripts/pragya_cli.py), [test_live_workspace.py](file:///home/antigravity/saimanoj01/pragya/tests/integration/test_live_workspace.py)
+- **Changes:**
+  1. Add `book-list` (`--status`, `--kind`, `--query` -> `{ count, activeDeltaCount, books }`), `book-add` (duplicate normalized title guard unless `--allow-duplicate`, `percent` defaults `totalPos=100`, URL safety, no synthetic `Sessions`), `book-update` (`--force-pos` backward guard, `finished` unlocks fiction predictions + returns `unlockedPredictionsCount`, row `updatedAt` conflict guard), and `progress` (`--pos` | `--delta` | `--finish`, saves `Book` before coalesced `Session`, rejects negative/backward positions cleanly).
+  2. Extend `capture` with optional `--pos` (defaults to `book.currentPos` without synthetic session), `--slug`, `--context`, `--critique`, `--trigger`, `--action`, `--delta-status`, and `--atomic`, running all domain/attachment/delta-cap validations **before** `upload_image`.
+  3. Extend `reflect --stage 1` with optional `--q1`/`--q2` overrides and softened non-fiction defaults; wrap missing-CLI `FileNotFoundError` in `default_cmd_runner` into actionable `CliError`; add `_extract_id` (`rawText` ID parsing) and structured `gdocs mutate batch` formatting in `append_doc_text`.
+  4. Add opt-in (`PRAGYA_RUN_LIVE_INTEGRATION=1`) live Google Workspace smoke suite confirming `gsheets mutate batch` executes `USER_ENTERED` coercion (`["=SUM(1,2)", "+10%", "-5", "@tag", "2026-11-16"]` -> `[3, 0.1, -5, "@tag", 46342]` in `UNFORMATTED_VALUE`), guiding M6.4.
+
+### M5.8 — Self-Contained Skill Bundle & Gemini Spark Docs (`.agents/skills/pragya-companion/`)
+- **Files:** [.agents/skills/pragya-companion/SKILL.md](file:///home/antigravity/saimanoj01/pragya/.agents/skills/pragya-companion/SKILL.md), [.agents/skills/pragya-companion/scripts/pragya_cli.py](file:///home/antigravity/saimanoj01/pragya/.agents/skills/pragya-companion/scripts/pragya_cli.py), [.agents/skills/pragya-companion/references/schema_and_ops.md](file:///home/antigravity/saimanoj01/pragya/.agents/skills/pragya-companion/references/schema_and_ops.md)
+- **Changes:**
+  1. Replace the thin repo-lookup wrapper with a byte-identical standalone copy of [pragya_cli.py](file:///home/antigravity/saimanoj01/pragya/scripts/pragya_cli.py) so the skill executes independently outside repo checkout.
+  2. Document Dual-Mode execution (Mode A Skill CLI vs Mode B native Google Workspace/MCP connector fallback via `references/schema_and_ops.md`), Voice-Fidelity & Anti-Slop contract, 5-way conversation routing, and mobile/media/spoiler hygiene.
+
 ---
 
 ## 6. Milestone M6 (P2) — Knowledge Graph, Keyboard Polish & CLI Write Verification

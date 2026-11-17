@@ -94,6 +94,15 @@ export class DemoStorageAdapter implements StorageAdapter {
     return session;
   }
 
+  async deleteSession(sessionId: string): Promise<void> {
+    const state = this.ensureState();
+    const next = state.sessions.filter(s => s.id !== sessionId);
+    if (next.length !== state.sessions.length) {
+      state.sessions = next;
+      writeDemoState(state);
+    }
+  }
+
   async saveDeltaLog(log: DeltaLog): Promise<DeltaLog> {
     const state = this.ensureState();
     state.deltaLogs = upsertById(state.deltaLogs, log);

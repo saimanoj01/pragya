@@ -2,6 +2,10 @@
 """Pragya Companion CLI — dual-backend Google Workspace & snapshot JSON tool.
 
 Supports:
+  - book-list
+  - book-add
+  - book-update
+  - progress
   - capture
   - reflect (--stage 1 | --stage commit)
   - recall (--mode qa | checkin | shuffle)
@@ -91,8 +95,8 @@ COALESCE_WINDOW_SECONDS = 1800
 ACTIVE_DELTA_CAP = 5
 
 DOC_URL_RE = re.compile(r"https?://docs\.google\.com/document/d/([a-zA-Z0-9_-]+)")
-WHEN_PREFIX_RE = re.compile(r"^(?:when\s*:?\s*)+", re.IGNORECASE)
-DO_PREFIX_RE = re.compile(r"^(?:do\s*:?\s*)+", re.IGNORECASE)
+WHEN_PREFIX_RE = re.compile(r"^(?:when(?:\s+|:\s*|$))+", re.IGNORECASE)
+DO_PREFIX_RE = re.compile(r"^(?:do(?:\s+|:\s*|$))+", re.IGNORECASE)
 WIKILINK_RE = re.compile(r"\[\[([^\]]+)\]\]")
 
 
@@ -714,9 +718,10 @@ def apply_bookmark_advance(
     updated["currentPos"] = clean_num(next_pos)
     updated["normalizedPos"] = next_norm
     meta = updated.setdefault("meta", {})
-    if updated.get("status") == "queued":
+    if updated.get("status") in ("queued", "paused"):
         updated["status"] = "reading"
-        meta.setdefault("startedAt", iso)
+        if not meta.get("startedAt"):
+            meta["startedAt"] = iso
     meta["updatedAt"] = iso
     return updated, True, False, clean_num(prev_pos), clean_num(next_pos)
 
@@ -780,8 +785,16 @@ def upsert_coalesced_session(
 
 
 def default_cmd_runner(cmd: list[str]) -> tuple[int, str, str]:
-    proc = subprocess.run(cmd, capture_output=True, text=True)
-    return proc.returncode, proc.stdout, proc.stderr
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True)
+        return proc.returncode, proc.stdout, proc.stderr
+    except FileNotFoundError as exc:
+        tool = cmd[0] if cmd else "workspace CLI"
+        raise CliError(
+            f"Required Google Workspace CLI '{tool}' was not found on PATH. "
+            "Use Mode B (native Google Workspace / MCP connector on 'Pragya Commonplace'), "
+            "pass --state-file <snapshot.json> for offline snapshots, or render a Paste Card."
+        ) from exc
 
 
 class WorkspaceBackend:
@@ -1013,6 +1026,24 @@ class GoogleWorkspaceBackend(WorkspaceBackend):
                     return [x for x in payload[key] if isinstance(x, dict)]
         return []
 
+    def _extract_id(self, payload: Any, *keys: str) -> str | None:
+        if isinstance(payload, dict):
+            for k in keys:
+                val = payload.get(k)
+                if val:
+                    return str(val)
+            raw = payload.get("rawText")
+            if isinstance(raw, str) and raw:
+                for pat in (
+                    r"\bID:\s*([A-Za-z0-9_-]{8,})",
+                    r"/d/([A-Za-z0-9_-]{8,})",
+                    r"/folders/([A-Za-z0-9_-]{8,})",
+                ):
+                    m = re.search(pat, raw)
+                    if m:
+                        return m.group(1)
+        return None
+
     def resolve_spreadsheet_id(self) -> str:
         if self._spreadsheet_id:
             return self._spreadsheet_id
@@ -1048,7 +1079,7 @@ class GoogleWorkspaceBackend(WorkspaceBackend):
                     return self._spreadsheet_id
 
         created = self._run_json(["gsheets", "mutate", "create", "--title", SPREADSHEET_TITLE, "--json"])
-        sid = created.get("spreadsheetId") or created.get("id")
+        sid = self._extract_id(created, "spreadsheetId", "id")
         if not sid:
             raise CliError("Failed to create or locate Pragya Commonplace spreadsheet.")
         self._spreadsheet_id = str(sid)
@@ -1267,7 +1298,7 @@ class GoogleWorkspaceBackend(WorkspaceBackend):
                 return self._media_folder_id
 
         created = self._run_json(["gdrive", "mutate", "mkdir", MEDIA_FOLDER_NAME, "--json"])
-        fid = created.get("id") or created.get("folderId")
+        fid = self._extract_id(created, "id", "folderId")
         if not fid:
             raise CliError("Failed to create Pragya Media folder on Google Drive.")
         self._media_folder_id = str(fid)
@@ -1292,7 +1323,7 @@ class GoogleWorkspaceBackend(WorkspaceBackend):
                 "--json",
             ]
         )
-        file_id = uploaded.get("id") or uploaded.get("fileId")
+        file_id = self._extract_id(uploaded, "id", "fileId")
         if not file_id:
             raise CliError("Google Drive upload succeeded without returning a file ID.")
         return {
@@ -1326,7 +1357,7 @@ class GoogleWorkspaceBackend(WorkspaceBackend):
         self, title: str, initial_text: str, book_id: str = ""
     ) -> tuple[str, str]:
         created = self._run_json(["gdocs", "mutate", "create", "--title", title, "--json"])
-        doc_id = created.get("documentId") or created.get("id")
+        doc_id = self._extract_id(created, "documentId", "id")
         if not doc_id:
             raise CliError("gdocs mutate create did not return a documentId.")
         if initial_text.strip():
@@ -1349,8 +1380,17 @@ class GoogleWorkspaceBackend(WorkspaceBackend):
         return ""
 
     def append_doc_text(self, doc_id: str, text: str) -> None:
-        if text.strip():
-            self._run_ok(["gdocs", "mutate", "append", doc_id, text])
+        ops = _companion_text_to_gdocs_ops(text)
+        if not ops:
+            return
+        fd, tmp_path = tempfile.mkstemp(prefix=".pragya_gdocs_", suffix=".json")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                json.dump(ops, fh, ensure_ascii=False)
+            self._run_ok(["gdocs", "mutate", "batch", doc_id, "-f", tmp_path, "--json"])
+        finally:
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
 
 
 # ---------------------------------------------------------------------------
@@ -1477,27 +1517,379 @@ def _extract_gdocs_text(doc: Any) -> str:
 # ---------------------------------------------------------------------------
 
 
-def cmd_capture(args: argparse.Namespace, backend: WorkspaceBackend) -> dict[str, Any]:
+def _normalize_book_title_key(title: str) -> str:
+    return " ".join((title or "").strip().lower().split())
+
+
+def cmd_book_list(args: argparse.Namespace, backend: WorkspaceBackend) -> dict[str, Any]:
+    ws = backend.load_workspace()
+    active_delta_count = sum(1 for n in ws["notes"] if n.get("deltaStatus") == "active")
+    books = list(ws["books"])
+
+    status_filter = getattr(args, "status", None)
+    kind_filter = getattr(args, "kind", None)
+    query_filter = (getattr(args, "query", "") or "").strip().lower()
+
+    if status_filter:
+        books = [b for b in books if b.get("status") == status_filter]
+    if kind_filter:
+        books = [b for b in books if b.get("kind") == kind_filter]
+    if query_filter:
+        books = [
+            b
+            for b in books
+            if query_filter
+            in f"{b.get('title', '')} {b.get('author', '')} {b.get('id', '')}".lower()
+        ]
+
+    return {
+        "count": len(books),
+        "activeDeltaCount": active_delta_count,
+        "books": books,
+    }
+
+
+def cmd_book_add(args: argparse.Namespace, backend: WorkspaceBackend) -> dict[str, Any]:
+    title = (args.title or "").strip()
+    if not title:
+        raise CliError("Book --title is required and cannot be empty.")
+
+    author = (args.author or "").strip() or "Unknown Author"
+    fmt = args.format
+    kind = args.kind
+    status = args.status
+    pos_unit = args.pos_unit
+
+    if args.pos is not None and args.pos < 0:
+        raise CliError("Position (--pos) cannot be negative.")
+    raw_pos = float(args.pos or 0.0)
+
+    if args.total_pos is not None:
+        if args.total_pos < 0:
+            raise CliError("Total position (--total-pos) cannot be negative.")
+        total_pos = float(args.total_pos)
+    else:
+        total_pos = 100.0 if pos_unit == "percent" else 0.0
+
+    doc_url = (args.doc_url or "").strip()
+    if doc_url and not is_safe_http_url(doc_url):
+        raise CliError(f"Invalid or unsafe --doc-url (must be http/https): {doc_url}")
+
+    cover_url = (args.cover_url or "").strip()
+    if cover_url and not is_safe_http_url(cover_url):
+        raise CliError(f"Invalid or unsafe --cover-url (must be http/https): {cover_url}")
+
+    ws = backend.load_workspace()
+    norm_title = _normalize_book_title_key(title)
+    if not args.allow_duplicate:
+        for existing in ws["books"]:
+            if _normalize_book_title_key(existing.get("title") or "") == norm_title:
+                raise CliError(
+                    f"Book '{existing['title']}' already exists (id={existing['id']}). "
+                    "Pass --allow-duplicate to add another copy."
+                )
+
+    safe_pos = raw_pos
+    if pos_unit == "percent":
+        safe_pos = min(100.0, safe_pos)
+    elif total_pos > 0:
+        safe_pos = min(total_pos, safe_pos)
+
+    if status == "finished" and args.pos is None and total_pos > 0:
+        safe_pos = total_pos
+
+    norm_pos = 1.0 if status == "finished" else compute_normalized_pos(safe_pos, total_pos, pos_unit)
+    now_iso = now_iso_utc()
+    meta: dict[str, Any] = {"updatedAt": now_iso}
+    if cover_url:
+        meta["coverUrl"] = cover_url
+    if status == "reading":
+        meta["startedAt"] = now_iso
+    elif status == "finished":
+        meta["startedAt"] = now_iso
+        meta["finishedAt"] = now_iso
+
+    new_book = {
+        "id": str(uuid.uuid4()),
+        "title": title,
+        "author": author,
+        "format": fmt,
+        "kind": kind,
+        "status": status,
+        "currentPos": clean_num(safe_pos),
+        "totalPos": clean_num(total_pos),
+        "posUnit": pos_unit,
+        "normalizedPos": norm_pos,
+        "docUrl": doc_url,
+        "meta": meta,
+    }
+    backend.save_book(new_book)
+    return {"book": new_book}
+
+
+def cmd_book_update(args: argparse.Namespace, backend: WorkspaceBackend) -> dict[str, Any]:
+    mutable_values = (
+        args.title,
+        args.author,
+        args.format,
+        args.kind,
+        args.status,
+        args.pos,
+        args.total_pos,
+        args.pos_unit,
+        args.doc_url,
+        args.cover_url,
+    )
+    if all(v is None for v in mutable_values):
+        raise CliError(
+            "Provide at least one mutable field to update (e.g. --status, --pos, --total-pos, --title)."
+        )
+
+    if args.title is not None and not args.title.strip():
+        raise CliError("Book --title cannot be empty.")
+    if args.pos is not None and args.pos < 0:
+        raise CliError("Position (--pos) cannot be negative.")
+    if args.total_pos is not None and args.total_pos < 0:
+        raise CliError("Total position (--total-pos) cannot be negative.")
+    if args.doc_url is not None and args.doc_url.strip() and not is_safe_http_url(args.doc_url):
+        raise CliError(f"Invalid or unsafe --doc-url (must be http/https): {args.doc_url}")
+    if args.cover_url is not None and args.cover_url.strip() and not is_safe_http_url(args.cover_url):
+        raise CliError(f"Invalid or unsafe --cover-url (must be http/https): {args.cover_url}")
+
     ws = backend.load_workspace()
     book = resolve_book(ws["books"], args.book)
+    base_updated_at = (book.get("meta") or {}).get("updatedAt")
+    prev_pos = float(book.get("currentPos") or 0)
+    prev_status = book.get("status")
+
+    if args.pos is not None and float(args.pos) < prev_pos and not args.force_pos:
+        raise CliError(
+            f"Cannot lower currentPos from {clean_num(prev_pos)} to {clean_num(args.pos)} without --force-pos."
+        )
+
+    updated = json.loads(json.dumps(book))
+    if args.title is not None:
+        updated["title"] = args.title.strip()
+    if args.author is not None:
+        updated["author"] = args.author.strip() or "Unknown Author"
+    if args.format is not None:
+        updated["format"] = args.format
+    if args.kind is not None:
+        updated["kind"] = args.kind
+    if args.pos_unit is not None:
+        updated["posUnit"] = args.pos_unit
+    if args.total_pos is not None:
+        updated["totalPos"] = clean_num(args.total_pos)
+    if args.doc_url is not None:
+        updated["docUrl"] = args.doc_url.strip()
+
+    meta = updated.setdefault("meta", {})
+    if args.cover_url is not None:
+        if args.cover_url.strip():
+            meta["coverUrl"] = args.cover_url.strip()
+        else:
+            meta.pop("coverUrl", None)
+
+    next_unit = updated.get("posUnit") or "page"
+    next_total = float(updated.get("totalPos") or 0)
+    if args.pos is not None:
+        next_pos = float(args.pos)
+        if next_unit == "percent":
+            next_pos = min(100.0, next_pos)
+        elif next_total > 0:
+            next_pos = min(next_total, next_pos)
+        updated["currentPos"] = clean_num(next_pos)
+
+    next_status = args.status or prev_status
+    updated["status"] = next_status
     now_iso = now_iso_utc()
-    incoming_pos = clamp_note_pos(args.pos, book)
+    if next_status == "reading" and not meta.get("startedAt"):
+        meta["startedAt"] = now_iso
+    elif next_status == "finished":
+        if not meta.get("startedAt"):
+            meta["startedAt"] = now_iso
+        meta["finishedAt"] = meta.get("finishedAt") or now_iso
+        if args.pos is None and next_total > 0 and float(updated.get("currentPos") or 0) < next_total:
+            updated["currentPos"] = clean_num(next_total)
+
+    if next_status == "finished":
+        updated["normalizedPos"] = 1.0
+    else:
+        updated["normalizedPos"] = compute_normalized_pos(
+            float(updated.get("currentPos") or 0), next_total, next_unit
+        )
+
+    meta["updatedAt"] = now_iso
+    force = bool(getattr(args, "force", False))
+    backend.save_book(updated, expected_base_updated_at=base_updated_at, force=force)
+
+    unlocked_count = 0
+    if next_status == "finished" and updated.get("kind") == "fiction" and prev_status != "finished":
+        unlocked_count = sum(
+            1
+            for n in ws["notes"]
+            if n.get("bookId") == updated["id"] and bool((n.get("meta") or {}).get("isPrediction"))
+        )
+
+    return {
+        "book": updated,
+        "unlockedPredictionsCount": unlocked_count,
+    }
+
+
+def cmd_progress(args: argparse.Namespace, backend: WorkspaceBackend) -> dict[str, Any]:
+    if args.pos is None and args.delta is None and not args.finish:
+        raise CliError("Provide --pos, --delta, or --finish.")
+    if args.pos is not None and args.pos < 0:
+        raise CliError("Position (--pos) cannot be negative.")
+
+    ws = backend.load_workspace()
+    book = resolve_book(ws["books"], args.book)
+    base_updated_at = (book.get("meta") or {}).get("updatedAt")
+    prev_pos = float(book.get("currentPos") or 0)
+    total_pos = float(book.get("totalPos") or 0)
+    pos_unit = book.get("posUnit") or "page"
+    now_iso = now_iso_utc()
+
+    if args.pos is not None:
+        raw_target = float(args.pos)
+    elif args.delta is not None:
+        raw_target = prev_pos + float(args.delta)
+    else:
+        raw_target = 100.0 if pos_unit == "percent" else (total_pos if total_pos > 0 else prev_pos)
+
+    if raw_target < 0:
+        raise CliError(f"Resulting position ({clean_num(raw_target)}) cannot be negative.")
+
+    clamped_target = raw_target
+    if pos_unit == "percent":
+        clamped_target = min(100.0, clamped_target)
+    elif total_pos > 0:
+        clamped_target = min(total_pos, clamped_target)
+
+    if clamped_target < prev_pos and not args.force_pos:
+        raise CliError(
+            f"Cannot move bookmark backward from {clean_num(prev_pos)} to {clean_num(clamped_target)} without --force-pos."
+        )
+
+    updated_book, changed, _, old_pos, new_pos = apply_bookmark_advance(
+        book,
+        clamped_target,
+        manual_override=bool(args.force_pos),
+        now_iso=now_iso,
+    )
+
+    finished_changed = bool(args.finish and updated_book.get("status") != "finished")
+    if args.finish:
+        updated_book = json.loads(json.dumps(updated_book))
+        updated_book["status"] = "finished"
+        updated_book["normalizedPos"] = 1.0
+        meta = updated_book.setdefault("meta", {})
+        if not meta.get("startedAt"):
+            meta["startedAt"] = now_iso
+        meta["finishedAt"] = meta.get("finishedAt") or now_iso
+        meta["updatedAt"] = now_iso
+
+    force = bool(getattr(args, "force", False))
+    if changed or finished_changed:
+        backend.save_book(
+            updated_book,
+            expected_base_updated_at=base_updated_at,
+            force=force,
+        )
+
+    saved_session: dict[str, Any] | None = None
+    coalesced = False
+    if changed:
+        sess, created = upsert_coalesced_session(
+            ws["sessions"],
+            book_id=book["id"],
+            prev_pos=old_pos,
+            next_pos=new_pos,
+            now_iso=now_iso,
+            note=args.session_note or "",
+            manual_override=bool(args.force_pos),
+        )
+        saved_session = backend.save_session(sess)
+        coalesced = not created
+
+    return {
+        "book": updated_book,
+        "session": saved_session,
+        "bookmarkChanged": changed,
+        "coalesced": coalesced,
+        "finished": bool(args.finish),
+    }
+
+
+def cmd_capture(args: argparse.Namespace, backend: WorkspaceBackend) -> dict[str, Any]:
+    if args.pos is not None and args.pos < 0:
+        raise CliError("Position (--pos) cannot be negative.")
+    if args.spar and args.atomic:
+        raise CliError("--spar and --atomic cannot be used together.")
+
+    delta_status = getattr(args, "delta_status", "none") or "none"
+    if delta_status not in ("none", "active", "paused", "graduated"):
+        raise CliError(f"Invalid --delta-status: {delta_status}")
+    if delta_status != "none" and not args.atomic:
+        raise CliError("--delta-status requires --atomic when capturing directly as an atomic note.")
+
+    trig_body = normalize_delta_trigger(getattr(args, "trigger", "") or "")
+    act_body = normalize_delta_action(getattr(args, "action", "") or "")
+    if delta_status == "active" and not trig_body and not act_body:
+        raise CliError("Provide a WHEN trigger or DO action to activate a Behavioral Delta.")
+
+    image_paths = list(args.image or [])
+    doc_urls = list(args.doc_url or [])
+    link_urls = list(args.link or [])
+    if len(image_paths) + len(doc_urls) + len(link_urls) > 3:
+        raise CliError("Maximum 3 attachments per note exceeded.")
+
+    for doc_url in doc_urls:
+        url = doc_url.strip()
+        if not is_safe_http_url(url):
+            raise CliError(f"Invalid or unsafe --doc-url (must be http/https): {url}")
+
+    for link_url in link_urls:
+        url = link_url.strip()
+        if not is_safe_http_url(url):
+            raise CliError(f"Invalid or unsafe --link (must be http/https): {url}")
+
+    for img_path in image_paths:
+        if not Path(img_path).exists():
+            raise CliError(f"Image file not found: {img_path}")
+
+    quote = (args.quote or "").strip()
+    takeaway = (args.takeaway or "").strip()
+    title = (args.title or "").strip()
+    context_mech = (getattr(args, "context", "") or "").strip()
+    critique = (getattr(args, "critique", "") or "").strip()
+
+    if not takeaway and not quote and not (image_paths or doc_urls or link_urls):
+        raise CliError("Provide at least one of --takeaway, --quote, or an attachment.")
+
+    ws = backend.load_workspace()
+    book = resolve_book(ws["books"], args.book)
+    check_active_delta_cap(ws["notes"], "", delta_status)
+
+    now_iso = now_iso_utc()
+    pos_provided = args.pos is not None
+    incoming_pos = (
+        clamp_note_pos(args.pos, book)
+        if pos_provided
+        else float(book.get("currentPos") or 0)
+    )
     normalized_pos = compute_normalized_pos(
         incoming_pos, float(book.get("totalPos") or 0), book.get("posUnit") or "page"
     )
 
+    # All pre-flight validations passed: now perform attachment uploads.
     attachments: list[dict[str, Any]] = []
-    for img_path in args.image or []:
-        if len(attachments) >= 3:
-            raise CliError("Maximum 3 attachments per note exceeded.")
+    for img_path in image_paths:
         attachments.append(backend.upload_image(Path(img_path)))
 
-    for doc_url in args.doc_url or []:
-        if len(attachments) >= 3:
-            raise CliError("Maximum 3 attachments per note exceeded.")
+    for doc_url in doc_urls:
         url = doc_url.strip()
-        if not is_safe_http_url(url):
-            raise CliError(f"Invalid or unsafe --doc-url (must be http/https): {url}")
         doc_id = parse_doc_id(url)
         att: dict[str, Any] = {
             "id": str(uuid.uuid4()),
@@ -1509,12 +1901,8 @@ def cmd_capture(args: argparse.Namespace, backend: WorkspaceBackend) -> dict[str
             att["docId"] = doc_id
         attachments.append(att)
 
-    for link_url in args.link or []:
-        if len(attachments) >= 3:
-            raise CliError("Maximum 3 attachments per note exceeded.")
+    for link_url in link_urls:
         url = link_url.strip()
-        if not is_safe_http_url(url):
-            raise CliError(f"Invalid or unsafe --link (must be http/https): {url}")
         attachments.append(
             {
                 "id": str(uuid.uuid4()),
@@ -1525,15 +1913,10 @@ def cmd_capture(args: argparse.Namespace, backend: WorkspaceBackend) -> dict[str
         )
 
     links = [a["url"] for a in attachments if a["type"] != "image"]
-    quote = (args.quote or "").strip()
-    takeaway = (args.takeaway or "").strip()
-    title = (args.title or "").strip()
-
-    if not takeaway and not quote and not attachments:
-        raise CliError("Provide at least one of --takeaway, --quote, or an attachment.")
-
+    slug_override = (getattr(args, "slug", None) or "").strip()
     slug_seed = (
-        title
+        slug_override
+        or title
         or " ".join(takeaway.split()[:6])
         or " ".join(quote.split()[:6])
         or f"{book['title']} p{clean_num(incoming_pos)}"
@@ -1549,6 +1932,7 @@ def cmd_capture(args: argparse.Namespace, backend: WorkspaceBackend) -> dict[str
     if args.prediction and book.get("kind") == "fiction":
         meta["isPrediction"] = True
 
+    note_status = "atomic" if args.atomic else ("inbox" if args.spar else "saved")
     note = {
         "id": str(uuid.uuid4()),
         "slug": slug,
@@ -1557,43 +1941,48 @@ def cmd_capture(args: argparse.Namespace, backend: WorkspaceBackend) -> dict[str
         "updatedAt": now_iso,
         "pos": clean_num(incoming_pos),
         "normalizedPos": normalized_pos,
-        "status": "inbox" if args.spar else "saved",
+        "status": note_status,
         "source": "agent",
         "tags": parse_tags_csv(args.tags or ""),
         "quote": quote,
         "takeaway": takeaway,
-        "contextMechanism": "",
-        "critique": "",
-        "deltaTrigger": "",
-        "deltaAction": "",
-        "deltaStatus": "none",
+        "contextMechanism": context_mech,
+        "critique": critique,
+        "deltaTrigger": trig_body,
+        "deltaAction": act_body,
+        "deltaStatus": delta_status,
         "meta": meta,
     }
     backend.save_note(note)
 
-    updated_book, changed, rejected_backward, prev_pos, next_pos = apply_bookmark_advance(
-        book,
-        incoming_pos,
-        manual_override=bool(args.force_pos),
-        now_iso=now_iso,
-    )
+    updated_book = book
+    changed = False
+    rejected_backward = False
     saved_session: dict[str, Any] | None = None
     force = bool(getattr(args, "force", False))
-    if changed:
-        backend.save_book(
-            updated_book,
-            expected_base_updated_at=(book.get("meta") or {}).get("updatedAt"),
-            force=force,
-        )
-        sess, _ = upsert_coalesced_session(
-            ws["sessions"],
-            book_id=book["id"],
-            prev_pos=prev_pos,
-            next_pos=next_pos,
-            now_iso=now_iso,
+
+    if pos_provided:
+        updated_book, changed, rejected_backward, prev_pos, next_pos = apply_bookmark_advance(
+            book,
+            incoming_pos,
             manual_override=bool(args.force_pos),
+            now_iso=now_iso,
         )
-        saved_session = backend.save_session(sess)
+        if changed:
+            backend.save_book(
+                updated_book,
+                expected_base_updated_at=(book.get("meta") or {}).get("updatedAt"),
+                force=force,
+            )
+            sess, _ = upsert_coalesced_session(
+                ws["sessions"],
+                book_id=book["id"],
+                prev_pos=prev_pos,
+                next_pos=next_pos,
+                now_iso=now_iso,
+                manual_override=bool(args.force_pos),
+            )
+            saved_session = backend.save_session(sess)
 
     return {
         "note": note,
@@ -1626,11 +2015,11 @@ def _build_socratic_questions(note: dict[str, Any], book: dict[str, Any] | None)
         return [q1, q2]
 
     q1 = (
-        f"Where in your own decisions or workflows does '{title}' apply concretely—and what "
-        "WHEN trigger -> DO action would test it?"
+        f"What underlying mechanism or real-life pattern makes '{title}' ring true—and where "
+        "in your own life, work, or mental models does it connect?"
     )
     q2 = (
-        f"What boundary condition or failure mode could break '{title}' in practice?"
+        f"What boundary condition, counterexample, or context could limit '{title}'?"
     )
     return [q1, q2]
 
@@ -1643,7 +2032,13 @@ def cmd_reflect(args: argparse.Namespace, backend: WorkspaceBackend) -> dict[str
     now_iso = now_iso_utc()
 
     if args.stage == "1":
-        questions = _build_socratic_questions(note, book)
+        defaults = _build_socratic_questions(note, book)
+        q1_arg = (getattr(args, "q1", None) or "").strip()
+        q2_arg = (getattr(args, "q2", None) or "").strip()
+        questions = [
+            q1_arg if q1_arg else defaults[0],
+            q2_arg if q2_arg else defaults[1],
+        ]
         updated = json.loads(json.dumps(note))
         updated["status"] = "in-reflection"
         updated["updatedAt"] = now_iso
@@ -2112,6 +2507,31 @@ def cmd_export_md(args: argparse.Namespace, backend: WorkspaceBackend) -> dict[s
     }
 
 
+def _companion_text_to_gdocs_ops(text: str) -> list[dict[str, Any]]:
+    ops: list[dict[str, Any]] = []
+    paragraph_lines: list[str] = []
+
+    def flush_paragraph() -> None:
+        if paragraph_lines:
+            body = "\n".join(paragraph_lines).strip("\n")
+            if body.strip():
+                ops.append({"op": "append", "text": body})
+            paragraph_lines.clear()
+
+    for raw_line in text.splitlines():
+        line = raw_line.rstrip()
+        if line.startswith("# "):
+            flush_paragraph()
+            ops.append({"op": "heading", "text": line[2:].strip(), "level": "1"})
+        elif line.startswith("## "):
+            flush_paragraph()
+            ops.append({"op": "heading", "text": line[3:].strip(), "level": "2"})
+        else:
+            paragraph_lines.append(line)
+    flush_paragraph()
+    return ops
+
+
 def _format_companion_entry(note: dict[str, Any], book: dict[str, Any]) -> str:
     meta = note.get("meta") or {}
     title = meta.get("title") or note["slug"]
@@ -2244,15 +2664,67 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
+    # 0a. book-list
+    p_blist = sub.add_parser("book-list", parents=[common], help="List books and active delta count.")
+    p_blist.add_argument("--status", default=None, choices=["reading", "queued", "finished", "paused"], help="Filter by shelf status.")
+    p_blist.add_argument("--kind", default=None, choices=["nonfiction", "fiction"], help="Filter by book kind.")
+    p_blist.add_argument("--query", default="", help="Case-insensitive title/author/ID filter.")
+
+    # 0b. book-add
+    p_badd = sub.add_parser("book-add", parents=[common], help="Add a book to the shelf.")
+    p_badd.add_argument("--title", required=True, help="Book title.")
+    p_badd.add_argument("--author", default="Unknown Author", help="Book author (defaults to 'Unknown Author').")
+    p_badd.add_argument("--format", default="physical", choices=["physical", "kindle"], help="Reading format.")
+    p_badd.add_argument("--kind", default="nonfiction", choices=["nonfiction", "fiction"], help="Book genre kind.")
+    p_badd.add_argument("--status", default="reading", choices=["reading", "queued", "finished", "paused"], help="Shelf status.")
+    p_badd.add_argument("--pos", "--current-pos", dest="pos", type=float, default=None, help="Starting position.")
+    p_badd.add_argument("--total-pos", "--total", dest="total_pos", type=float, default=None, help="Total book length in units (100 default for percent).")
+    p_badd.add_argument("--pos-unit", "--unit", dest="pos_unit", default="page", choices=["page", "percent", "loc"], help="Position unit.")
+    p_badd.add_argument("--doc-url", default="", help="Optional companion Google Doc URL.")
+    p_badd.add_argument("--cover-url", default="", help="Optional cover image URL.")
+    p_badd.add_argument("--allow-duplicate", action="store_true", help="Allow adding a book with an existing title.")
+
+    # 0c. book-update
+    p_bupd = sub.add_parser("book-update", parents=[common], help="Update metadata, status, or position on a book.")
+    p_bupd.add_argument("--book", required=True, help="Book UUID or title.")
+    p_bupd.add_argument("--title", default=None, help="Updated book title.")
+    p_bupd.add_argument("--author", default=None, help="Updated author.")
+    p_bupd.add_argument("--format", default=None, choices=["physical", "kindle"], help="Updated format.")
+    p_bupd.add_argument("--kind", default=None, choices=["nonfiction", "fiction"], help="Updated kind.")
+    p_bupd.add_argument("--status", default=None, choices=["reading", "queued", "finished", "paused"], help="Updated status.")
+    p_bupd.add_argument("--pos", "--current-pos", dest="pos", type=float, default=None, help="Updated currentPos.")
+    p_bupd.add_argument("--total-pos", "--total", dest="total_pos", type=float, default=None, help="Updated totalPos.")
+    p_bupd.add_argument("--pos-unit", "--unit", dest="pos_unit", default=None, choices=["page", "percent", "loc"], help="Updated posUnit.")
+    p_bupd.add_argument("--doc-url", default=None, help="Updated companion Google Doc URL.")
+    p_bupd.add_argument("--cover-url", default=None, help="Updated cover image URL.")
+    p_bupd.add_argument("--force-pos", action="store_true", help="Allow lowering currentPos below current bookmark.")
+
+    # 0d. progress
+    p_prog = sub.add_parser("progress", parents=[common], help="Advance reading bookmark and log a coalesced session.")
+    p_prog.add_argument("--book", required=True, help="Book UUID or title.")
+    p_prog_grp = p_prog.add_mutually_exclusive_group()
+    p_prog_grp.add_argument("--pos", type=float, default=None, help="New bookmark position in book units.")
+    p_prog_grp.add_argument("--delta", type=float, default=None, help="Increment/decrement relative to currentPos.")
+    p_prog.add_argument("--finish", action="store_true", help="Mark the book as finished (normalizedPos=1.0).")
+    p_prog.add_argument("--session-note", default="", help="Optional short session note.")
+    p_prog.add_argument("--force-pos", action="store_true", help="Allow moving bookmark backward.")
+
     # 1. capture
-    p_cap = sub.add_parser("capture", parents=[common], help="Capture a note and advance bookmark.")
+    p_cap = sub.add_parser("capture", parents=[common], help="Capture a note and optionally advance bookmark.")
     p_cap.add_argument("--book", required=True, help="Book UUID or title.")
-    p_cap.add_argument("--pos", required=True, type=float, help="Position in book units.")
+    p_cap.add_argument("--pos", default=None, type=float, help="Optional position in book units (defaults to book currentPos).")
     p_cap.add_argument("--quote", default="", help="Verbatim quote.")
     p_cap.add_argument("--takeaway", default="", help="User's own takeaway / why it mattered.")
     p_cap.add_argument("--title", default="", help="Optional concept title.")
+    p_cap.add_argument("--slug", default=None, help="Optional custom concept slug.")
     p_cap.add_argument("--tags", default="", help="Comma-separated #tags.")
     p_cap.add_argument("--spar", action="store_true", help="Flag note for Socratic sparring (inbox).")
+    p_cap.add_argument("--atomic", action="store_true", help="Capture directly as an atomic note (conversation-first deepening).")
+    p_cap.add_argument("--context", "--context-mechanism", dest="context", default="", help="Layer 2 context & mechanism.")
+    p_cap.add_argument("--critique", default="", help="Layer 2 Socratic critique & boundary conditions.")
+    p_cap.add_argument("--trigger", "--delta-trigger", dest="trigger", default="", help="Behavioral Delta WHEN trigger.")
+    p_cap.add_argument("--action", "--delta-action", dest="action", default="", help="Behavioral Delta DO action.")
+    p_cap.add_argument("--delta-status", default="none", choices=["none", "active", "paused", "graduated"], help="Behavioral Delta status (requires --atomic if not 'none').")
     p_cap.add_argument("--prediction", action="store_true", help="Mark as fiction prediction.")
     p_cap.add_argument("--image", action="append", default=[], help="Local image path (max 3 attachments).")
     p_cap.add_argument("--doc-url", action="append", default=[], help="Google Doc URL to attach.")
@@ -2263,6 +2735,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_ref = sub.add_parser("reflect", parents=[common], help="4-stage Socratic reflection.")
     p_ref.add_argument("--note", required=True, help="Note UUID or slug.")
     p_ref.add_argument("--stage", required=True, choices=["1", "commit"], help="Reflection stage.")
+    p_ref.add_argument("--q1", default=None, help="Optional custom first Socratic question for --stage 1.")
+    p_ref.add_argument("--q2", default=None, help="Optional custom second Socratic question for --stage 1.")
     p_ref.add_argument("--title", default=None, help="Updated concept title.")
     p_ref.add_argument("--slug", default=None, help="Updated wikilink slug.")
     p_ref.add_argument("--takeaway", default=None, help="Distilled takeaway in user's own words.")
@@ -2317,6 +2791,10 @@ def main(argv: list[str] | None = None, runner: Callable[[list[str]], tuple[int,
     )
 
     handlers = {
+        "book-list": cmd_book_list,
+        "book-add": cmd_book_add,
+        "book-update": cmd_book_update,
+        "progress": cmd_progress,
         "capture": cmd_capture,
         "reflect": cmd_reflect,
         "recall": cmd_recall,
