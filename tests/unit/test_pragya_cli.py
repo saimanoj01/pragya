@@ -246,6 +246,60 @@ def _make_sample_snapshot() -> dict:
     }
 
 
+# M6 B1.1: Sheet data writes go through `gsheets mutate raw-batch` (Sheets API
+# updateCells/appendCells). Fake runners map tab -> sheetId and decode the request
+# file back into the legacy {"op", "range", "data"} shape so assertion intent is kept.
+FAKE_SHEET_IDS = {"Books": 101, "Notes": 102, "Sessions": 103, "DeltaLogs": 104}
+_LAST_COL = {"Books": "L", "Notes": "R", "Sessions": "G", "DeltaLogs": "E"}
+
+
+def _fake_list_sheets_payload(titles) -> str:
+    return json.dumps(
+        {"sheets": [{"properties": {"title": t, "sheetId": FAKE_SHEET_IDS[t]}} for t in titles]}
+    )
+
+
+def _col_count(tab: str) -> int:
+    """Column count of a tab (Books L=12, Notes R=18, Sessions G=7, DeltaLogs E=5)."""
+    return ord(_LAST_COL[tab]) - ord("A") + 1
+
+
+def _cell_value(cell: dict):
+    uev = cell.get("userEnteredValue") or {}
+    if "numberValue" in uev:
+        return uev["numberValue"]
+    return uev.get("stringValue", "")
+
+
+def _decode_raw_batch(payload: dict) -> list[dict]:
+    """Decodes a raw-batch request file into [{"op", "range", "data"}] for assertions."""
+    id_to_tab = {v: k for k, v in FAKE_SHEET_IDS.items()}
+    ops: list[dict] = []
+    for req in payload["requests"]:
+        if "updateCells" in req:
+            uc = req["updateCells"]
+            assert uc["fields"] == "userEnteredValue"
+            rng = uc["range"]
+            tab = id_to_tab[rng["sheetId"]]
+            row = rng["startRowIndex"] + 1
+            assert rng["endRowIndex"] == row and rng["startColumnIndex"] == 0
+            # Column half of the legacy "Tab!A{r}:{last}{r}" range: the full row is written.
+            assert rng["endColumnIndex"] == _col_count(tab), (tab, rng)
+            assert all(len(r["values"]) == rng["endColumnIndex"] for r in uc["rows"]), uc
+            data = [[_cell_value(c) for c in r["values"]] for r in uc["rows"]]
+            ops.append({"op": "write", "range": f"{tab}!A{row}:{_LAST_COL[tab]}{row}", "data": data, "raw": req})
+        elif "appendCells" in req:
+            ac = req["appendCells"]
+            assert ac["fields"] == "userEnteredValue"
+            tab = id_to_tab[ac["sheetId"]]
+            assert all(len(r["values"]) == _col_count(tab) for r in ac["rows"]), ac
+            data = [[_cell_value(c) for c in r["values"]] for r in ac["rows"]]
+            ops.append({"op": "append", "range": f"{tab}!A1", "data": data, "raw": req})
+        else:
+            raise AssertionError(f"Unexpected raw-batch request: {req}")
+    return ops
+
+
 def _run_cli_json(argv: list[str], *, cwd: Path | None = None, executable: Path = CLI_PATH) -> tuple[int, dict, str]:
     proc = subprocess.run(
         [sys.executable, str(executable), *argv],
@@ -993,7 +1047,7 @@ class TestPragyaCli(unittest.TestCase):
             if cmd[:3] == ["gsheets", "readonly", "list-sheets"]:
                 # Omit DeltaLogs until add-sheet creates it to test schema auto-repair
                 titles = ["Books", "Notes", "Sessions"] + (["DeltaLogs"] if "DeltaLogs" in added_sheets else [])
-                return 0, json.dumps([{"title": t} for t in titles]), ""
+                return 0, _fake_list_sheets_payload(titles), ""
             if cmd[:3] == ["gsheets", "mutate", "add-sheet"]:
                 added_sheets.append(cmd[cmd.index("--title") + 1])
                 return 0, json.dumps({"ok": True}), ""
@@ -1024,9 +1078,9 @@ class TestPragyaCli(unittest.TestCase):
                     return 0, json.dumps({"values": [[r[0]] for r in sessions_rows]}), ""
                 if rng == "DeltaLogs!A:A":
                     return 0, json.dumps({"values": [[r[0]] for r in logs_rows]}), ""
-            if cmd[:3] == ["gsheets", "mutate", "batch"]:
+            if cmd[:3] == ["gsheets", "mutate", "raw-batch"]:
                 batch_file = Path(cmd[cmd.index("-f") + 1])
-                ops = json.loads(batch_file.read_text(encoding="utf-8"))
+                ops = _decode_raw_batch(json.loads(batch_file.read_text(encoding="utf-8")))
                 batch_ops_seen.append(ops)
                 return 0, json.dumps({"replies": []}), ""
             if cmd[:3] == ["gdrive", "readonly", "search"]:
@@ -1362,10 +1416,8 @@ class TestPragyaCli(unittest.TestCase):
                     json.dumps(
                         {
                             "sheets": [
-                                {"properties": {"title": "Books"}},
-                                {"properties": {"title": "Notes"}},
-                                {"properties": {"title": "Sessions"}},
-                                {"properties": {"title": "DeltaLogs"}},
+                                {"properties": {"title": t, "sheetId": FAKE_SHEET_IDS[t]}}
+                                for t in ("Books", "Notes", "Sessions", "DeltaLogs")
                             ]
                         }
                     ),
@@ -1395,10 +1447,10 @@ class TestPragyaCli(unittest.TestCase):
                     return 0, json.dumps({"values": logs_rows}), ""
                 if rng == "Notes!A:A":
                     return 0, json.dumps({"values": [[r[0]] for r in notes_rows]}), ""
-            if cmd[:3] == ["gsheets", "mutate", "batch"]:
+            if cmd[:3] == ["gsheets", "mutate", "raw-batch"]:
                 f_idx = cmd.index("-f")
                 payload = json.loads(Path(cmd[f_idx + 1]).read_text(encoding="utf-8"))
-                batch_calls.append(payload)
+                batch_calls.append(_decode_raw_batch(payload))
                 return 0, json.dumps({"updated": True}), ""
             return 1, "", f"Unexpected command: {cmd}"
 

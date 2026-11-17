@@ -15,7 +15,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from test_pragya_cli import _run_cli_json, pragya_cli
+from test_pragya_cli import _decode_raw_batch, _fake_list_sheets_payload, _run_cli_json, pragya_cli
 
 # ---------------------------------------------------------------------------
 # Offline drift fixture reproducing the three live "Born a Crime" drift rows.
@@ -546,7 +546,7 @@ class TestM6SerialDates(unittest.TestCase):
 def _make_fake_runner(rows: dict, batch_ops_seen: list):
     def fake_runner(cmd: list) -> tuple:
         if cmd[:3] == ["gsheets", "readonly", "list-sheets"]:
-            return 0, json.dumps([{"title": t} for t in ("Books", "Notes", "Sessions", "DeltaLogs")]), ""
+            return 0, _fake_list_sheets_payload(("Books", "Notes", "Sessions", "DeltaLogs")), ""
         if cmd[:3] == ["gsheets", "readonly", "read"]:
             rng = cmd[4]
             headers = {
@@ -563,9 +563,9 @@ def _make_fake_runner(rows: dict, batch_ops_seen: list):
                 tab = rng.split("!")[0]
                 full = next(v for k, v in rows.items() if k.startswith(tab + "!"))
                 return 0, json.dumps({"values": [[r[0]] for r in full]}), ""
-        if cmd[:3] == ["gsheets", "mutate", "batch"]:
+        if cmd[:3] == ["gsheets", "mutate", "raw-batch"]:
             batch_file = Path(cmd[cmd.index("-f") + 1])
-            batch_ops_seen.append(json.loads(batch_file.read_text(encoding="utf-8")))
+            batch_ops_seen.append(_decode_raw_batch(json.loads(batch_file.read_text(encoding="utf-8"))))
             return 0, json.dumps({"replies": []}), ""
         return 1, "", f"Unexpected command: {cmd}"
 

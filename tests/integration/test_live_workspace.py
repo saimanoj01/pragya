@@ -505,6 +505,65 @@ class LiveWorkspaceIntegrationTests(unittest.TestCase):
                             f"Scratch artifact {file_id} should be trashed after cleanup: {info}",
                         )
 
+    def test_live_raw_batch_probe_round_trips_exact_values(self) -> None:
+        """M6 B1.1 (OQ-1) RELEASE GATE: `gsheets mutate raw-batch` via the _write_cells seam.
+
+        Runs only on its own scratch spreadsheet (created here, trashed in finally) and
+        checks that the UNFORMATTED_VALUE read-back equals what was sent for appendCells,
+        updateCells (row-index math) and the raw-batch header repair.
+        """
+        run_tag = uuid.uuid4().hex[:8]
+        scratch_title = f"Pragya Scratch M6 raw {run_tag}"
+        sid = ""
+        created: Any = None
+        try:
+            created = _run_cli_json(["gsheets", "mutate", "create", "--title", scratch_title, "--json"])
+            sid = (
+                pragya_cli.GoogleWorkspaceBackend(runner=_rate_limit_safe_runner)._extract_id(
+                    created, "spreadsheetId", "id"
+                )
+                or ""
+            )
+            self.assertTrue(sid, f"Expected spreadsheetId from create: {created}")
+            backend = pragya_cli.GoogleWorkspaceBackend(spreadsheet_id=sid, runner=_rate_limit_safe_runner)
+            backend.ensure_schema()  # header repair goes through raw-batch on a fresh sheet
+
+            headers = backend._read_range(sid, "Sessions!A1:G1")
+            self.assertEqual([str(c) for c in headers[0]], pragya_cli.SESSIONS_HEADERS)
+
+            sent = ["probe-id", "=SUM(1,2)", "+10%", "- bullet", "2026-11-16", 42, 0.5]
+            backend._write_cells(sid, [{"kind": "append", "tab": "Sessions", "values": sent}])
+            rows = backend._read_range(sid, "Sessions!A:G")
+            self.assertGreaterEqual(len(rows), 2, rows)
+            got = rows[-1]
+            row_number = len(rows)
+            print("\n[M6 LIVE RAW-BATCH PROBE append]", json.dumps({"sent": sent, "read": got}))
+            self.assertEqual(got[:5], sent[:5])
+            self.assertEqual(float(got[5]), 42.0)
+            self.assertEqual(float(got[6]), 0.5)
+
+            updated = ["probe-id", "=A1", "@tag", "-5", "2026-11-17", 7, 1]
+            backend._write_cells(
+                sid, [{"kind": "update", "tab": "Sessions", "row": row_number, "values": updated}]
+            )
+            rows_after = backend._read_range(sid, "Sessions!A:G")
+            self.assertEqual(len(rows_after), row_number, "updateCells must not add a row")
+            got_u = rows_after[row_number - 1]
+            print("[M6 LIVE RAW-BATCH PROBE update]", json.dumps({"sent": updated, "read": got_u}))
+            self.assertEqual(got_u[:5], updated[:5])
+            self.assertEqual(float(got_u[5]), 7.0)
+            self.assertEqual([str(c) for c in rows_after[0]], pragya_cli.SESSIONS_HEADERS)
+        finally:
+            if sid:
+                try:
+                    _run_cli_json(["gdrive", "mutate", "trash", sid, "--json"])
+                except Exception as exc:
+                    print(f"[M6 CLEANUP WARNING] Failed to trash {sid}: {exc}")
+            elif created is not None:
+                print(
+                    f"[M6 CLEANUP WARNING] Could not extract the scratch spreadsheet id; trash "
+                    f"'{scratch_title}' manually. create() returned: {created}"
+                )
 
 if __name__ == "__main__":
     unittest.main()

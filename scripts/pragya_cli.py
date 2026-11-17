@@ -28,6 +28,7 @@ import shlex
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.parse
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -92,6 +93,34 @@ DELTA_LOGS_HEADERS = [
 ]
 
 COALESCE_WINDOW_SECONDS = 1800
+
+# A5.5: Workspace CLI quota / rate-limit retry policy.
+# Mirrored by the PWA classifier (Batch 3); keep both in sync. Rules:
+#  1. A status token: RESOURCE_EXHAUSTED, RATE_LIMIT_EXCEEDED, "Too Many Requests",
+#     rateLimitExceeded, userRateLimitExceeded, quotaExceeded, "quota exceeded",
+#     "Resource has been exhausted", "User rate limit exceeded".
+#  2. A bare 429 only in an HTTP/status context: preceded (within 3 non-word chars) by
+#     HTTP[/x.y], HttpError (googleapiclient "<HttpError 429 when requesting …>"),
+#     status[ code], code or error, and not followed by another digit.
+#     So "HTTP 429", "status=429", '"code": 429', "Error 429" match, while ids/ranges
+#     such as "sheet-4291", "Notes!A1429", "1a429bc", "line 429" do not.
+#  3. A line that starts with the status code itself ("429", "429 Too Many…", "429: …").
+# Case-insensitive + multiline. JS equivalent: new RegExp(RATE_LIMIT_PATTERN, "im").
+RATE_LIMIT_PATTERN = (
+    r"RESOURCE_EXHAUSTED|RATE_LIMIT_EXCEEDED|Too Many Requests|rateLimitExceeded"
+    r"|userRateLimitExceeded|quotaExceeded|quota exceeded"
+    r"|Resource has been exhausted|User rate limit exceeded"
+    r"|(?:\bHTTP(?:/\d(?:\.\d)?)?|\bHttpError|\bstatus(?:[ _]?code)?|\bcode|\berror)\W{0,3}429(?!\d)"
+    r"|^[ \t]*429(?![\w.])"
+)
+RATE_LIMIT_RE = re.compile(RATE_LIMIT_PATTERN, re.IGNORECASE | re.MULTILINE)
+
+
+def is_rate_limited_output(text: str) -> bool:
+    """True when Workspace CLI output signals a quota / rate-limit rejection (see rules above)."""
+    return bool(RATE_LIMIT_RE.search(text or ""))
+RATE_LIMIT_MAX_ATTEMPTS = 3
+RATE_LIMIT_BACKOFF_SECONDS = (1, 2)
 ACTIVE_DELTA_CAP = 5
 
 DOC_URL_RE = re.compile(r"https?://docs\.google\.com/document/d/([a-zA-Z0-9_-]+)")
@@ -151,13 +180,28 @@ def compute_normalized_pos(pos: float, total_pos: float, pos_unit: str) -> float
     return 0.0
 
 
+def effective_note_norm(note: dict[str, Any], book: dict[str, Any] | None) -> float:
+    """Note position normalized against the book's *current* totalPos/posUnit.
+
+    A stored note normalizedPos goes stale when the book's totalPos is edited later
+    (e.g. 0 -> 300), so it is recomputed whenever the book has a usable scale.
+    Parity with effectiveNoteNorm in src/utils/spoilerMath.ts (B2.4).
+    """
+    if book:
+        total_pos = _safe_float(book.get("totalPos"), 0.0)
+        pos_unit = book.get("posUnit") or "page"
+        if total_pos > 0 or pos_unit == "percent":
+            return compute_normalized_pos(_safe_float(note.get("pos"), 0.0), total_pos, pos_unit)
+    return _safe_float(note.get("normalizedPos"), 0.0)
+
+
 def is_note_spoiler(note: dict[str, Any], book: dict[str, Any] | None) -> bool:
     if not book or book.get("status") == "finished":
         return False
-    total_pos = float(book.get("totalPos") or 0)
+    total_pos = _safe_float(book.get("totalPos"), 0.0)
     if total_pos > 0 or book.get("posUnit") == "percent":
-        return float(note.get("normalizedPos") or 0) > float(book.get("normalizedPos") or 0)
-    return float(note.get("pos") or 0) > float(book.get("currentPos") or 0)
+        return effective_note_norm(note, book) > _safe_float(book.get("normalizedPos"), 0.0)
+    return _safe_float(note.get("pos"), 0.0) > _safe_float(book.get("currentPos"), 0.0)
 
 
 def is_sealed_prediction(note: dict[str, Any], book: dict[str, Any] | None) -> bool:
@@ -744,6 +788,13 @@ def normalize_book_dict(book: dict[str, Any]) -> dict[str, Any]:
         out["status"] = "reading"
     if out.get("posUnit") not in ("page", "percent", "loc"):
         out["posUnit"] = "page"
+    # QA-6: coerce known numeric fields (NaN/Infinity/garbage -> 0) instead of letting
+    # json_dumps_strict silently drop the key on the next write.
+    for key in ("currentPos", "totalPos"):
+        if key in out:
+            out[key] = clean_num(out.get(key), 0)
+    if "normalizedPos" in out:
+        out["normalizedPos"] = clamp01(_safe_float(out.get("normalizedPos"), 0.0))
     out["meta"] = normalize_book_meta(book.get("meta"))
     return out
 
@@ -759,6 +810,8 @@ def normalize_note_dict(note: dict[str, Any]) -> dict[str, Any]:
         out["status"] = "saved"
     if out.get("deltaStatus") not in ("none", "active", "graduated", "paused"):
         out["deltaStatus"] = "none"
+    if "pos" in out:
+        out["pos"] = clean_num(out.get("pos"), 0)  # QA-6
     if "normalizedPos" in out:
         out["normalizedPos"] = clamp01(_safe_float(out.get("normalizedPos"), 0.0))
     out["meta"] = normalize_note_meta(note.get("meta"))
@@ -1339,19 +1392,58 @@ class StateFileBackend(WorkspaceBackend):
         return None
 
 
+def _raw_cell(value: Any) -> dict[str, Any]:
+    """Sheets CellData for a raw write: numbers -> numberValue, everything else -> stringValue."""
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        if isinstance(value, float) and not math.isfinite(value):
+            # Intentional: NaN/Infinity is not valid JSON and Sheets rejects it as a
+            # numberValue; write an empty cell (same policy as json_dumps_strict / QA-6).
+            return {"userEnteredValue": {"stringValue": ""}}
+        return {"userEnteredValue": {"numberValue": value}}
+    if value is None:
+        return {"userEnteredValue": {"stringValue": ""}}
+    if isinstance(value, bool):
+        return {"userEnteredValue": {"stringValue": "true" if value else "false"}}
+    return {"userEnteredValue": {"stringValue": str(value)}}
+
+
 class GoogleWorkspaceBackend(WorkspaceBackend):
     def __init__(
         self,
         spreadsheet_id: str | None = None,
         runner: Callable[[list[str]], tuple[int, str, str]] = default_cmd_runner,
+        sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         self._spreadsheet_id = spreadsheet_id
         self._media_folder_id: str | None = None
         self._runner = runner
+        self._sleep = sleep
         self._schema_checked = False
+        self._sheet_ids: dict[str, int] = {}
+
+    def _run_with_retry(self, cmd: list[str]) -> tuple[int, str, str]:
+        """Runs a Workspace CLI command, retrying quota/rate-limit failures (A5.5).
+
+        At most RATE_LIMIT_MAX_ATTEMPTS attempts with RATE_LIMIT_BACKOFF_SECONDS sleeps.
+        Non-rate-limit failures are returned immediately (never retried).
+        """
+        for attempt in range(1, RATE_LIMIT_MAX_ATTEMPTS + 1):
+            rc, out, err = self._runner(cmd)
+            if rc == 0 or not is_rate_limited_output(f"{out or ''}\n{err or ''}"):
+                return rc, out, err
+            if attempt < RATE_LIMIT_MAX_ATTEMPTS:
+                self._sleep(RATE_LIMIT_BACKOFF_SECONDS[attempt - 1])
+        raise CliError(
+            "Google is limiting requests right now. Try again in a minute.\n"
+            "Earlier steps of this command may already be saved, so check with `recall` or "
+            "`book-list` before re-running (re-running `capture` would create a duplicate note). "
+            "If it keeps happening, fall back to a Paste Card for the user to add manually.\n"
+            f"Details: {' '.join(cmd[:3])} was rate-limited {RATE_LIMIT_MAX_ATTEMPTS} times: "
+            f"{(err or out or '').strip()[:300]}"
+        )
 
     def _run_json(self, cmd: list[str]) -> Any:
-        rc, out, err = self._runner(cmd)
+        rc, out, err = self._run_with_retry(cmd)
         if rc != 0:
             raise CliError(
                 f"Command failed ({rc}): {' '.join(cmd)}\n{err.strip() or out.strip()}"
@@ -1365,7 +1457,7 @@ class GoogleWorkspaceBackend(WorkspaceBackend):
             return {"rawText": txt}
 
     def _run_ok(self, cmd: list[str]) -> str:
-        rc, out, err = self._runner(cmd)
+        rc, out, err = self._run_with_retry(cmd)
         if rc != 0:
             raise CliError(
                 f"Command failed ({rc}): {' '.join(cmd)}\n{err.strip() or out.strip()}"
@@ -1461,14 +1553,87 @@ class GoogleWorkspaceBackend(WorkspaceBackend):
                 return [r for r in vals if isinstance(r, list)]
         return []
 
-    def _batch_write(self, sid: str, ops: list[dict[str, Any]]) -> None:
+    def _load_sheet_ids(self, sid: str) -> set[str]:
+        """Returns tab titles from list-sheets and REPLACES the tab -> sheetId cache.
+
+        Accepts both `{"properties": {"title", "sheetId"}}` and top-level
+        `{"title", "sheetId"}` entries; sheetId 0 is valid.
+        """
+        sheets_raw = self._run_json(["gsheets", "readonly", "list-sheets", sid, "--json"])
+        titles: set[str] = set()
+        self._sheet_ids = {}
+        for entry in self._extract_items(sheets_raw):
+            props = entry.get("properties") if isinstance(entry.get("properties"), dict) else entry
+            t = props.get("title") or props.get("name")
+            if not t:
+                continue
+            titles.add(str(t))
+            raw_id = props.get("sheetId", entry.get("sheetId"))
+            if isinstance(raw_id, bool):
+                continue
+            try:
+                self._sheet_ids[str(t)] = int(raw_id)
+            except (TypeError, ValueError):
+                continue
+        return titles
+
+    def _sheet_id(self, tab: str) -> int:
+        if tab not in self._sheet_ids:
+            raise CliError(
+                f"Cannot write to tab '{tab}': its numeric sheetId was not returned by "
+                "'gsheets readonly list-sheets' (properties.sheetId). Raw cell writes need it; "
+                "nothing was written."
+            )
+        return self._sheet_ids[tab]
+
+    def _write_cells(self, sid: str, ops: list[dict[str, Any]]) -> None:
+        """Single seam for every Sheet data write (B1.1, raw values only).
+
+        Each op is {"kind": "update", "tab", "row" (1-based), "values"} or
+        {"kind": "append", "tab", "values"}. Emits Sheets API batchUpdate requests
+        (updateCells / appendCells with userEnteredValue.stringValue|numberValue) via
+        `gsheets mutate raw-batch`, so strings are never parsed as formulas or dates.
+        """
         if not ops:
             return
-        fd, tmp_path = tempfile.mkstemp(prefix=".pragya_batch_", suffix=".json")
+        requests: list[dict[str, Any]] = []
+        for op in ops:
+            sheet_id = self._sheet_id(op["tab"])
+            row_data = {"values": [_raw_cell(v) for v in op["values"]]}
+            if op["kind"] == "update":
+                row_index = int(op["row"]) - 1
+                requests.append(
+                    {
+                        "updateCells": {
+                            "range": {
+                                "sheetId": sheet_id,
+                                "startRowIndex": row_index,
+                                "endRowIndex": row_index + 1,
+                                "startColumnIndex": 0,
+                                "endColumnIndex": len(op["values"]),
+                            },
+                            "rows": [row_data],
+                            "fields": "userEnteredValue",
+                        }
+                    }
+                )
+            elif op["kind"] == "append":
+                requests.append(
+                    {
+                        "appendCells": {
+                            "sheetId": sheet_id,
+                            "rows": [row_data],
+                            "fields": "userEnteredValue",
+                        }
+                    }
+                )
+            else:
+                raise CliError(f"Unknown write op kind: {op.get('kind')}")
+        fd, tmp_path = tempfile.mkstemp(prefix=".pragya_raw_batch_", suffix=".json")
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                fh.write(json_dumps_strict(ops, ensure_ascii=False))
-            self._run_ok(["gsheets", "mutate", "batch", sid, "-f", tmp_path, "--json"])
+                fh.write(json_dumps_strict({"requests": requests}, ensure_ascii=False))
+            self._run_ok(["gsheets", "mutate", "raw-batch", sid, "-f", tmp_path, "--json"])
         finally:
             if os.path.exists(tmp_path):
                 os.unlink(tmp_path)
@@ -1478,13 +1643,7 @@ class GoogleWorkspaceBackend(WorkspaceBackend):
         if self._schema_checked:
             return sid
 
-        sheets_raw = self._run_json(["gsheets", "readonly", "list-sheets", sid, "--json"])
-        existing_titles: set[str] = set()
-        for entry in self._extract_items(sheets_raw):
-            props = entry.get("properties") if isinstance(entry.get("properties"), dict) else entry
-            t = props.get("title") or props.get("name")
-            if t:
-                existing_titles.add(str(t))
+        existing_titles = self._load_sheet_ids(sid)
 
         required_tabs: list[tuple[str, str, list[str]]] = [
             ("Books", "L", BOOKS_HEADERS),
@@ -1493,21 +1652,24 @@ class GoogleWorkspaceBackend(WorkspaceBackend):
             ("DeltaLogs", "E", DELTA_LOGS_HEADERS),
         ]
 
+        added_any = False
         for tab, _, _ in required_tabs:
             if tab not in existing_titles:
                 self._run_ok(["gsheets", "mutate", "add-sheet", sid, "--title", tab, "--json"])
+                added_any = True
+        if added_any:
+            # Refresh tab -> sheetId so the new tab is writable.
+            self._load_sheet_ids(sid)
 
         header_ops: list[dict[str, Any]] = []
         for tab, last_col, headers in required_tabs:
             rows = self._read_range(sid, f"{tab}!A1:{last_col}1")
             first_row = [str(c) for c in rows[0]] if rows else []
             if first_row != headers:
-                header_ops.append(
-                    {"op": "write", "range": f"{tab}!A1:{last_col}1", "data": [headers]}
-                )
+                header_ops.append({"kind": "update", "tab": tab, "row": 1, "values": list(headers)})
 
         if header_ops:
-            self._batch_write(sid, header_ops)
+            self._write_cells(sid, header_ops)
 
         self._schema_checked = True
         return sid
@@ -1539,38 +1701,45 @@ class GoogleWorkspaceBackend(WorkspaceBackend):
                     if cand and str(cand[0] or "").strip() == row_id:
                         target_row = cand
                 if target_row is None:
-                    for cand in tab_rows:
+                    # B4.2: the row shifted between the A:A read and this read; follow it.
+                    for idx, cand in enumerate(tab_rows, start=1):
                         if cand and str(cand[0] or "").strip() == row_id:
                             target_row = cand
+                            matched_row = idx
                             break
-                if target_row is not None:
-                    remote_ts: Any = None
-                    if tab == "Notes" and len(target_row) > 4:
-                        remote_ts = target_row[4]
-                    elif tab == "Books" and len(target_row) > 11:
-                        raw_meta = target_row[11]
-                        if isinstance(raw_meta, dict):
-                            remote_ts = raw_meta.get("updatedAt")
-                        elif isinstance(raw_meta, str) and raw_meta.strip():
-                            try:
-                                parsed_meta = json.loads(raw_meta)
-                                if isinstance(parsed_meta, dict):
-                                    remote_ts = parsed_meta.get("updatedAt")
-                            except json.JSONDecodeError:
-                                remote_ts = None
-                    if _is_remote_newer(remote_ts, expected_base_updated_at):
-                        raise CliError(
-                            f"Row conflict on {tab} {row_id}: remote updatedAt ({remote_ts}) is newer than loaded base ({expected_base_updated_at}). Re-run after syncing or pass --force to overwrite."
-                        )
+                if target_row is None:
+                    raise CliError(
+                        f"{tab} row {row_id} moved or was deleted during write; nothing was "
+                        "written. Re-run the command."
+                    )
+                remote_ts: Any = None
+                if tab == "Notes" and len(target_row) > 4:
+                    remote_ts = target_row[4]
+                elif tab == "Books" and len(target_row) > 11:
+                    raw_meta = target_row[11]
+                    if isinstance(raw_meta, dict):
+                        remote_ts = raw_meta.get("updatedAt")
+                    elif isinstance(raw_meta, str) and raw_meta.strip():
+                        try:
+                            parsed_meta = json.loads(raw_meta)
+                            if isinstance(parsed_meta, dict):
+                                remote_ts = parsed_meta.get("updatedAt")
+                        except json.JSONDecodeError:
+                            remote_ts = None
+                if _is_remote_newer(remote_ts, expected_base_updated_at):
+                    raise CliError(
+                        f"Row conflict on {tab} {row_id}: remote updatedAt ({remote_ts}) is newer than loaded base ({expected_base_updated_at}). Re-run after syncing or pass --force to overwrite."
+                    )
 
-            op = {
-                "op": "write",
-                "range": f"{tab}!A{matched_row}:{last_col}{matched_row}",
-                "data": [row_values],
+            op: dict[str, Any] = {
+                "kind": "update",
+                "tab": tab,
+                "row": matched_row,
+                "values": row_values,
             }
         else:
-            op = {"op": "append", "range": f"{tab}!A1", "data": [row_values]}
-        self._batch_write(sid, [op])
+            op = {"kind": "append", "tab": tab, "values": row_values}
+        self._write_cells(sid, [op])
 
     def load_workspace(self) -> dict[str, Any]:
         sid = self.ensure_schema()
@@ -1731,7 +1900,13 @@ class GoogleWorkspaceBackend(WorkspaceBackend):
             ast_text = _extract_gdocs_text(res)
             if ast_text:
                 return ast_text
-            return json.dumps(res)
+            if _is_recognizably_empty_gdoc(res):
+                # B4.5: a genuinely empty Doc reads as "", never the JSON AST.
+                return ""
+            # Unknown / unparseable shape (wrapper objects, table-only or inline-object
+            # content, future CLI output): keep a non-empty, marker-searchable fallback so
+            # book-doc-sync still dedups by [note:<uuid>] and never re-adds the header.
+            return json.dumps(res, ensure_ascii=False)
         return ""
 
     def append_doc_text(self, doc_id: str, text: str) -> None:
@@ -1854,6 +2029,75 @@ def _extract_gdocs_tabs(tabs: Any, parts: list[str]) -> None:
             if isinstance(body, dict):
                 _extract_gdocs_structural_elements(body.get("content"), parts)
         _extract_gdocs_tabs(tab.get("childTabs"), parts)
+
+
+def _is_empty_structural_content(content: Any) -> bool:
+    """True only for a list of sectionBreaks and whitespace-only text paragraphs."""
+    if not isinstance(content, list):
+        return False
+    for elem in content:
+        if not isinstance(elem, dict):
+            return False
+        if "sectionBreak" in elem:
+            continue
+        para = elem.get("paragraph")
+        if not isinstance(para, dict):
+            return False  # table, tableOfContents, unknown element ...
+        for p_elem in para.get("elements") or []:
+            if not isinstance(p_elem, dict):
+                return False
+            tr = p_elem.get("textRun")
+            if not isinstance(tr, dict) or not isinstance(tr.get("content"), str):
+                return False  # inline object, person chip, unknown run ...
+            if tr["content"].strip():
+                return False
+    return True
+
+
+def _collect_tab_bodies(tabs: Any, out: list[Any]) -> bool:
+    if not isinstance(tabs, list):
+        return False
+    for tab in tabs:
+        if not isinstance(tab, dict):
+            return False
+        doc_tab = tab.get("documentTab")
+        body = doc_tab.get("body") if isinstance(doc_tab, dict) else None
+        if not isinstance(body, dict):
+            return False
+        out.append(body.get("content"))
+        if "childTabs" in tab and not _collect_tab_bodies(tab.get("childTabs"), out):
+            return False
+    return True
+
+
+# Top-level keys of a Docs API `documents.get` response. Anything else (e.g. a
+# `{"document": {...}}` wrapper) means the shape is unknown -> not "recognizably empty".
+_GDOCS_DOCUMENT_KEYS = frozenset(
+    {
+        "documentId", "title", "revisionId", "suggestionsViewMode", "documentStyle",
+        "namedStyles", "lists", "headers", "footers", "footnotes", "inlineObjects",
+        "positionedObjects", "namedRanges", "suggestedDocumentStyleChanges",
+        "suggestedNamedStylesChanges", "body", "tabs",
+    }
+)
+
+
+def _is_recognizably_empty_gdoc(doc: Any) -> bool:
+    """B4.5: only a Docs API document (has documentId, known keys) whose bodies are empty."""
+    if not isinstance(doc, dict) or not doc.get("documentId"):
+        return False
+    if any(key not in _GDOCS_DOCUMENT_KEYS for key in doc):
+        return False
+    bodies: list[Any] = []
+    body = doc.get("body")
+    if body is not None:
+        if not isinstance(body, dict):
+            return False
+        bodies.append(body.get("content"))
+    if "tabs" in doc and not _collect_tab_bodies(doc.get("tabs"), bodies):
+        return False
+    # No body at all (metadata-only response) is NOT recognizably empty: fall back.
+    return bool(bodies) and all(_is_empty_structural_content(c) for c in bodies)
 
 
 def _extract_gdocs_text(doc: Any) -> str:
@@ -2348,6 +2592,23 @@ def cmd_capture(args: argparse.Namespace, backend: WorkspaceBackend) -> dict[str
     }
 
 
+def _build_spoiler_safe_questions(book: dict[str, Any]) -> list[str]:
+    """B2.5: default questions for a note beyond the bookmark — no note position/title."""
+    ceiling_str = format_pos_display(
+        _safe_float(book.get("currentPos"), 0.0),
+        book.get("posUnit") or "page",
+    )
+    q1 = (
+        f"Thinking only about what you have read so far in '{book['title']}', what craft choice "
+        "or emotional tension made this moment worth saving?"
+    )
+    q2 = (
+        f"Strictly considering what you have read up to {ceiling_str}, what unspoken subtext "
+        "or character shift do you expect next?"
+    )
+    return [q1, q2]
+
+
 def _build_socratic_questions(note: dict[str, Any], book: dict[str, Any] | None) -> list[str]:
     pos_str = format_pos_display(
         float(note.get("pos") or 0),
@@ -2387,7 +2648,14 @@ def cmd_reflect(args: argparse.Namespace, backend: WorkspaceBackend) -> dict[str
     now_iso = now_iso_utc()
 
     if args.stage == "1":
-        defaults = _build_socratic_questions(note, book)
+        spoiler_guarded = bool(
+            book and book.get("kind") == "fiction" and is_note_spoiler(note, book)
+        )
+        defaults = (
+            _build_spoiler_safe_questions(book)
+            if spoiler_guarded and book
+            else _build_socratic_questions(note, book)
+        )
         q1_arg = (getattr(args, "q1", None) or "").strip()
         q2_arg = (getattr(args, "q2", None) or "").strip()
         questions = [
@@ -2404,7 +2672,7 @@ def cmd_reflect(args: argparse.Namespace, backend: WorkspaceBackend) -> dict[str
             expected_base_updated_at=note.get("updatedAt"),
             force=force,
         )
-        return {
+        result: dict[str, Any] = {
             "stage": 1,
             "status": "awaiting_user_reply",
             "noteId": updated["id"],
@@ -2415,6 +2683,11 @@ def cmd_reflect(args: argparse.Namespace, backend: WorkspaceBackend) -> dict[str
                 "stop to await their reply before running reflect --stage commit."
             ),
         }
+        if spoiler_guarded:
+            # B2.5 / QA-8: slugs are title-derived; return only the UUID for shielded notes.
+            result.pop("slug", None)
+            result["spoilerGuarded"] = True
+        return result
 
     if args.stage == "commit":
         next_delta_status = args.delta_status or note.get("deltaStatus") or "none"
@@ -2634,6 +2907,9 @@ def cmd_recall(args: argparse.Namespace, backend: WorkspaceBackend) -> dict[str,
 
 
 def cmd_ocr_backfill(args: argparse.Namespace, backend: WorkspaceBackend) -> dict[str, Any]:
+    if (args.ocr_text or "").strip() and not (getattr(args, "note", None) or "").strip():
+        # B4.4: one literal OCR string must never be applied to every image note.
+        raise CliError("--ocr-text applies to a single note; pass --note <slug|id> with it.")
     ws = backend.load_workspace()
     ocr_map: dict[str, str] = {}
     if args.ocr_map_json:
@@ -2964,7 +3240,9 @@ def cmd_book_doc_sync(args: argparse.Namespace, backend: WorkspaceBackend) -> di
     else:
         final_doc_url = existing_doc_url
         if entries_text:
-            append_payload = ("\n\n" if existing_text.strip() else "") + entries_text + "\n"
+            # B4.5: an existing but empty Doc gets the header once, then the entries.
+            prefix = "\n\n" if existing_text.strip() else header_block + "\n"
+            append_payload = prefix + entries_text + "\n"
             backend.append_doc_text(doc_id, append_payload)
             if doc_out_path:
                 doc_out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -3116,7 +3394,7 @@ def build_parser() -> argparse.ArgumentParser:
     # 4. ocr-backfill
     p_ocr = sub.add_parser("ocr-backfill", parents=[common], help="Lazy OCR quote backfill for image notes.")
     p_ocr.add_argument("--note", default="", help="Optional note UUID or slug filter.")
-    p_ocr.add_argument("--ocr-text", default="", help="Direct OCR text to apply.")
+    p_ocr.add_argument("--ocr-text", default="", help="Direct OCR text to apply (requires --note).")
     p_ocr.add_argument("--ocr-map-json", default="", help="JSON mapping note/attachment keys to OCR text.")
     p_ocr.add_argument("--ocr-cmd", default="", help="External OCR command template with {path}.")
 

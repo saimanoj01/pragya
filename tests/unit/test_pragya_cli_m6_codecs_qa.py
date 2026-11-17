@@ -252,7 +252,6 @@ class TestQaReverifyStrictJson(unittest.TestCase):
         meta = pragya_cli.normalize_book_meta('{"subgenre":"m","x":NaN}')
         self.assertEqual(meta, {"updatedAt": ""})
 
-    @unittest.expectedFailure
     def test_bug_qa6_nan_top_level_field_is_silently_deleted_from_state_file(self):
         """QA-6: a non-finite *required* top-level field (e.g. totalPos: NaN in a
         hand-edited state file) is dropped from the book on the next write instead of
