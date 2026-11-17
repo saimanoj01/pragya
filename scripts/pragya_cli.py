@@ -5,8 +5,10 @@ Supports:
   - book-list
   - book-add
   - book-update
+  - book-capstone
   - progress
   - capture
+  - note-update
   - reflect (--stage 1 | --stage commit)
   - recall (--mode qa | checkin | shuffle)
   - ocr-backfill
@@ -411,6 +413,52 @@ def format_pos_display(pos: float, pos_unit: str) -> str:
     return f"p. {clean}"
 
 
+def format_chapter_label(chapter: Any) -> str:
+    """ux_spec B.3: a purely numeric chapter becomes `Ch. N`; anything else is verbatim.
+
+    ASCII digits only (`[0-9]`, QA-17/R1#3) so the TS port (`/^[0-9]+$/`) labels the same
+    chapter identically; Python `\\d` would also match Unicode digits like `३`.
+    """
+    text = (_coerce_meta_string(chapter) or "").strip()
+    if not text:
+        return ""
+    return f"Ch. {text}" if re.fullmatch(r"[0-9]+", text) else text
+
+
+def format_chapter_pos(chapter: Any, pos: float, pos_unit: str) -> str:
+    """ux_spec B.3 `formatChapterPos`: `Ch. 3 · p. 42`, `Run · 10%`, or `10%` (no brackets).
+
+    Parity target for the Batch 7 TS formatter; used for `notesSummary[].label` and by the
+    Batch 6 Companion Doc / Markdown timelines (via format_chapter_badge).
+    """
+    pos_text = format_pos_display(_safe_float(pos, 0.0), pos_unit)
+    label = format_chapter_label(chapter)
+    return f"{label} · {pos_text}" if label else pos_text
+
+
+def format_chapter_badge(chapter: Any, pos: float, pos_unit: str) -> str:
+    """Plain-text rendering of format_chapter_pos with literal brackets (A3.1 / B.3 table):
+    `[Ch. 3 · p. 42]`, `[Run · 10%]`, or `[10%]`."""
+    return f"[{format_chapter_pos(chapter, pos, pos_unit)}]"
+
+
+def _chapter_arg(raw: str | None) -> str | None:
+    """None = flag omitted; "" = explicit clear; otherwise the trimmed chapter."""
+    if raw is None:
+        return None
+    return raw.strip()
+
+
+def _apply_chapter(meta: dict[str, Any], key: str, value: str) -> bool:
+    """Set (non-empty) or clear (empty) meta[key]; returns True when it changed."""
+    before = meta.get(key)
+    if value:
+        meta[key] = value
+    else:
+        meta.pop(key, None)
+    return meta.get(key) != before
+
+
 def clean_num(val: Any, fallback: float = 0.0) -> int | float:
     try:
         f = float(val)
@@ -483,6 +531,15 @@ NOTE_META_BOOLEAN_KEYS = ("isPrediction", "ocrBackfilled")
 LEGACY_QUESTION_KEYS = ("q1", "q2", "q3")
 MAX_SOCRATIC_QUESTIONS = 3
 MAX_ATTACHMENTS = 3
+MAX_KEY_LEARNINGS = 7
+# A2.2 notesSummary contract (decisions Batch 5, mirrors ux_spec A.5 Copy Capstone Prompt).
+NOTES_SUMMARY_MAX_ENTRIES = 60
+NOTES_SUMMARY_TEXT_LIMIT = 280
+NOTES_SUMMARY_ENTRY_KEYS = (
+    "id", "slug", "status", "pos", "posDisplay", "label", "chapter", "title", "quote", "takeaway", "delta",
+)
+# Keys every transition into `finished` returns (progress --finish / book-update --status finished).
+FINISH_RESULT_KEYS = ("unlockedPredictionsCount", "capstonePending")
 
 BOOK_FORMAT_ALIASES = {"kindle": "kindle", "ebook": "kindle"}
 NOTE_SOURCE_AGENT_ALIASES = ("agent", "companion", "assistant", "cli", "skill")
@@ -588,6 +645,14 @@ def get_book_capstone(meta: Any) -> dict[str, Any] | None:
         "perspectiveShift": _coerce_meta_string(value.get("perspectiveShift")) or "",
         "completedAt": _coerce_meta_string(value.get("completedAt")) or "",
     }
+
+
+def has_book_capstone(meta: Any) -> bool:
+    """True when meta.capstone holds any user content (arc, learnings or shift)."""
+    view = get_book_capstone(meta)
+    if view is None:
+        return False
+    return bool(view["arcOrThesis"] or view["keyLearnings"] or view["perspectiveShift"])
 
 
 def _parse_meta_input(raw: Any) -> dict[str, Any]:
@@ -2141,6 +2206,117 @@ def _normalize_book_title_key(title: str) -> str:
     return " ".join((title or "").strip().lower().split())
 
 
+def count_unlocked_predictions(book: dict[str, Any], notes: list[dict[str, Any]]) -> int:
+    """Fiction predictions on this book (unlocked by finishing it); nonfiction -> 0."""
+    if book.get("kind") != "fiction":
+        return 0
+    return sum(
+        1
+        for n in notes
+        if n.get("bookId") == book.get("id") and bool((n.get("meta") or {}).get("isPrediction"))
+    )
+
+
+def _truncate_summary_text(value: Any) -> str:
+    """ux_spec A.5: cap quote/takeaway at 280 chars total, ending in `…` when cut."""
+    text = value if isinstance(value, str) else ""
+    if len(text) <= NOTES_SUMMARY_TEXT_LIMIT:
+        return text
+    return text[: NOTES_SUMMARY_TEXT_LIMIT - 1] + "…"
+
+
+def _summary_delta(note: dict[str, Any]) -> dict[str, str] | None:
+    """`{trigger, action}` (WHEN/DO prefixes stripped) for a note that carries a delta."""
+    trigger = normalize_delta_trigger(note.get("deltaTrigger") or "")
+    action = normalize_delta_action(note.get("deltaAction") or "")
+    has_delta = (note.get("deltaStatus") or "none") != "none" or note.get("status") == "atomic"
+    if not has_delta or not (trigger or action):
+        return None
+    return {"trigger": trigger, "action": action}
+
+
+def build_notes_summary(
+    book: dict[str, Any], notes: list[dict[str, Any]]
+) -> tuple[list[dict[str, Any]], int]:
+    """A2.2: the book's saved + atomic notes in reading order, plus the omitted count.
+
+    Sorted by (effective_note_norm, pos, createdAt). Over NOTES_SUMMARY_MAX_ENTRIES, keep
+    all atomic notes first (most recent first if even those overflow), then the most recent
+    saved notes, and re-sort to reading order (ux_spec A.5). Only ever called for a book
+    that is finished, so no entry can be ahead of the bookmark (spoiler parity).
+    """
+    unit = book.get("posUnit") or "page"
+    picked = [
+        n
+        for n in notes
+        if n.get("bookId") == book.get("id") and n.get("status") in ("saved", "atomic")
+    ]
+
+    def reading_key(n: dict[str, Any]) -> tuple[float, float, str]:
+        return (
+            effective_note_norm(n, book),
+            _safe_float(n.get("pos"), 0.0),
+            str(n.get("createdAt") or ""),
+        )
+
+    omitted = 0
+    if len(picked) > NOTES_SUMMARY_MAX_ENTRIES:
+        def recent_first(group: list[dict[str, Any]]) -> list[dict[str, Any]]:
+            return sorted(group, key=lambda n: str(n.get("createdAt") or ""), reverse=True)
+
+        atomic = recent_first([n for n in picked if n.get("status") == "atomic"])
+        saved = recent_first([n for n in picked if n.get("status") == "saved"])
+        kept = (atomic + saved)[:NOTES_SUMMARY_MAX_ENTRIES]
+        omitted = len(picked) - len(kept)
+        picked = kept
+    picked.sort(key=reading_key)
+
+    out: list[dict[str, Any]] = []
+    for n in picked:
+        meta = n.get("meta") or {}
+        pos = clean_num(n.get("pos"), 0)
+        chapter = (_coerce_meta_string(meta.get("chapter")) or "").strip()
+        out.append(
+            {
+                "id": n.get("id"),
+                "slug": n.get("slug"),
+                "status": n.get("status"),
+                "pos": pos,
+                "posDisplay": format_pos_display(pos, unit),
+                "label": format_chapter_pos(chapter, pos, unit),
+                "chapter": chapter,
+                "title": _coerce_meta_string(meta.get("title")) or "",
+                "quote": _truncate_summary_text(n.get("quote")),
+                "takeaway": _truncate_summary_text(n.get("takeaway")),
+                "delta": _summary_delta(n),
+            }
+        )
+    return out, omitted
+
+
+def finish_transition_extras(
+    prev_status: Any, book: dict[str, Any], notes: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """A2.2: extra keys for a transition into `finished` (shared by progress/book-update).
+
+    Every call returns `unlockedPredictionsCount` (0 unless this call finished a fiction
+    book). A transition into `finished` always adds `capstonePending` (bool); when it is
+    true, `notesSummary` + `notesSummaryOmittedCount` are included too.
+    """
+    if prev_status == "finished" or book.get("status") != "finished":
+        return {"unlockedPredictionsCount": 0}
+    pending = not has_book_capstone(book.get("meta"))
+    extras: dict[str, Any] = {
+        "unlockedPredictionsCount": count_unlocked_predictions(book, notes),
+        "capstonePending": pending,
+    }
+    if pending:
+        summary, omitted = build_notes_summary(book, notes)
+        extras["notesSummary"] = summary
+        extras["notesSummaryOmittedCount"] = omitted
+    return extras
+
+
 def cmd_book_list(args: argparse.Namespace, backend: WorkspaceBackend) -> dict[str, Any]:
     ws = backend.load_workspace()
     active_delta_count = sum(1 for n in ws["notes"] if n.get("deltaStatus") == "active")
@@ -2259,10 +2435,12 @@ def cmd_book_update(args: argparse.Namespace, backend: WorkspaceBackend) -> dict
         args.pos_unit,
         args.doc_url,
         args.cover_url,
+        getattr(args, "chapter", None),
     )
     if all(v is None for v in mutable_values):
         raise CliError(
-            "Provide at least one mutable field to update (e.g. --status, --pos, --total-pos, --title)."
+            "Provide at least one mutable field to update "
+            "(e.g. --status, --pos, --total-pos, --title, --chapter)."
         )
 
     if args.title is not None and not args.title.strip():
@@ -2309,6 +2487,9 @@ def cmd_book_update(args: argparse.Namespace, backend: WorkspaceBackend) -> dict
             meta["coverUrl"] = args.cover_url.strip()
         else:
             meta.pop("coverUrl", None)
+    chapter = _chapter_arg(getattr(args, "chapter", None))
+    if chapter is not None:
+        _apply_chapter(meta, "currentChapter", chapter)
 
     next_unit = updated.get("posUnit") or "page"
     next_total = float(updated.get("totalPos") or 0)
@@ -2343,23 +2524,15 @@ def cmd_book_update(args: argparse.Namespace, backend: WorkspaceBackend) -> dict
     force = bool(getattr(args, "force", False))
     backend.save_book(updated, expected_base_updated_at=base_updated_at, force=force)
 
-    unlocked_count = 0
-    if next_status == "finished" and updated.get("kind") == "fiction" and prev_status != "finished":
-        unlocked_count = sum(
-            1
-            for n in ws["notes"]
-            if n.get("bookId") == updated["id"] and bool((n.get("meta") or {}).get("isPrediction"))
-        )
-
-    return {
-        "book": updated,
-        "unlockedPredictionsCount": unlocked_count,
-    }
+    result: dict[str, Any] = {"book": updated}
+    result.update(finish_transition_extras(prev_status, updated, ws["notes"]))
+    return result
 
 
 def cmd_progress(args: argparse.Namespace, backend: WorkspaceBackend) -> dict[str, Any]:
-    if args.pos is None and args.delta is None and not args.finish:
-        raise CliError("Provide --pos, --delta, or --finish.")
+    chapter = _chapter_arg(getattr(args, "chapter", None))
+    if args.pos is None and args.delta is None and not args.finish and chapter is None:
+        raise CliError("Provide --pos, --delta, --finish, or --chapter.")
     if args.pos is not None and args.pos < 0:
         raise CliError("Position (--pos) cannot be negative.")
 
@@ -2367,6 +2540,7 @@ def cmd_progress(args: argparse.Namespace, backend: WorkspaceBackend) -> dict[st
     book = resolve_book(ws["books"], args.book)
     base_updated_at = (book.get("meta") or {}).get("updatedAt")
     prev_pos = float(book.get("currentPos") or 0)
+    prev_status = book.get("status")
     total_pos = float(book.get("totalPos") or 0)
     pos_unit = book.get("posUnit") or "page"
     now_iso = now_iso_utc()
@@ -2375,8 +2549,10 @@ def cmd_progress(args: argparse.Namespace, backend: WorkspaceBackend) -> dict[st
         raw_target = float(args.pos)
     elif args.delta is not None:
         raw_target = prev_pos + float(args.delta)
-    else:
+    elif args.finish:
         raw_target = 100.0 if pos_unit == "percent" else (total_pos if total_pos > 0 else prev_pos)
+    else:
+        raw_target = prev_pos  # --chapter only (OQ-19): keep the bookmark where it is
 
     if raw_target < 0:
         raise CliError(f"Resulting position ({clean_num(raw_target)}) cannot be negative.")
@@ -2386,6 +2562,9 @@ def cmd_progress(args: argparse.Namespace, backend: WorkspaceBackend) -> dict[st
         clamped_target = min(100.0, clamped_target)
     elif total_pos > 0:
         clamped_target = min(total_pos, clamped_target)
+
+    if args.pos is None and args.delta is None and not args.finish:
+        clamped_target = prev_pos  # --chapter only: never a bookmark move
 
     if clamped_target < prev_pos and not args.force_pos:
         raise CliError(
@@ -2410,8 +2589,18 @@ def cmd_progress(args: argparse.Namespace, backend: WorkspaceBackend) -> dict[st
         meta["finishedAt"] = meta.get("finishedAt") or now_iso
         meta["updatedAt"] = now_iso
 
+    chapter_changed = False
+    if chapter is not None:
+        # A3.1 / OQ-19: the chapter saves even when the position is unchanged (no session).
+        candidate = json.loads(json.dumps(updated_book))
+        cmeta = candidate.setdefault("meta", {})
+        if _apply_chapter(cmeta, "currentChapter", chapter):
+            cmeta["updatedAt"] = now_iso
+            updated_book = candidate
+            chapter_changed = True
+
     force = bool(getattr(args, "force", False))
-    if changed or finished_changed:
+    if changed or finished_changed or chapter_changed:
         backend.save_book(
             updated_book,
             expected_base_updated_at=base_updated_at,
@@ -2433,13 +2622,17 @@ def cmd_progress(args: argparse.Namespace, backend: WorkspaceBackend) -> dict[st
         saved_session = backend.save_session(sess)
         coalesced = not created
 
-    return {
+    result: dict[str, Any] = {
         "book": updated_book,
         "session": saved_session,
         "bookmarkChanged": changed,
         "coalesced": coalesced,
         "finished": bool(args.finish),
+        "chapterChanged": chapter_changed,
     }
+    # R2#3: always present (0 when this call didn't finish a fiction book).
+    result.update(finish_transition_extras(prev_status, updated_book, ws["notes"]))
+    return result
 
 
 def cmd_capture(args: argparse.Namespace, backend: WorkspaceBackend) -> dict[str, Any]:
@@ -2551,6 +2744,18 @@ def cmd_capture(args: argparse.Namespace, backend: WorkspaceBackend) -> dict[str
         meta["title"] = title
     if args.prediction and book.get("kind") == "fiction":
         meta["isPrediction"] = True
+    chapter = _chapter_arg(getattr(args, "chapter", None))
+    if chapter is None:
+        # A3.1: inherit the book's current chapter only when the note sits at the bookmark
+        # (no --pos, or a --pos that clamps to currentPos) — never at an earlier position.
+        at_bookmark = (not pos_provided) or clean_num(incoming_pos) == clean_num(
+            float(book.get("currentPos") or 0)
+        )
+        inherited = _coerce_meta_string((book.get("meta") or {}).get("currentChapter"))
+        if at_bookmark and inherited:
+            meta["chapter"] = inherited
+    elif chapter:
+        meta["chapter"] = chapter
 
     note_status = "atomic" if args.atomic else ("inbox" if args.spar else "saved")
     note = {
@@ -2611,6 +2816,162 @@ def cmd_capture(args: argparse.Namespace, backend: WorkspaceBackend) -> dict[str
         "bookmarkChanged": changed,
         "rejectedBackward": rejected_backward,
     }
+
+
+def cmd_book_capstone(args: argparse.Namespace, backend: WorkspaceBackend) -> dict[str, Any]:
+    """A2.1: write Books.metaJson.capstone (zero AI — the text is the user's own words)."""
+    arc = (args.arc or "").strip()
+    shift = (args.shift or "").strip()
+    learnings = [t.strip() for t in (args.learnings or []) if t and t.strip()]
+    if not arc:
+        raise CliError("--arc cannot be empty.")
+    if not shift:
+        raise CliError("--shift cannot be empty.")
+    if not learnings:
+        raise CliError("Provide at least one non-empty --learnings.")
+    if len(learnings) > MAX_KEY_LEARNINGS:
+        raise CliError(f"At most {MAX_KEY_LEARNINGS} --learnings are allowed (got {len(learnings)}).")
+    completed_arg = (getattr(args, "completed_at", None) or "").strip()
+    if completed_arg and parse_iso_utc(completed_arg) is None:
+        raise CliError(f"Invalid --completed-at (expected ISO-8601): {completed_arg}")
+
+    ws = backend.load_workspace()
+    book = resolve_book(ws["books"], args.book)
+    if book.get("status") != "finished" and not getattr(args, "allow_unfinished", False):
+        raise CliError(
+            f"Book '{book.get('title')}' is not finished. Finish it first "
+            "(progress --finish) or pass --allow-unfinished."
+        )
+    base_updated_at = (book.get("meta") or {}).get("updatedAt")
+    now_iso = now_iso_utc()
+
+    updated = json.loads(json.dumps(book))
+    meta = updated.setdefault("meta", {})
+    existing = meta.get("capstone")
+    # Unknown keys inside a stored capstone object pass through verbatim (decisions R1#3).
+    capstone: dict[str, Any] = dict(existing) if isinstance(existing, dict) else {}
+    replaced_non_object = existing is not None and not isinstance(existing, dict)
+    previous_raw = capstone.get("completedAt")
+    previous_completed = (_coerce_meta_string(previous_raw) or "").strip()
+    # QA-15: a stored completedAt that isn't a timestamp ("soon", 123) is repaired to now.
+    completed_repaired = False
+    if previous_completed and parse_iso_utc(previous_completed) is None:
+        previous_completed = ""
+        completed_repaired = not completed_arg
+    elif previous_raw is not None and not previous_completed:
+        completed_repaired = not completed_arg
+    capstone["arcOrThesis"] = arc
+    capstone["keyLearnings"] = learnings
+    capstone["perspectiveShift"] = shift
+    capstone["completedAt"] = completed_arg or previous_completed or now_iso
+    meta["capstone"] = capstone
+    meta["updatedAt"] = now_iso
+
+    force = bool(getattr(args, "force", False))
+    backend.save_book(updated, expected_base_updated_at=base_updated_at, force=force)
+    result: dict[str, Any] = {"book": updated, "capstone": capstone}
+    if completed_repaired:
+        result["completedAtRepaired"] = True
+    if replaced_non_object:
+        # R1#6 nit: a legacy non-object capstone (e.g. a string) was replaced.
+        result["replacedNonObjectCapstone"] = True
+    return result
+
+
+NOTE_UPDATE_FIELDS = (
+    "status",
+    "title",
+    "quote",
+    "takeaway",
+    "context",
+    "critique",
+    "trigger",
+    "action",
+    "delta_status",
+    "chapter",
+    "tags",
+)
+
+
+def cmd_note_update(args: argparse.Namespace, backend: WorkspaceBackend) -> dict[str, Any]:
+    """A4.2: field edits + the inbox/in-reflection -> saved "just save it" escape hatch.
+
+    Only the flags that were passed change; meta (socraticQuestions, sparStage,
+    attachments, unknown keys) is carried over untouched. The slug is intentionally never
+    re-derived (even when --title/--takeaway change) so existing [[wikilinks]] keep
+    resolving; renaming a slug stays a reflect --stage commit --slug / EditNoteModal action.
+    """
+    if all(getattr(args, f, None) is None for f in NOTE_UPDATE_FIELDS):
+        raise CliError(
+            "Provide at least one field to update (e.g. --status saved, --takeaway, --chapter)."
+        )
+
+    ws = backend.load_workspace()
+    note = resolve_note(ws["notes"], args.note)
+    updated = json.loads(json.dumps(note))
+    meta = updated.setdefault("meta", {})
+
+    if args.status is not None:
+        updated["status"] = args.status
+    if args.title is not None:
+        if args.title.strip():
+            meta["title"] = args.title.strip()
+        else:
+            meta.pop("title", None)
+    if args.quote is not None:
+        updated["quote"] = args.quote.strip()
+    if args.takeaway is not None:
+        updated["takeaway"] = args.takeaway.strip()
+    if args.context is not None:
+        updated["contextMechanism"] = args.context.strip()
+    if args.critique is not None:
+        updated["critique"] = args.critique.strip()
+    if args.trigger is not None:
+        updated["deltaTrigger"] = normalize_delta_trigger(args.trigger)
+    if args.action is not None:
+        updated["deltaAction"] = normalize_delta_action(args.action)
+    if args.delta_status is not None:
+        updated["deltaStatus"] = args.delta_status
+    chapter = _chapter_arg(args.chapter)
+    if chapter is not None:
+        _apply_chapter(meta, "chapter", chapter)
+    if args.tags is not None:
+        updated["tags"] = parse_tags_csv(args.tags)
+
+    next_delta = updated.get("deltaStatus") or "none"
+    delta_flags_passed = (
+        args.delta_status is not None or args.trigger is not None or args.action is not None
+    )
+    # R1#1 / QA-16: only an ACTIVE delta needs an atomic note. Paused / graduated / legacy
+    # deltas on saved or inbox notes are harmless history and are kept as-is, so the
+    # "just save it" escape hatch (--status saved) always works without discarding them.
+    if (args.delta_status is not None or args.status is not None) and next_delta == "active":
+        if updated.get("status") != "atomic":
+            raise CliError(
+                "An active Behavioral Delta needs an atomic note: pass --status atomic, or "
+                "pause it with --delta-status paused to keep it in Practice history."
+            )
+    if args.delta_status is not None:
+        check_active_delta_cap(ws["notes"], note["id"], next_delta)
+    # R1#2: the WHEN/DO requirement is checked only when the delta itself is being edited,
+    # so unrelated edits on legacy rows (active with empty WHEN/DO) are not blocked.
+    if (
+        delta_flags_passed
+        and next_delta == "active"
+        and not (updated.get("deltaTrigger") or updated.get("deltaAction"))
+    ):
+        raise CliError("Provide a WHEN trigger or DO action to activate a Behavioral Delta.")
+    if not (
+        (updated.get("takeaway") or "").strip()
+        or (updated.get("quote") or "").strip()
+        or renderable_attachments(meta)
+    ):
+        raise CliError("A note needs a takeaway, a quote, or an attachment.")
+
+    updated["updatedAt"] = now_iso_utc()
+    force = bool(getattr(args, "force", False))
+    backend.save_note(updated, expected_base_updated_at=note.get("updatedAt"), force=force)
+    return {"note": updated}
 
 
 def _build_spoiler_safe_questions(book: dict[str, Any]) -> list[str]:
@@ -2753,6 +3114,9 @@ def cmd_reflect(args: argparse.Namespace, backend: WorkspaceBackend) -> dict[str
             updated["contextMechanism"] = args.context.strip()
         if args.critique is not None:
             updated["critique"] = args.critique.strip()
+        chapter = _chapter_arg(getattr(args, "chapter", None))
+        if chapter is not None:
+            _apply_chapter(updated.setdefault("meta", {}), "chapter", chapter)
 
         updated["deltaTrigger"] = next_trigger
         updated["deltaAction"] = next_action
@@ -3291,8 +3655,24 @@ def cmd_book_doc_sync(args: argparse.Namespace, backend: WorkspaceBackend) -> di
 # ---------------------------------------------------------------------------
 
 
+class CliUsageError(Exception):
+    """argparse usage error, reported through the same JSON error envelope as CliError."""
+
+    def __init__(self, message: str, usage: str) -> None:
+        super().__init__(message)
+        self.usage = usage
+
+
+class JsonErrorArgumentParser(argparse.ArgumentParser):
+    """R2 nit: missing/invalid flags (e.g. a required --book) yield `{"error": ...}` on stderr
+    with exit code 2 instead of argparse's plain-text usage dump."""
+
+    def error(self, message: str) -> None:  # type: ignore[override]
+        raise CliUsageError(message, self.format_usage().strip())
+
+
 def build_parser() -> argparse.ArgumentParser:
-    common = argparse.ArgumentParser(add_help=False)
+    common = JsonErrorArgumentParser(add_help=False)
     common.add_argument(
         "--state-file",
         default=argparse.SUPPRESS,
@@ -3310,7 +3690,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Bypass pre-write updatedAt row conflict guard on Books/Notes updates.",
     )
 
-    parser = argparse.ArgumentParser(
+    parser = JsonErrorArgumentParser(
         prog="pragya_cli.py",
         description="Pragya Companion CLI for Google Workspace and JSON snapshot workflows.",
         parents=[common],
@@ -3351,6 +3731,16 @@ def build_parser() -> argparse.ArgumentParser:
     p_bupd.add_argument("--doc-url", default=None, help="Updated companion Google Doc URL.")
     p_bupd.add_argument("--cover-url", default=None, help="Updated cover image URL.")
     p_bupd.add_argument("--force-pos", action="store_true", help="Allow lowering currentPos below current bookmark.")
+    p_bupd.add_argument("--chapter", default=None, help="Set meta.currentChapter (empty string clears).")
+
+    # 0c2. book-capstone
+    p_bcap = sub.add_parser("book-capstone", parents=[common], help="Write the end-of-book capstone (arc, learnings, shift).")
+    p_bcap.add_argument("--book", required=True, help="Book UUID or title.")
+    p_bcap.add_argument("--arc", "--thesis", dest="arc", required=True, help="Arc (fiction) or thesis (non-fiction) of the whole book, in your words.")
+    p_bcap.add_argument("--learnings", "--learning", dest="learnings", action="append", default=[], help="A key learning (repeat 1-7 times).")
+    p_bcap.add_argument("--shift", required=True, help="How your perspective shifted.")
+    p_bcap.add_argument("--completed-at", default=None, help="Override completedAt (ISO-8601).")
+    p_bcap.add_argument("--allow-unfinished", action="store_true", help="Allow a capstone on a book that is not finished.")
 
     # 0d. progress
     p_prog = sub.add_parser("progress", parents=[common], help="Advance reading bookmark and log a coalesced session.")
@@ -3361,6 +3751,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_prog.add_argument("--finish", action="store_true", help="Mark the book as finished (normalizedPos=1.0).")
     p_prog.add_argument("--session-note", default="", help="Optional short session note.")
     p_prog.add_argument("--force-pos", action="store_true", help="Allow moving bookmark backward.")
+    p_prog.add_argument("--chapter", default=None, help="Set meta.currentChapter (saves even if the position is unchanged; empty clears).")
 
     # 1. capture
     p_cap = sub.add_parser("capture", parents=[common], help="Capture a note and optionally advance bookmark.")
@@ -3383,6 +3774,22 @@ def build_parser() -> argparse.ArgumentParser:
     p_cap.add_argument("--doc-url", action="append", default=[], help="Google Doc URL to attach.")
     p_cap.add_argument("--link", action="append", default=[], help="External URL to attach.")
     p_cap.add_argument("--force-pos", action="store_true", help="Override monotonic bookmark ceiling.")
+    p_cap.add_argument("--chapter", default=None, help="Note chapter (default: inherit the book's current chapter at the bookmark; empty = none).")
+
+    # 1b. note-update
+    p_nupd = sub.add_parser("note-update", parents=[common], help="Edit note fields or move inbox -> saved.")
+    p_nupd.add_argument("--note", required=True, help="Note UUID or slug.")
+    p_nupd.add_argument("--status", default=None, choices=["saved", "inbox", "in-reflection", "atomic"], help="New note status (e.g. saved = 'just save it').")
+    p_nupd.add_argument("--title", default=None, help="Concept title (empty clears).")
+    p_nupd.add_argument("--quote", default=None, help="Verbatim quote.")
+    p_nupd.add_argument("--takeaway", default=None, help="Takeaway in your words.")
+    p_nupd.add_argument("--context", "--context-mechanism", dest="context", default=None, help="Context & mechanism.")
+    p_nupd.add_argument("--critique", default=None, help="Critique & boundary conditions.")
+    p_nupd.add_argument("--trigger", "--delta-trigger", dest="trigger", default=None, help="WHEN trigger.")
+    p_nupd.add_argument("--action", "--delta-action", dest="action", default=None, help="DO action.")
+    p_nupd.add_argument("--delta-status", default=None, choices=["none", "active", "paused", "graduated"], help="Behavioral Delta status.")
+    p_nupd.add_argument("--chapter", default=None, help="Note chapter (empty clears).")
+    p_nupd.add_argument("--tags", default=None, help="Comma-separated #tags (replaces the list; empty clears).")
 
     # 2. reflect
     p_ref = sub.add_parser("reflect", parents=[common], help="4-stage Socratic reflection.")
@@ -3398,6 +3805,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_ref.add_argument("--trigger", "--delta-trigger", dest="trigger", default=None, help="WHEN trigger condition.")
     p_ref.add_argument("--action", "--delta-action", dest="action", default=None, help="DO action.")
     p_ref.add_argument("--delta-status", default=None, choices=["none", "active", "paused", "graduated"])
+    p_ref.add_argument("--chapter", default=None, help="Set the note chapter on --stage commit (empty clears).")
 
     # 3. recall
     p_rec = sub.add_parser("recall", parents=[common], help="Spoiler-safe Q&A, check-in, and shuffle.")
@@ -3433,7 +3841,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None, runner: Callable[[list[str]], tuple[int, str, str]] = default_cmd_runner) -> int:
     parser = build_parser()
-    args = parser.parse_args(argv)
+    try:
+        args = parser.parse_args(argv)
+    except CliUsageError as exc:
+        sys.stderr.write(json.dumps({"error": str(exc), "usage": exc.usage}) + "\n")
+        return 2
 
     state_file = getattr(args, "state_file", None)
     spreadsheet_id = getattr(args, "spreadsheet_id", None)
@@ -3447,6 +3859,8 @@ def main(argv: list[str] | None = None, runner: Callable[[list[str]], tuple[int,
         "book-list": cmd_book_list,
         "book-add": cmd_book_add,
         "book-update": cmd_book_update,
+        "book-capstone": cmd_book_capstone,
+        "note-update": cmd_note_update,
         "progress": cmd_progress,
         "capture": cmd_capture,
         "reflect": cmd_reflect,
