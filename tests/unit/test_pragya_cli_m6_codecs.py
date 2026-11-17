@@ -10,6 +10,7 @@ import contextlib
 import copy
 import io
 import json
+import re
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -559,6 +560,11 @@ def _make_fake_runner(rows: dict, batch_ops_seen: list):
                 return 0, json.dumps({"values": [headers[rng]]}), ""
             if rng in rows:
                 return 0, json.dumps({"values": rows[rng]}), ""
+            if re.fullmatch(r"\w+!A\d+", rng):  # R1#6 one-cell id re-read
+                tab, cell = rng.split("!")
+                full = next(v for k, v in rows.items() if k.startswith(tab + "!"))
+                idx = int(cell[1:]) - 1
+                return 0, json.dumps({"values": [[full[idx][0]]] if 0 <= idx < len(full) else []}), ""
             if rng.endswith("!A:A"):
                 tab = rng.split("!")[0]
                 full = next(v for k, v in rows.items() if k.startswith(tab + "!"))

@@ -6,6 +6,7 @@ import { getLocalDateString } from '../../utils/sessionCoalesce';
 import { buildSnapshot } from '../../utils/snapshot';
 import { showToast } from '../../utils/toast';
 import { Modal } from '../common/Modal';
+import { describeSyncError } from '../../utils/apiErrors';
 
 export interface ImportConfirmModalProps {
   snapshot: PragyaSnapshot | null;
@@ -43,7 +44,7 @@ export const ImportConfirmModal: React.FC<ImportConfirmModalProps> = ({
       await onConfirm(snapshot);
       onClose();
     } catch (err) {
-      showToast(err instanceof Error ? err.message : 'Failed to import snapshot', 'error');
+      showToast(describeSyncError(err, 'Failed to import snapshot'), 'error');
     } finally {
       setSubmitting(false);
     }

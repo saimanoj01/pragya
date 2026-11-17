@@ -10,7 +10,7 @@ import {
 } from 'lucide-react';
 import type { Attachment, DeltaStatus, Note, NoteStatus } from '../../types/pragya';
 import { usePragya } from '../../context/PragyaContext';
-import { mergePreservedAttachments, splitAttachments } from '../../utils/metaCodecs';
+import { mergeEditedAttachments, splitAttachments } from '../../utils/metaCodecs';
 import {
   formatWhenDoDisplay,
   normalizeDeltaAction,
@@ -33,6 +33,7 @@ import { showToast } from '../../utils/toast';
 import { DriveImage } from '../common/DriveImage';
 import { Modal } from '../common/Modal';
 import { WikilinkAutocomplete } from '../common/WikilinkAutocomplete';
+import { describeSyncError } from '../../utils/apiErrors';
 
 export interface EditNoteModalProps {
   note: Note | null;
@@ -102,6 +103,8 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
   const wasOpenRef = useRef(false);
   const initializedIdRef = useRef<string | null>(null);
   const submittedOrDiscardedRef = useRef(false);
+  /** R-4: stored attachments captured when the modal opened (stable merge base on save). */
+  const openedAttachmentsRef = useRef<unknown[]>([]);
   const canonicalRef = useRef({
     title: '',
     slug: '',
@@ -295,7 +298,10 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
     }
 
     // Only renderable entries are editable; the rest are carried through on save.
-    setAttachments(splitAttachments(note.meta?.attachments).renderable);
+    openedAttachmentsRef.current = Array.isArray(note.meta?.attachments)
+      ? [...note.meta.attachments]
+      : [];
+    setAttachments(splitAttachments(openedAttachmentsRef.current).renderable);
     setAttachMode('none');
     setDraftUrl('');
     setDraftTitle('');
@@ -471,7 +477,7 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
           return [...prev, uploaded];
         });
       } catch (err) {
-        showToast(err instanceof Error ? err.message : 'Failed to compress/attach image', 'error');
+        showToast(describeSyncError(err, 'Failed to compress/attach image'), 'error');
       } finally {
         setUploadingImage(false);
       }
@@ -570,9 +576,10 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
           meta: {
             ...note.meta,
             ...(title.trim() ? { title: title.trim() } : { title: undefined }),
-            attachments: mergePreservedAttachments(
-              attachments.slice(0, 3),
-              splitAttachments(note.meta?.attachments).preserved
+            // R-4: merge against the list captured at open, keeping stored order.
+            attachments: mergeEditedAttachments(
+              openedAttachmentsRef.current,
+              attachments.slice(0, 3)
             ),
             ...(book?.kind === 'fiction' ? { isPrediction } : {}),
           },
@@ -587,7 +594,7 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
       onSaved?.(saved);
       onClose();
     } catch (err) {
-      showToast(err instanceof Error ? err.message : 'Failed to update note', 'error');
+      showToast(describeSyncError(err, 'Failed to update note'), 'error');
     } finally {
       setSubmitting(false);
     }

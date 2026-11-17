@@ -519,6 +519,12 @@ function makeSheetsFetch({ modifiedTime, sheetRows, calls }) {
         status: 200,
       });
     }
+    // M6 Batch 3 (R1#2): one-cell id verification before a UUID-resolved PUT.
+    const idCell = /\/values\/Books!A(\d+)\?valueRenderOption=UNFORMATTED_VALUE/.exec(u);
+    if (idCell && method === 'GET') {
+      const row = sheetRows.Books[Number(idCell[1]) - 1];
+      return new Response(JSON.stringify({ values: row ? [[row[0]]] : [] }), { status: 200 });
+    }
     return new Response(JSON.stringify({}), { status: 200 });
   };
 }

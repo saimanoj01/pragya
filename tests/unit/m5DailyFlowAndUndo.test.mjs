@@ -205,6 +205,13 @@ test('M5.5: GoogleSheetsAdapter.deleteSession resolves row via Sessions!A:A and 
         { status: 200, headers: { 'Content-Type': 'application/json' } }
       );
     }
+    // M6 Batch 3 (R1#2): the id cell is re-verified right before deleteDimension.
+    if (u.includes('/values/Sessions!A3?')) {
+      return new Response(JSON.stringify({ values: [['sess-target']] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
     if (u.includes('fields=sheets.properties')) {
       return new Response(
         JSON.stringify({

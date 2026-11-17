@@ -16,6 +16,7 @@ import { parseTagsCsv } from '../../utils/sheetCodecs';
 import { showToast } from '../../utils/toast';
 import { DriveImage } from '../common/DriveImage';
 import { Modal } from '../common/Modal';
+import { describeSyncError } from '../../utils/apiErrors';
 
 export interface QuickCaptureModalProps {
   isOpen: boolean;
@@ -350,7 +351,7 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
           return [...prev, uploaded];
         });
       } catch (err) {
-        showToast(err instanceof Error ? err.message : 'Failed to compress/attach image', 'error');
+        showToast(describeSyncError(err, 'Failed to compress/attach image'), 'error');
       } finally {
         setUploadingImage(false);
       }
@@ -441,7 +442,7 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
       showToast(sparLater ? 'Captured to Sparring Inbox' : 'Note captured', 'success');
       onClose();
     } catch (err) {
-      showToast(err instanceof Error ? err.message : 'Failed to save note', 'error');
+      showToast(describeSyncError(err, 'Failed to save note'), 'error');
     } finally {
       setSubmitting(false);
     }

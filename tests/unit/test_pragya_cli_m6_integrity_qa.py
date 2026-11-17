@@ -434,3 +434,56 @@ class TestQaReverifyFixUp(unittest.TestCase):
         self.assertNotEqual(self._read(no_id).strip(), "")
         table_only = {"documentId": "x", "body": {"content": [{"table": {"tableRows": []}}]}}
         self.assertNotEqual(self._read(table_only).strip(), "")
+
+
+class TestQaBatch3OneCellReread(unittest.TestCase):
+    """QA (Batch 3) R1#6: one-cell id re-read on unguarded paths."""
+
+    def _session(self, sid="sess-q", end=2):
+        return {"id": sid, "bookId": "book-systems", "date": "2026-11-16", "startPos": 1,
+                "endPos": end, "updatedAt": "2026-11-16T10:00:00.000Z", "note": ""}
+
+    def test_append_never_does_a_one_cell_read(self):
+        fake = FakeWorkspace()
+        _backend(fake).save_session(self._session("brand-new"))
+        reads = [c[4] for c in fake.calls if c[:3] == ["gsheets", "readonly", "read"]]
+        self.assertFalse(any(r.startswith("Sessions!A") and r[len("Sessions!A"):].isdigit() for r in reads), reads)
+        self.assertIn("appendCells", fake.raw_payloads[-1]["requests"][0])
+
+    def test_trailing_row_deleted_then_reappended_elsewhere_retargets(self):
+        fake = FakeWorkspace()
+        s = self._session()
+        other = self._session("other")
+        fake.rows["Sessions"] = [pragya_cli.SESSIONS_HEADERS, pragya_cli.session_to_row(s)]
+        moved = [pragya_cli.SESSIONS_HEADERS, pragya_cli.session_to_row(other), pragya_cli.session_to_row(s)]
+
+        def single(tab):
+            if tab == "Sessions":
+                fake.rows["Sessions"] = moved
+                return moved
+            return fake.rows[tab]
+
+        fake.single_cell_rows = single
+        _backend(fake).save_session(dict(s, endPos=7))
+        req = fake.raw_payloads[-1]["requests"][0]["updateCells"]
+        self.assertEqual(req["range"]["startRowIndex"], 2)
+
+    def test_deltalog_update_with_blank_id_cell_and_no_match_errors_without_write(self):
+        fake = FakeWorkspace()
+        log = {"id": "dl-1", "noteId": "n", "date": "2026-11-16", "outcome": "applied", "reflection": ""}
+        fake.rows["DeltaLogs"] = [pragya_cli.DELTA_LOGS_HEADERS, pragya_cli.delta_log_to_row(log)]
+
+        def single(tab):
+            if tab == "DeltaLogs":
+                fake.rows["DeltaLogs"] = [pragya_cli.DELTA_LOGS_HEADERS, ["", "", "", "", ""]]
+                return fake.rows["DeltaLogs"]
+            return fake.rows[tab]
+
+        fake.single_cell_rows = single
+        backend = _backend(fake)
+        save = getattr(backend, "save_delta_log", None)
+        if save is None:
+            self.skipTest("no save_delta_log on backend")
+        with self.assertRaises(pragya_cli.CliError):
+            save(dict(log, reflection="x"))
+        self.assertEqual(fake.raw_payloads, [])

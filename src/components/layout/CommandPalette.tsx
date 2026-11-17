@@ -97,6 +97,8 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
   }, [books]);
 
   const items = useMemo<CommandItem[]>(() => {
+    // QA-10: nothing to build (or crash on) while the palette is closed.
+    if (!isOpen) return [];
     const list: CommandItem[] = [
       {
         id: 'new-capture',
@@ -178,7 +180,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
     for (const note of notes) {
       const book = bookMap.get(note.bookId);
       const spoiler = isNoteSpoiler(note, book);
-      const title = note.meta.title || note.slug;
+      const title = String(note.meta?.title || note.slug || '');
       list.push({
         id: `note-${note.slug}`,
         title,
@@ -189,16 +191,18 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
         icon: FileText,
         keywords: [
           title.toLowerCase(),
-          note.slug.toLowerCase(),
-          ...(spoiler ? [] : [note.takeaway.toLowerCase(), note.quote.toLowerCase()]),
-          ...note.tags.map(t => t.toLowerCase()),
+          String(note.slug || '').toLowerCase(),
+          ...(spoiler
+            ? []
+            : [String(note.takeaway || '').toLowerCase(), String(note.quote || '').toLowerCase()]),
+          ...(Array.isArray(note.tags) ? note.tags : []).map(t => String(t).toLowerCase()),
         ],
         action: () => navigateTo(`#/note/${encodeURIComponent(note.slug)}`),
       });
     }
 
     return list;
-  }, [bookMap, books, notes, onOpenCapture, onSyncNow, onToggleTheme]);
+  }, [isOpen, bookMap, books, notes, onOpenCapture, onSyncNow, onToggleTheme]);
 
   const { groupedItems, flatItems } = useMemo(() => {
     const q = query.trim().toLowerCase();

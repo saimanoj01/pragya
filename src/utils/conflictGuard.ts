@@ -5,7 +5,10 @@
  * `updatedAt` this device loaded. If the remote row is strictly newer, another device
  * (or the pragya-companion CLI) wrote it after we loaded → abort instead of clobbering.
  */
+import { isSheetSerialNumber, sheetSerialToMillis } from './sheetSerial';
+
 export const CONFLICT_ERROR_MESSAGE = 'Updated on another device — run Sync Now before saving';
+export const ROW_MOVED_ERROR_MESSAGE = 'Row moved — run Sync Now before saving';
 
 export class RowConflictError extends Error {
   readonly code = 'ROW_CONFLICT';
@@ -32,8 +35,8 @@ export function isRowConflictError(err: unknown): err is RowConflictError {
 function toMillis(value: unknown): number | null {
   if (typeof value === 'number' && Number.isFinite(value)) {
     // Sheets UNFORMATTED_VALUE may surface serial dates (days since 1899-12-30).
-    if (value > 0 && value < 2_958_466) {
-      return Math.round((value - 25569) * 86_400_000);
+    if (isSheetSerialNumber(value)) {
+      return sheetSerialToMillis(value);
     }
     return value;
   }
@@ -64,5 +67,28 @@ export function extractMetaUpdatedAt(metaJsonCell: unknown): string {
     return typeof parsed?.updatedAt === 'string' ? parsed.updatedAt : '';
   } catch {
     return '';
+  }
+}
+
+/**
+ * B4.1: the conflict-guard base for a write. An explicit base (captured when a modal
+ * opened, or the `updatedAt` an undo payload applied) always wins — even `""`, which
+ * deliberately disables the guard — so a background sync that refreshed the loaded
+ * entity can no longer silently move the base forward.
+ */
+export function resolveExpectedBase(
+  explicit: string | undefined,
+  loaded: string | undefined
+): string | undefined {
+  return explicit !== undefined ? explicit : loaded;
+}
+
+/** B4.3: the UUID was not at the resolved row (twice) — never write blind. */
+export class RowMovedError extends Error {
+  readonly code = 'ROW_MOVED';
+
+  constructor(message: string = ROW_MOVED_ERROR_MESSAGE) {
+    super(message);
+    this.name = 'RowMovedError';
   }
 }

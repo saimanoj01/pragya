@@ -24,6 +24,7 @@ import { buildSnapshot, validateSnapshotPayload } from '../../utils/snapshot';
 import { showToast } from '../../utils/toast';
 import { OAuthSetupGuide } from '../common/OAuthSetupGuide';
 import { ImportConfirmModal } from '../modals/ImportConfirmModal';
+import { describeSyncError } from '../../utils/apiErrors';
 
 export const SettingsView: React.FC = () => {
   const { user, isMockMode, googleClientId, saveGoogleClientId, logout } = useAuth();
@@ -97,7 +98,7 @@ export const SettingsView: React.FC = () => {
       await replaceWorkspaceFromSnapshot(backup.snapshot, { backup: false });
       showToast('Restored workspace from pre-import backup', 'success');
     } catch (err) {
-      showToast(err instanceof Error ? err.message : 'Failed to restore backup', 'error');
+      showToast(describeSyncError(err, 'Failed to restore backup'), 'error');
     } finally {
       setRestoringBackup(false);
     }

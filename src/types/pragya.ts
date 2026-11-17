@@ -70,9 +70,11 @@ export interface NoteMetaJson {
   title?: string;
   /**
    * Stored verbatim, including unknown/invalid entries and entries beyond 3.
-   * Render via `getRenderableAttachments()` / edit via `splitAttachments()` (utils/metaCodecs).
+   * Render via `getRenderableAttachments()` / edit via `splitAttachments()` +
+   * `mergeEditedAttachments()` (utils/metaCodecs). Typed `unknown[]` on purpose so
+   * every reader is forced through those validating helpers.
    */
-  attachments: Attachment[];
+  attachments: unknown[];
   links: string[];
   isPrediction?: boolean;
   /** 1–3 trimmed, non-empty questions. */
@@ -147,4 +149,6 @@ export interface WorkspaceState {
   mediaFolderId?: string;
   /** True when served from pragya_sheets_cache_v1 because the network is unavailable. */
   isOfflineReadOnly?: boolean;
+  /** True when the cache was served because Google rate-limited the freshness check. */
+  servedFromCacheDueToRateLimit?: boolean;
 }

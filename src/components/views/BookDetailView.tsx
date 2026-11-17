@@ -29,6 +29,7 @@ import {
 } from '../../utils/spoilerMath';
 import { showToast } from '../../utils/toast';
 import { DriveImage } from '../common/DriveImage';
+import { describeSyncError } from '../../utils/apiErrors';
 
 export interface BookDetailViewProps {
   bookId: string;
@@ -170,7 +171,7 @@ export const BookDetailView: React.FC<BookDetailViewProps> = ({
                       .then(() => showToast('Reverted bookmark update', 'info'))
                       .catch(err =>
                         showToast(
-                          err instanceof Error ? err.message : 'Failed to undo bookmark update',
+                          describeSyncError(err, 'Failed to undo bookmark update'),
                           'error'
                         )
                       );
@@ -181,7 +182,7 @@ export const BookDetailView: React.FC<BookDetailViewProps> = ({
         );
       }
     } catch (err) {
-      showToast(err instanceof Error ? err.message : 'Failed to update position', 'error');
+      showToast(describeSyncError(err, 'Failed to update position'), 'error');
     }
   };
 
@@ -218,7 +219,7 @@ export const BookDetailView: React.FC<BookDetailViewProps> = ({
                       .then(() => showToast('Reverted bookmark update', 'info'))
                       .catch(err =>
                         showToast(
-                          err instanceof Error ? err.message : 'Failed to undo bookmark update',
+                          describeSyncError(err, 'Failed to undo bookmark update'),
                           'error'
                         )
                       );
@@ -229,24 +230,25 @@ export const BookDetailView: React.FC<BookDetailViewProps> = ({
         );
       }
     } catch (err) {
-      showToast(err instanceof Error ? err.message : 'Failed to update position', 'error');
+      showToast(describeSyncError(err, 'Failed to update position'), 'error');
     }
   };
 
   const handleMarkFinished = async () => {
     const prevBook = book;
     try {
-      await markBookFinished(book.id);
+      const finished = await markBookFinished(book.id);
       showToast(`"${book.title}" marked finished — predictions unlocked!`, 'success', {
         action: {
           label: 'Undo',
           testId: 'toast-undo-btn',
           onClick: () => {
-            void restoreBook(prevBook)
+            // B4.1: undo is guarded against the row this mark-finished wrote.
+            void restoreBook(prevBook, { expectedBaseUpdatedAt: finished?.meta?.updatedAt })
               .then(() => showToast(`Restored "${prevBook.title}" to ${prevBook.status}`, 'info'))
               .catch(err =>
                 showToast(
-                  err instanceof Error ? err.message : 'Failed to undo mark finished',
+                  describeSyncError(err, 'Failed to undo mark finished'),
                   'error'
                 )
               );
@@ -254,7 +256,7 @@ export const BookDetailView: React.FC<BookDetailViewProps> = ({
         },
       });
     } catch (err) {
-      showToast(err instanceof Error ? err.message : 'Failed to mark finished', 'error');
+      showToast(describeSyncError(err, 'Failed to mark finished'), 'error');
     }
   };
 

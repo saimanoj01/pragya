@@ -17,6 +17,7 @@ import {
   normalizeNoteMeta,
   normalizeNoteSource,
 } from './metaCodecs';
+import { sheetSerialToMillis, sheetSerialToUtcDayMillis, toSheetSerial } from './sheetSerial';
 import { computeNormalizedPos } from './spoilerMath';
 
 export const BOOKS_HEADERS = [
@@ -123,25 +124,6 @@ function asNumber(val: unknown, fallback = 0): number {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
-/** Exclusive upper bound for Sheets serial dates (10000-01-01). Mirrors conflictGuard.ts. */
-const SHEET_SERIAL_MAX = 2_958_466;
-const SHEET_SERIAL_STRING_RE = /^\d{5}(\.\d+)?$/;
-const SHEET_SERIAL_UNIX_EPOCH = 25569; // 1970-01-01 as days since 1899-12-30
-const MS_PER_DAY = 86_400_000;
-
-function toSheetSerial(v: unknown): number | null {
-  if (typeof v === 'number') {
-    return Number.isFinite(v) && v > 0 && v < SHEET_SERIAL_MAX ? v : null;
-  }
-  if (typeof v === 'string') {
-    const trimmed = v.trim();
-    if (!SHEET_SERIAL_STRING_RE.test(trimmed)) return null;
-    const n = Number(trimmed);
-    return n > 0 && n < SHEET_SERIAL_MAX ? n : null;
-  }
-  return null;
-}
-
 /**
  * Decodes a Sheets serial date (days since 1899-12-30, as surfaced by
  * UNFORMATTED_VALUE after a USER_ENTERED write) into a UTC `YYYY-MM-DD`.
@@ -150,8 +132,7 @@ function toSheetSerial(v: unknown): number | null {
 export function decodeSheetDate(v: unknown): string {
   const serial = toSheetSerial(v);
   if (serial === null) return asString(v).trim();
-  const ms = (Math.floor(serial) - SHEET_SERIAL_UNIX_EPOCH) * MS_PER_DAY;
-  return new Date(ms).toISOString().slice(0, 10);
+  return new Date(sheetSerialToUtcDayMillis(serial)).toISOString().slice(0, 10);
 }
 
 /**
@@ -161,8 +142,7 @@ export function decodeSheetDate(v: unknown): string {
 export function decodeSheetTimestamp(v: unknown): string {
   const serial = toSheetSerial(v);
   if (serial === null) return asString(v).trim();
-  const ms = Math.round((serial - SHEET_SERIAL_UNIX_EPOCH) * MS_PER_DAY);
-  return new Date(ms).toISOString();
+  return new Date(sheetSerialToMillis(serial)).toISOString();
 }
 
 const VALID_KINDS: BookKind[] = ['nonfiction', 'fiction'];

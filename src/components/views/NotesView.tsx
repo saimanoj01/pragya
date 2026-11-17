@@ -94,7 +94,7 @@ export const NotesView: React.FC<NotesViewProps> = ({
           n.meta?.title || '',
           n.slug,
           ...(hideSpoilerContent ? [] : [n.quote, n.takeaway]),
-          ...n.tags,
+          ...(Array.isArray(n.tags) ? n.tags : []),
           book?.title || '',
           book?.author || '',
         ]

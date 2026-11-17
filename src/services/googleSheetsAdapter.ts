@@ -22,7 +22,13 @@ import {
   rowToSession,
   sessionToRow,
 } from '../utils/sheetCodecs';
-import { RowConflictError, extractMetaUpdatedAt, isRemoteNewer } from '../utils/conflictGuard';
+import {
+  RowConflictError,
+  RowMovedError,
+  extractMetaUpdatedAt,
+  isRemoteNewer,
+} from '../utils/conflictGuard';
+import { ApiError, classifyApiError } from '../utils/apiErrors';
 import { planTrailingClearRanges, type ImportTabPlan } from '../utils/importSafety';
 import { isNetworkError } from '../utils/offline';
 import {
@@ -146,6 +152,28 @@ function upsertInArray<T extends { id: string }>(arr: T[], item: T): T[] {
   return [...arr, item];
 }
 
+/** A5.6: at most 3 attempts for a rate-limited request, sleeping 0.5 s then 1 s. */
+export const RATE_LIMIT_MAX_ATTEMPTS = 3;
+export const RATE_LIMIT_BACKOFF_MS: readonly number[] = [500, 1000];
+
+export interface GoogleSheetsAdapterOptions {
+  /** Injectable backoff sleep (tests pass a no-op). */
+  sleep?: (ms: number) => Promise<void>;
+}
+
+function defaultSleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+/** Column letters → 0-based index (A → 0, L → 11, AA → 26). */
+function columnIndex(col: string): number {
+  let n = 0;
+  for (const ch of col.toUpperCase()) {
+    n = n * 26 + (ch.charCodeAt(0) - 64);
+  }
+  return n - 1;
+}
+
 export class GoogleSheetsAdapter implements StorageAdapter {
   private getToken: () => string | null;
   private onUnauthorized?: () => void;
@@ -154,10 +182,18 @@ export class GoogleSheetsAdapter implements StorageAdapter {
   private spreadsheetId: string | null = null;
   private mediaFolderId: string | null = null;
 
-  constructor(getToken: () => string | null, onUnauthorized?: () => void, accountEmail?: string) {
+  private sleep: (ms: number) => Promise<void>;
+
+  constructor(
+    getToken: () => string | null,
+    onUnauthorized?: () => void,
+    accountEmail?: string,
+    options: GoogleSheetsAdapterOptions = {}
+  ) {
     this.getToken = getToken;
     this.onUnauthorized = onUnauthorized;
     this.accountEmail = accountEmail;
+    this.sleep = options.sleep ?? defaultSleep;
   }
 
   private enqueueWrite<T>(task: () => Promise<T>): Promise<T> {
@@ -190,17 +226,26 @@ export class GoogleSheetsAdapter implements StorageAdapter {
       headers.set('Content-Type', 'application/json');
     }
 
-    const response = await fetch(url, { ...options, headers });
-    if (response.status === 401) {
-      this.onUnauthorized?.();
-      throw new Error('401 Unauthorized');
+    for (let attempt = 1; ; attempt += 1) {
+      const response = await fetch(url, { ...options, headers });
+      if (response.status === 401) {
+        this.onUnauthorized?.();
+        throw new Error('401 Unauthorized');
+      }
+      if (!response.ok) {
+        const text = await response.text().catch(() => '');
+        const apiError = new ApiError(response.status, text);
+        // B4.7/A5.6: genuine 429 / quota-403 responses were rejected server-side, so a
+        // short backoff + retry is safe (even for writes). Everything else surfaces now.
+        if (classifyApiError(apiError) === 'rate_limited' && attempt < RATE_LIMIT_MAX_ATTEMPTS) {
+          await this.sleep(RATE_LIMIT_BACKOFF_MS[attempt - 1] ?? 1000);
+          continue;
+        }
+        throw apiError;
+      }
+      const text = await response.text();
+      return (text ? JSON.parse(text) : {}) as T;
     }
-    if (!response.ok) {
-      const text = await response.text().catch(() => '');
-      throw new Error(`API Error ${response.status}: ${text}`);
-    }
-    const text = await response.text();
-    return (text ? JSON.parse(text) : {}) as T;
   }
 
   private async discoverOrCreateSpreadsheet(): Promise<{
@@ -236,8 +281,10 @@ export class GoogleSheetsAdapter implements StorageAdapter {
       } catch (err) {
         const msg = err instanceof Error ? err.message : '';
         if (msg.includes('401')) throw err;
-        // Clear stale ID if deleted/not found/forbidden and rediscover
-        if (msg.includes('404') || msg.includes('403')) {
+        // Clear stale ID if deleted/not found/forbidden and rediscover. A rate-limited
+        // 403/429 is not "forbidden": keep the ID and cache (B4.7).
+        const kind = classifyApiError(err);
+        if (kind === 'not_found' || kind === 'forbidden') {
           localStorage.removeItem(SHEETS_CACHE_STORAGE_KEY);
           localStorage.removeItem(SPREADSHEET_ID_STORAGE_KEY);
           this.spreadsheetId = null;
@@ -457,11 +504,24 @@ export class GoogleSheetsAdapter implements StorageAdapter {
       } catch (err) {
         const msg = err instanceof Error ? err.message : '';
         if (msg.includes('401')) throw err;
-        if (msg.includes('404') || msg.includes('403')) {
+        const kind = classifyApiError(err);
+        if (kind === 'not_found' || kind === 'forbidden') {
           localStorage.removeItem(SHEETS_CACHE_STORAGE_KEY);
           localStorage.removeItem(SPREADSHEET_ID_STORAGE_KEY);
           this.spreadsheetId = null;
           cached = null;
+        } else if (kind === 'rate_limited' && cached) {
+          // B4.7: Drive is throttling the modifiedTime check (retries exhausted). The
+          // current-codec cache is the best data we have — keep it and serve it.
+          this.spreadsheetId = knownId;
+          if (cached.mediaFolderId) this.mediaFolderId = cached.mediaFolderId;
+          return {
+            ...cached.state,
+            spreadsheetId: knownId,
+            modifiedTime: cached.modifiedTime,
+            mediaFolderId: cached.mediaFolderId,
+            servedFromCacheDueToRateLimit: true,
+          };
         } else if (isNetworkError(err)) {
           // M4.5: offline → serve last-known cache in read-only mode
           const offline = offlineFallback();
@@ -570,6 +630,76 @@ export class GoogleSheetsAdapter implements StorageAdapter {
     return spreadsheetId;
   }
 
+  private async resolveRowIndex(
+    spreadsheetId: string,
+    tab: TabSchemaSpec['title'],
+    id: string
+  ): Promise<number> {
+    const colARes = await this.fetchApi<{ values?: unknown[][] }>(
+      `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(
+        spreadsheetId
+      )}/values/${encodeURIComponent(`${tab}!A:A`)}`
+    );
+    const rows = colARes.values || [];
+    for (let i = 0; i < rows.length; i += 1) {
+      const cell = String(rows[i]?.[0] ?? '').trim();
+      if (cell === id && cell !== 'id') return i;
+    }
+    return -1;
+  }
+
+  /** One-cell UNFORMATTED_VALUE read of `${tab}!A{r}` (the row's UUID). */
+  private async readIdCell(
+    spreadsheetId: string,
+    tab: TabSchemaSpec['title'],
+    sheetRowNumber: number
+  ): Promise<string> {
+    const res = await this.fetchApi<{ values?: unknown[][] }>(
+      `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(
+        spreadsheetId
+      )}/values/${encodeURIComponent(`${tab}!A${sheetRowNumber}`)}?valueRenderOption=UNFORMATTED_VALUE`
+    );
+    return String(res.values?.[0]?.[0] ?? '').trim();
+  }
+
+  /**
+   * R1#2: confirm `id` still sits at 0-based `matchIndex` right before a write/delete.
+   * On a mismatch re-resolve A:A once and re-verify; otherwise throw RowMovedError
+   * (never write or delete by a stale index).
+   */
+  private async verifyRowIndex(
+    spreadsheetId: string,
+    tab: TabSchemaSpec['title'],
+    id: string,
+    matchIndex: number
+  ): Promise<number> {
+    if ((await this.readIdCell(spreadsheetId, tab, matchIndex + 1)) === id) return matchIndex;
+    const relocated = await this.resolveRowIndex(spreadsheetId, tab, id);
+    if (relocated < 0 || (await this.readIdCell(spreadsheetId, tab, relocated + 1)) !== id) {
+      throw new RowMovedError();
+    }
+    return relocated;
+  }
+
+  /**
+   * B4.3: one UNFORMATTED_VALUE read of `${tab}!A{r}:{tsCol}{r}` that both verifies the
+   * row still holds `id` (column A) and returns the row's timestamp cell.
+   */
+  private async readGuardRow(
+    spreadsheetId: string,
+    tab: TabSchemaSpec['title'],
+    sheetRowNumber: number,
+    timestampCol: 'E' | 'L'
+  ): Promise<unknown[]> {
+    const range = `${tab}!A${sheetRowNumber}:${timestampCol}${sheetRowNumber}`;
+    const res = await this.fetchApi<{ values?: unknown[][] }>(
+      `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(
+        spreadsheetId
+      )}/values/${encodeURIComponent(range)}?valueRenderOption=UNFORMATTED_VALUE`
+    );
+    return res.values?.[0] || [];
+  }
+
   private async upsertRowById(
     tab: TabSchemaSpec['title'],
     lastCol: string,
@@ -578,40 +708,41 @@ export class GoogleSheetsAdapter implements StorageAdapter {
     conflictGuard?: { expectedBaseUpdatedAt?: string; timestampCol: 'E' | 'L' }
   ): Promise<void> {
     const spreadsheetId = await this.getActiveSpreadsheetId();
-    const colARes = await this.fetchApi<{ values?: unknown[][] }>(
-      `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(
-        spreadsheetId
-      )}/values/${encodeURIComponent(`${tab}!A:A`)}`
-    );
-
-    const rows = colARes.values || [];
-    let matchIndex = -1;
-    for (let i = 0; i < rows.length; i += 1) {
-      const cell = String(rows[i]?.[0] ?? '').trim();
-      if (cell === id && cell !== 'id') {
-        matchIndex = i;
-        break;
-      }
-    }
+    let matchIndex = await this.resolveRowIndex(spreadsheetId, tab, id);
 
     if (matchIndex >= 0) {
-      const sheetRowNumber = matchIndex + 1;
-      // M4.9: pre-write row-level conflict guard (targeted single-cell read of the
-      // row's timestamp column, resolved fresh at write time — never cached).
+      // M4.9: pre-write row-level conflict guard (targeted read of the row's timestamp
+      // column, resolved fresh at write time — never cached).
       if (conflictGuard?.expectedBaseUpdatedAt) {
-        const tsRange = `${tab}!${conflictGuard.timestampCol}${sheetRowNumber}`;
-        const tsRes = await this.fetchApi<{ values?: unknown[][] }>(
-          `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(
-            spreadsheetId
-          )}/values/${encodeURIComponent(tsRange)}?valueRenderOption=UNFORMATTED_VALUE`
+        const tsIdx = columnIndex(conflictGuard.timestampCol);
+        let cells = await this.readGuardRow(
+          spreadsheetId,
+          tab,
+          matchIndex + 1,
+          conflictGuard.timestampCol
         );
-        const rawCell = tsRes.values?.[0]?.[0];
+        if (String(cells[0] ?? '').trim() !== id) {
+          // B4.3: rows shifted between the A:A read and the guard read — re-resolve once.
+          matchIndex = await this.resolveRowIndex(spreadsheetId, tab, id);
+          cells =
+            matchIndex >= 0
+              ? await this.readGuardRow(spreadsheetId, tab, matchIndex + 1, conflictGuard.timestampCol)
+              : [];
+          if (matchIndex < 0 || String(cells[0] ?? '').trim() !== id) {
+            throw new RowMovedError();
+          }
+        }
+        const rawCell = cells[tsIdx];
         const remoteUpdatedAt =
           conflictGuard.timestampCol === 'L' ? extractMetaUpdatedAt(rawCell) : rawCell;
         if (isRemoteNewer(remoteUpdatedAt, conflictGuard.expectedBaseUpdatedAt)) {
           throw new RowConflictError(String(remoteUpdatedAt), conflictGuard.expectedBaseUpdatedAt);
         }
+      } else {
+        // R1#2: unguarded paths (empty base, Sessions, DeltaLogs) verify the id too.
+        matchIndex = await this.verifyRowIndex(spreadsheetId, tab, id, matchIndex);
       }
+      const sheetRowNumber = matchIndex + 1;
       const targetRange = `${tab}!A${sheetRowNumber}:${lastCol}${sheetRowNumber}`;
       await this.fetchApi(
         `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(
@@ -746,6 +877,11 @@ export class GoogleSheetsAdapter implements StorageAdapter {
     if (typeof sheetId !== 'number') {
       return false;
     }
+
+    // R1#2: re-verify the id immediately before the destructive deleteDimension, so a
+    // row shifted by another device/CLI is never deleted by a stale index.
+    matchIndex = await this.verifyRowIndex(spreadsheetId, tab, id, matchIndex);
+    if (matchIndex < 1) throw new RowMovedError();
 
     await this.fetchApi(
       `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(
@@ -932,7 +1068,8 @@ export class GoogleSheetsAdapter implements StorageAdapter {
       } catch (err) {
         const msg = err instanceof Error ? err.message : '';
         if (msg.includes('401')) throw err;
-        if (msg.includes('404') || msg.includes('403')) {
+        const kind = classifyApiError(err);
+        if (kind === 'not_found' || kind === 'forbidden') {
           this.clearCachedMediaFolderId();
         } else {
           this.mediaFolderId = candidateId;

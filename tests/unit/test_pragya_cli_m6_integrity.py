@@ -12,6 +12,7 @@ import contextlib
 import copy
 import io
 import json
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -51,6 +52,7 @@ class FakeWorkspace:
         self.calls: list[list[str]] = []
         self.raw_payloads: list[dict] = []
         self.full_read_override = None  # callable(tab, read_count) -> rows | None
+        self.single_cell_rows = None  # callable(tab) -> rows used for `Tab!A{n}` reads
         self.read_counts: dict[str, int] = {}
         self.doc_read_payload: dict = {"text": ""}
         self.doc_batches: list[list[dict]] = []
@@ -70,6 +72,12 @@ class FakeWorkspace:
                 return 0, json.dumps({"values": self.header_rows[tab]}), ""
             if a1 == "A:A":
                 return 0, json.dumps({"values": [[r[0]] for r in self.rows[tab]]}), ""
+            single = re.fullmatch(r"A(\d+)", a1)
+            if single:  # R1#6 one-cell id re-read before unguarded updates
+                idx = int(single.group(1)) - 1
+                rows = self.single_cell_rows(tab) if self.single_cell_rows else self.rows[tab]
+                cell = [[rows[idx][0]]] if 0 <= idx < len(rows) else []
+                return 0, json.dumps({"values": cell}), ""
             if a1 == f"A:{LAST_COL[tab]}":
                 self.read_counts[tab] = self.read_counts.get(tab, 0) + 1
                 if self.full_read_override:
@@ -522,6 +530,8 @@ class TestFixUpRateLimitClassifier(unittest.TestCase):
             "<HttpError 429 when requesting https://sheets.googleapis.com/v4/... returned \"x\">",
             "Resource has been exhausted (e.g. check quota).",
             "User rate limit exceeded.",
+            '{"reason": "dailyLimitExceeded"}',
+            '{"reason": "sharingRateLimitExceeded"}',
         ):
             with self.subTest(text=text):
                 self.assertTrue(pragya_cli.is_rate_limited_output(text))
@@ -537,6 +547,9 @@ class TestFixUpRateLimitClassifier(unittest.TestCase):
             "error 4291",
             "HTTP 4290",
             "429.5 seconds",
+            # Batch 3 fix-up (R1#5): Drive full is not a rate limit.
+            '{"reason": "storageQuotaExceeded"}',
+            "storageQuotaExceeded",
         ):
             with self.subTest(text=text):
                 self.assertFalse(pragya_cli.is_rate_limited_output(text))
@@ -711,6 +724,81 @@ class TestFixUpSheetIds(unittest.TestCase):
         with self.assertRaises(pragya_cli.CliError):
             _backend(fake).save_note(_note(id="n-x", slug="n-x"))
         self.assertEqual(fake.raw_payloads, [])
+
+
+class TestUnguardedRowIdReread(unittest.TestCase):
+    """Batch 3 carry-forward R1#6: --force / Sessions / DeltaLogs updates re-read the id cell."""
+
+    def test_force_update_follows_shifted_row(self):
+        fake = FakeWorkspace()
+        backend = _backend(fake)
+        ws = backend.load_workspace()
+        target = copy.deepcopy(ws["notes"][2])  # A:A says row 4
+        shifted = list(fake.rows["Notes"])
+        shifted.insert(1, ["inserted"] + [""] * 17)
+
+        def single(tab):
+            if tab == "Notes":
+                # The row shifts after the A:A read; the A:A re-scan then sees it too.
+                fake.rows["Notes"] = shifted
+                return shifted
+            return fake.rows[tab]
+
+        fake.single_cell_rows = single
+        target["takeaway"] = "forced"
+        backend.save_note(target, expected_base_updated_at=target["updatedAt"], force=True)
+        req = fake.raw_payloads[-1]["requests"][0]["updateCells"]
+        self.assertEqual(req["range"]["startRowIndex"], 4)
+        self.assertTrue(any(c[4] == "Notes!A4" for c in fake.calls if c[:3] == ["gsheets", "readonly", "read"]))
+
+    def test_session_update_with_vanished_id_writes_nothing(self):
+        fake = FakeWorkspace()
+        session = {
+            "id": "sess-1",
+            "bookId": "book-systems",
+            "date": "2026-11-16",
+            "startPos": 1,
+            "endPos": 2,
+            "updatedAt": "2026-11-16T10:00:00.000Z",
+            "note": "",
+        }
+        fake.rows["Sessions"] = [pragya_cli.SESSIONS_HEADERS, pragya_cli.session_to_row(session)]
+        backend = _backend(fake)
+        state = {"n": 0}
+        original_rows = fake.rows["Sessions"]
+
+        def single(tab):
+            if tab == "Sessions":
+                # Row deleted (PWA deleteSession) between A:A and the write.
+                fake.rows["Sessions"] = [pragya_cli.SESSIONS_HEADERS]
+                state["n"] += 1
+                return fake.rows["Sessions"]
+            return fake.rows[tab]
+
+        fake.single_cell_rows = single
+        with self.assertRaises(pragya_cli.CliError) as ctx:
+            backend.save_session(dict(session, endPos=5))
+        self.assertIn("moved or was deleted", str(ctx.exception))
+        self.assertEqual(fake.raw_payloads, [])
+        self.assertEqual(state["n"], 1)
+        self.assertIsNot(original_rows, fake.rows["Sessions"])
+
+    def test_session_update_in_place_still_writes(self):
+        fake = FakeWorkspace()
+        session = {
+            "id": "sess-1",
+            "bookId": "book-systems",
+            "date": "2026-11-16",
+            "startPos": 1,
+            "endPos": 2,
+            "updatedAt": "2026-11-16T10:00:00.000Z",
+            "note": "",
+        }
+        fake.rows["Sessions"] = [pragya_cli.SESSIONS_HEADERS, pragya_cli.session_to_row(session)]
+        _backend(fake).save_session(dict(session, endPos=9))
+        req = fake.raw_payloads[-1]["requests"][0]["updateCells"]
+        self.assertEqual(req["range"]["startRowIndex"], 1)
+        self.assertEqual(fake.write_ops[-1]["data"][0][4], 9)
 
 
 if __name__ == "__main__":

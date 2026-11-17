@@ -97,7 +97,9 @@ COALESCE_WINDOW_SECONDS = 1800
 # A5.5: Workspace CLI quota / rate-limit retry policy.
 # Mirrored by the PWA classifier (Batch 3); keep both in sync. Rules:
 #  1. A status token: RESOURCE_EXHAUSTED, RATE_LIMIT_EXCEEDED, "Too Many Requests",
-#     rateLimitExceeded, userRateLimitExceeded, quotaExceeded, "quota exceeded",
+#     rateLimitExceeded, userRateLimitExceeded, quotaExceeded, dailyLimitExceeded,
+#     sharingRateLimitExceeded (camelCase reasons anchored with \b so e.g. Drive's
+#     storageQuotaExceeded — "Drive is full" — is NOT a rate limit), "quota exceeded",
 #     "Resource has been exhausted", "User rate limit exceeded".
 #  2. A bare 429 only in an HTTP/status context: preceded (within 3 non-word chars) by
 #     HTTP[/x.y], HttpError (googleapiclient "<HttpError 429 when requesting …>"),
@@ -107,8 +109,9 @@ COALESCE_WINDOW_SECONDS = 1800
 #  3. A line that starts with the status code itself ("429", "429 Too Many…", "429: …").
 # Case-insensitive + multiline. JS equivalent: new RegExp(RATE_LIMIT_PATTERN, "im").
 RATE_LIMIT_PATTERN = (
-    r"RESOURCE_EXHAUSTED|RATE_LIMIT_EXCEEDED|Too Many Requests|rateLimitExceeded"
-    r"|userRateLimitExceeded|quotaExceeded|quota exceeded"
+    r"RESOURCE_EXHAUSTED|RATE_LIMIT_EXCEEDED|Too Many Requests|\brateLimitExceeded"
+    r"|\buserRateLimitExceeded|\bquotaExceeded|\bdailyLimitExceeded|\bsharingRateLimitExceeded"
+    r"|quota exceeded"
     r"|Resource has been exhausted|User rate limit exceeded"
     r"|(?:\bHTTP(?:/\d(?:\.\d)?)?|\bHttpError|\bstatus(?:[ _]?code)?|\bcode|\berror)\W{0,3}429(?!\d)"
     r"|^[ \t]*429(?![\w.])"
@@ -1674,6 +1677,19 @@ class GoogleWorkspaceBackend(WorkspaceBackend):
         self._schema_checked = True
         return sid
 
+    def _verify_row_id(self, sid: str, tab: str, row_id: str, row: int) -> int:
+        """Returns the 1-based row that holds `row_id`, re-resolving A:A once if it moved."""
+        cell = self._read_range(sid, f"{tab}!A{row}")
+        if cell and cell[0] and str(cell[0][0] or "").strip() == row_id:
+            return row
+        for idx, r in enumerate(self._read_range(sid, f"{tab}!A:A"), start=1):
+            if r and str(r[0] or "").strip() == row_id:
+                return idx
+        raise CliError(
+            f"{tab} row {row_id} moved or was deleted during write; nothing was written. "
+            "Re-run the command."
+        )
+
     def _upsert_row(
         self,
         tab: str,
@@ -1693,7 +1709,12 @@ class GoogleWorkspaceBackend(WorkspaceBackend):
                 break
 
         if matched_row is not None:
-            if expected_base_updated_at and not force and tab in ("Notes", "Books"):
+            guarded = bool(expected_base_updated_at and not force and tab in ("Notes", "Books"))
+            if not guarded:
+                # R1#6: unguarded updates (--force, Sessions, DeltaLogs) re-read the one id
+                # cell right before writing; the PWA's deleteSession shifts rows.
+                matched_row = self._verify_row_id(sid, tab, row_id, matched_row)
+            if guarded:
                 tab_rows = self._read_range(sid, f"{tab}!A:{last_col}")
                 target_row: list[Any] | None = None
                 if 0 <= matched_row - 1 < len(tab_rows):

@@ -455,21 +455,30 @@ test('M4.9: Pre-write row conflict guard, domain clamping, and UNFORMATTED_VALUE
       if (u.includes('Notes!A%3AA')) {
         return new Response(JSON.stringify({ values: [['id'], ['note-1']] }), { status: 200 });
       }
-      if (u.includes('Notes!E2')) {
-        if (u.includes('valueRenderOption=UNFORMATTED_VALUE')) {
-          sawConflictCellUnformatted = true;
-        }
-        return new Response(JSON.stringify({ values: [['2026-11-16T12:05:00Z']] }), { status: 200 });
-      }
-      if (u.includes('Books!A%3AA')) {
-        return new Response(JSON.stringify({ values: [['id'], ['book-1']] }), { status: 200 });
-      }
-      if (u.includes('Books!L2')) {
+      // M6 B4.3: the guard reads A{r}:{tsCol}{r} so it can verify the row id (col A).
+      if (method === 'GET' && u.includes('Notes!A2%3AE2')) {
         if (u.includes('valueRenderOption=UNFORMATTED_VALUE')) {
           sawConflictCellUnformatted = true;
         }
         return new Response(
-          JSON.stringify({ values: [[JSON.stringify({ updatedAt: '2026-11-16T12:05:00Z' })]] }),
+          JSON.stringify({ values: [['note-1', 'slug-1', 'book-1', '2026-11-15T10:00:00Z', '2026-11-16T12:05:00Z']] }),
+          { status: 200 }
+        );
+      }
+      if (u.includes('Books!A%3AA')) {
+        return new Response(JSON.stringify({ values: [['id'], ['book-1']] }), { status: 200 });
+      }
+      if (method === 'GET' && u.includes('Books!A2%3AL2')) {
+        if (u.includes('valueRenderOption=UNFORMATTED_VALUE')) {
+          sawConflictCellUnformatted = true;
+        }
+        return new Response(
+          JSON.stringify({
+            values: [
+              ['book-1', 'Book', '', 'physical', 'nonfiction', 'reading', 0, 0, 'page', 0, '',
+                JSON.stringify({ updatedAt: '2026-11-16T12:05:00Z' })],
+            ],
+          }),
           { status: 200 }
         );
       }

@@ -19,6 +19,7 @@ import {
   isNoteSpoiler,
 } from '../../utils/spoilerMath';
 import { showToast } from '../../utils/toast';
+import { describeSyncError } from '../../utils/apiErrors';
 
 export interface ShelfViewProps {
   onOpenAddBook: () => void;
@@ -110,7 +111,7 @@ export const ShelfView: React.FC<ShelfViewProps> = ({
                       .then(() => showToast('Reverted bookmark update', 'info'))
                       .catch(err =>
                         showToast(
-                          err instanceof Error ? err.message : 'Failed to undo bookmark update',
+                          describeSyncError(err, 'Failed to undo bookmark update'),
                           'error'
                         )
                       );
@@ -121,7 +122,7 @@ export const ShelfView: React.FC<ShelfViewProps> = ({
         );
       }
     } catch (err) {
-      showToast(err instanceof Error ? err.message : 'Failed to update position', 'error');
+      showToast(describeSyncError(err, 'Failed to update position'), 'error');
     }
   };
 
@@ -159,7 +160,7 @@ export const ShelfView: React.FC<ShelfViewProps> = ({
                       .then(() => showToast('Reverted bookmark update', 'info'))
                       .catch(err =>
                         showToast(
-                          err instanceof Error ? err.message : 'Failed to undo bookmark update',
+                          describeSyncError(err, 'Failed to undo bookmark update'),
                           'error'
                         )
                       );
@@ -170,7 +171,7 @@ export const ShelfView: React.FC<ShelfViewProps> = ({
         );
       }
     } catch (err) {
-      showToast(err instanceof Error ? err.message : 'Failed to update position', 'error');
+      showToast(describeSyncError(err, 'Failed to update position'), 'error');
     }
   };
 
@@ -178,7 +179,7 @@ export const ShelfView: React.FC<ShelfViewProps> = ({
     try {
       await startReadingBook(bookId);
     } catch (err) {
-      showToast(err instanceof Error ? err.message : 'Failed to start reading book', 'error');
+      showToast(describeSyncError(err, 'Failed to start reading book'), 'error');
     }
   };
 

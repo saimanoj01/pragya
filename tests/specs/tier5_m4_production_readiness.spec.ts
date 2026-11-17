@@ -365,6 +365,8 @@ test.describe('Tier 5 — M4 Accessibility, Guided OAuth, Offline Cloud, Draft A
 
     // Import a minimal snapshot in Settings -> verify pre-import download button + 1-click rollback
     await page.getByTestId('nav-item-settings').click();
+    // Wait for Settings to mount so the exiting PracticeView's own file input can't be targeted.
+    await expect(page.getByTestId('settings-view')).toBeVisible();
     const minimalSnapshot = {
       version: 1,
       exportedAt: '2026-11-16T00:00:00Z',
@@ -600,12 +602,15 @@ test.describe('Tier 5 — M4 Accessibility, Guided OAuth, Offline Cloud, Draft A
         });
         return;
       }
-      if (u.includes('Notes!E2')) {
+      // M6 B4.3: the guard reads A{r}:E{r} (row id + updatedAt) in one GET.
+      if (route.request().method() === 'GET' && u.includes('Notes!A2%3AE2')) {
         // Remote row was updated on another device!
         await route.fulfill({
           status: 200,
           contentType: 'application/json',
-          body: JSON.stringify({ values: [['2099-01-01T00:00:00Z']] }),
+          body: JSON.stringify({
+            values: [['note-conf-1', 'conflict-note', 'book-conf-1', '2026-11-15T00:00:00Z', '2099-01-01T00:00:00Z']],
+          }),
         });
         return;
       }

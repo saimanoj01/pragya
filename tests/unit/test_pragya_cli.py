@@ -6,6 +6,7 @@ import importlib.util
 import io
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -257,6 +258,16 @@ def _fake_list_sheets_payload(titles) -> str:
     return json.dumps(
         {"sheets": [{"properties": {"title": t, "sheetId": FAKE_SHEET_IDS[t]}} for t in titles]}
     )
+
+
+def _single_cell_lookup(rng: str, rows_by_tab: dict):
+    """Serves `Tab!A{n}` one-cell reads (CLI R1#6 id re-read) from fake tab rows."""
+    m = re.fullmatch(r"(\w+)!A(\d+)", rng)
+    if not m or m.group(1) not in rows_by_tab:
+        return None
+    rows = rows_by_tab[m.group(1)]
+    idx = int(m.group(2)) - 1
+    return [[rows[idx][0]]] if 0 <= idx < len(rows) else []
 
 
 def _col_count(tab: str) -> int:
@@ -1078,6 +1089,12 @@ class TestPragyaCli(unittest.TestCase):
                     return 0, json.dumps({"values": [[r[0]] for r in sessions_rows]}), ""
                 if rng == "DeltaLogs!A:A":
                     return 0, json.dumps({"values": [[r[0]] for r in logs_rows]}), ""
+                single = _single_cell_lookup(
+                    rng,
+                    {"Books": book_rows, "Notes": notes_rows, "Sessions": sessions_rows, "DeltaLogs": logs_rows},
+                )
+                if single is not None:
+                    return 0, json.dumps({"values": single}), ""
             if cmd[:3] == ["gsheets", "mutate", "raw-batch"]:
                 batch_file = Path(cmd[cmd.index("-f") + 1])
                 ops = _decode_raw_batch(json.loads(batch_file.read_text(encoding="utf-8")))
@@ -1447,6 +1464,9 @@ class TestPragyaCli(unittest.TestCase):
                     return 0, json.dumps({"values": logs_rows}), ""
                 if rng == "Notes!A:A":
                     return 0, json.dumps({"values": [[r[0]] for r in notes_rows]}), ""
+                single = _single_cell_lookup(rng, {"Notes": notes_rows, "Books": book_rows})
+                if single is not None:
+                    return 0, json.dumps({"values": single}), ""
             if cmd[:3] == ["gsheets", "mutate", "raw-batch"]:
                 f_idx = cmd.index("-f")
                 payload = json.loads(Path(cmd[f_idx + 1]).read_text(encoding="utf-8"))

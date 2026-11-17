@@ -611,6 +611,12 @@ test('GoogleSheetsAdapter: schema auto-repair, UUID A:A lookup, modifiedTime cac
           { status: 200 }
         );
       }
+      // M6 Batch 3 (R1#2): one-cell id verification before a UUID-resolved PUT.
+      const idCell = /\/values\/Notes!A(\d+)\?valueRenderOption=UNFORMATTED_VALUE/.exec(u);
+      if (idCell && method === 'GET') {
+        const row = sheetRows.Notes[Number(idCell[1]) - 1];
+        return new Response(JSON.stringify({ values: row ? [[row[0]]] : [] }), { status: 200 });
+      }
       // UUID A:A lookup
       if (u.includes('/values/Notes!A%3AA')) {
         return new Response(

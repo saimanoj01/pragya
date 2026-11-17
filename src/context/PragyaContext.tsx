@@ -31,7 +31,14 @@ import {
   upsertCoalescedSession,
 } from '../utils/sessionCoalesce';
 import { normalizeDeltaAction, normalizeDeltaTrigger } from '../utils/deltaFormat';
-import { getRenderableAttachments } from '../utils/metaCodecs';
+import {
+  BOOK_EDITOR_OWNED_META_KEYS,
+  NOTE_EDITOR_OWNED_META_KEYS,
+  getRenderableAttachments,
+  mergeUnknownMetaKeys,
+} from '../utils/metaCodecs';
+import { resolveExpectedBase } from '../utils/conflictGuard';
+import { RATE_LIMIT_TOAST, describeSyncError } from '../utils/apiErrors';
 import { normalizeTagList } from '../utils/sheetCodecs';
 import { computeNormalizedPos } from '../utils/spoilerMath';
 import { generateUniqueSlug } from '../utils/wikilinks';
@@ -77,6 +84,8 @@ export interface UpdateNoteOptions {
   preserveUpdatedAt?: boolean;
   /** Override the conflict-guard base; defaults to the loaded note's updatedAt. */
   expectedBaseUpdatedAt?: string;
+  /** Meta keys this call site may set/delete (default NOTE_EDITOR_OWNED_META_KEYS). */
+  ownedMetaKeys?: readonly string[];
 }
 
 export interface ReplaceWorkspaceOptions {
@@ -91,6 +100,19 @@ export type BookmarkSessionUndoAction =
 export interface BookmarkAdvanceUndo {
   prevBook: Book;
   sessionAction: BookmarkSessionUndoAction;
+  /** B4.1: `meta.updatedAt` of the book this advance saved — the undo's conflict base. */
+  appliedUpdatedAt?: string;
+}
+
+export interface BookWriteOptions {
+  /**
+   * B4.1: conflict-guard base captured when the edit started (modal open / undo
+   * payload). Wins over the currently loaded book — even `""` — so a background sync
+   * can't silently advance the base and let a stale edit overwrite a newer row.
+   */
+  expectedBaseUpdatedAt?: string;
+  /** Meta keys this call site may set/delete (default BOOK_EDITOR_OWNED_META_KEYS). */
+  ownedMetaKeys?: readonly string[];
 }
 
 export interface BookmarkAdvanceResult {
@@ -114,14 +136,14 @@ export interface PragyaContextValue {
   isOfflineReadOnly: boolean;
   syncNow: (force?: boolean) => Promise<void>;
   addBook: (input: AddBookInput) => Promise<Book>;
-  updateBook: (book: Book) => Promise<Book>;
+  updateBook: (book: Book, options?: BookWriteOptions) => Promise<Book>;
   advanceBookPosition: (
     bookId: string,
     incomingPos: number,
     options?: { manualOverride?: boolean; sessionNote?: string }
   ) => Promise<BookmarkAdvanceResult>;
   revertBookmarkAdvance: (undo: BookmarkAdvanceUndo) => Promise<void>;
-  restoreBook: (prevBook: Book) => Promise<Book>;
+  restoreBook: (prevBook: Book, options?: BookWriteOptions) => Promise<Book>;
   startReadingBook: (bookId: string) => Promise<Book | null>;
   markBookFinished: (bookId: string) => Promise<Book | null>;
   captureNote: (input: QuickCaptureInput) => Promise<Note>;
@@ -185,6 +207,7 @@ export const PragyaProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   isMockModeRef.current = isMockMode;
 
   const mutationQueueRef = useRef<Promise<unknown>>(Promise.resolve());
+  const lastRateLimitToastRef = useRef<number>(0);
 
   const enqueueMutation = useCallback(<T,>(task: () => Promise<T>): Promise<T> => {
     const next = mutationQueueRef.current.catch(() => {}).then(task);
@@ -209,6 +232,7 @@ export const PragyaProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       if (!isAuthenticated) return;
       setIsSyncing(true);
       let servedOffline = false;
+      let servedRateLimitedCache = false;
       try {
         await enqueueMutation(async () => {
           if (!isAuthenticatedRef.current) return;
@@ -225,12 +249,21 @@ export const PragyaProvider: React.FC<{ children: React.ReactNode }> = ({ childr
           setSpreadsheetId(ws.spreadsheetId || null);
           setMediaFolderId(ws.mediaFolderId || null);
           servedOffline = Boolean(ws.isOfflineReadOnly) && !isMockModeRef.current;
+          if (ws.servedFromCacheDueToRateLimit) servedRateLimitedCache = true;
           setOfflineReadOnly(servedOffline);
           if (!servedOffline) {
             setLastSyncedAt(new Date().toISOString());
           }
         });
-        if (force && isAuthenticatedRef.current) {
+        if (servedRateLimitedCache) {
+          // R2#3: tell the user (at most once a minute) that cached data is shown
+          // because Google is throttling (ux_spec D.2 copy).
+          const nowMs = Date.now();
+          if (nowMs - lastRateLimitToastRef.current > 60_000) {
+            lastRateLimitToastRef.current = nowMs;
+            showToast(RATE_LIMIT_TOAST, 'error');
+          }
+        } else if (force && isAuthenticatedRef.current) {
           if (servedOffline) {
             showToast(STILL_OFFLINE_TOAST, 'info');
           } else {
@@ -248,7 +281,8 @@ export const PragyaProvider: React.FC<{ children: React.ReactNode }> = ({ childr
           setOfflineReadOnly(true);
           if (force) showToast(STILL_OFFLINE_TOAST, 'info');
         } else if (!msg.includes('401')) {
-          showToast(msg, 'error');
+          // B4.7: a throttled Google API keeps the loaded data and says so calmly.
+          showToast(describeSyncError(err), 'error');
         }
       } finally {
         setIsSyncing(false);
@@ -291,13 +325,22 @@ export const PragyaProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     const handleVisibility = () => {
       if (!document.hidden) maybeSync();
     };
+    // B4.8: go read-only the moment the browser reports offline (no failed request
+    // needed). Only when data is loaded; Demo Mode never reaches here.
+    const handleOffline = () => {
+      if (booksRef.current.length > 0 || notesRef.current.length > 0) {
+        setOfflineReadOnly(true);
+      }
+    };
     window.addEventListener('online', maybeSync);
+    window.addEventListener('offline', handleOffline);
     document.addEventListener('visibilitychange', handleVisibility);
     return () => {
       window.removeEventListener('online', maybeSync);
+      window.removeEventListener('offline', handleOffline);
       document.removeEventListener('visibilitychange', handleVisibility);
     };
-  }, [isAuthenticated, isMockMode, syncNow]);
+  }, [isAuthenticated, isMockMode, syncNow, setOfflineReadOnly]);
 
   const addBook = useCallback(
     (input: AddBookInput): Promise<Book> =>
@@ -342,7 +385,7 @@ export const PragyaProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   );
 
   const updateBook = useCallback(
-    (book: Book): Promise<Book> =>
+    (book: Book, options: BookWriteOptions = {}): Promise<Book> =>
       enqueueMutation(async () => {
         assertCloudWritable();
         const nowIso = new Date().toISOString();
@@ -354,12 +397,20 @@ export const PragyaProvider: React.FC<{ children: React.ReactNode }> = ({ childr
               ? 1
               : computeNormalizedPos(book.currentPos, book.totalPos, book.posUnit),
           meta: {
-            ...book.meta,
+            // R2#1: re-merge non-editor keys a stale modal snapshot may lack.
+            ...mergeUnknownMetaKeys(
+              book.meta,
+              loaded?.meta,
+              options.ownedMetaKeys ?? BOOK_EDITOR_OWNED_META_KEYS
+            ),
             updatedAt: nowIso,
           },
         };
         const saved = await adapter.saveBook(nextBook, {
-          expectedBaseUpdatedAt: loaded?.meta?.updatedAt,
+          expectedBaseUpdatedAt: resolveExpectedBase(
+            options.expectedBaseUpdatedAt,
+            loaded?.meta?.updatedAt
+          ),
         });
         const nextBooks = upsertList(booksRef.current, saved);
         booksRef.current = nextBooks;
@@ -430,6 +481,7 @@ export const PragyaProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         undo: {
           prevBook: existing,
           sessionAction,
+          appliedUpdatedAt: savedBook.meta?.updatedAt,
         },
       };
     },
@@ -455,12 +507,13 @@ export const PragyaProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         const restoredBook: Book = {
           ...undo.prevBook,
           meta: {
-            ...undo.prevBook.meta,
+            ...mergeUnknownMetaKeys(undo.prevBook.meta, loaded?.meta, BOOK_EDITOR_OWNED_META_KEYS),
             updatedAt: nowIso,
           },
         };
+        // B4.1: the base is what the advance wrote; any remote change since → conflict.
         const savedBook = await adapter.saveBook(restoredBook, {
-          expectedBaseUpdatedAt: loaded?.meta?.updatedAt,
+          expectedBaseUpdatedAt: resolveExpectedBase(undo.appliedUpdatedAt, loaded?.meta?.updatedAt),
         });
         const nextBooks = upsertList(booksRef.current, savedBook);
         booksRef.current = nextBooks;
@@ -485,7 +538,7 @@ export const PragyaProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   );
 
   const restoreBook = useCallback(
-    (prevBook: Book): Promise<Book> =>
+    (prevBook: Book, options: BookWriteOptions = {}): Promise<Book> =>
       enqueueMutation(async () => {
         assertCloudWritable();
         const loaded = booksRef.current.find(b => b.id === prevBook.id);
@@ -493,12 +546,19 @@ export const PragyaProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         const restored: Book = {
           ...prevBook,
           meta: {
-            ...prevBook.meta,
+            ...mergeUnknownMetaKeys(
+              prevBook.meta,
+              loaded?.meta,
+              options.ownedMetaKeys ?? BOOK_EDITOR_OWNED_META_KEYS
+            ),
             updatedAt: nowIso,
           },
         };
         const saved = await adapter.saveBook(restored, {
-          expectedBaseUpdatedAt: loaded?.meta?.updatedAt,
+          expectedBaseUpdatedAt: resolveExpectedBase(
+            options.expectedBaseUpdatedAt,
+            loaded?.meta?.updatedAt
+          ),
         });
         const nextBooks = upsertList(booksRef.current, saved);
         booksRef.current = nextBooks;
@@ -684,14 +744,22 @@ export const PragyaProvider: React.FC<{ children: React.ReactNode }> = ({ childr
           deltaTrigger: normalizeDeltaTrigger(note.deltaTrigger),
           deltaAction: normalizeDeltaAction(note.deltaAction),
           meta: {
-            ...note.meta,
+            // R2#1: re-merge non-editor keys (e.g. sparStage) a stale modal may lack.
+            ...mergeUnknownMetaKeys(
+              note.meta,
+              existingNote?.meta,
+              options.ownedMetaKeys ?? NOTE_EDITOR_OWNED_META_KEYS
+            ),
             attachments,
             links: mergedLinks,
           },
           updatedAt: options.preserveUpdatedAt ? note.updatedAt : nowIso,
         };
         const saved = await adapter.saveNote(updated, {
-          expectedBaseUpdatedAt: options.expectedBaseUpdatedAt ?? existingNote?.updatedAt,
+          expectedBaseUpdatedAt: resolveExpectedBase(
+            options.expectedBaseUpdatedAt,
+            existingNote?.updatedAt
+          ),
         });
         const nextNotes = upsertList(notesRef.current, saved);
         notesRef.current = nextNotes;

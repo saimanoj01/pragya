@@ -14,6 +14,31 @@ import type { StorageAdapter } from './storage';
 
 export const DEMO_STATE_STORAGE_KEY = 'pragya_demo_state_v1';
 
+/**
+ * QA-10: hand-edited / corrupt demo state must not crash every route. Only the
+ * collection fields that list/search/palette code iterates are made safe here; the
+ * rest of the note is kept verbatim (deeper validation stays with the views).
+ */
+function sanitizeDemoNote(note: Note): Note {
+  if (!note || typeof note !== 'object') return note;
+  const rawTags = (note as { tags?: unknown }).tags;
+  const tags = Array.isArray(rawTags) ? rawTags.filter((t): t is string => typeof t === 'string') : [];
+  const rawMeta = (note as { meta?: unknown }).meta;
+  const meta =
+    rawMeta && typeof rawMeta === 'object' && !Array.isArray(rawMeta)
+      ? (rawMeta as Note['meta'])
+      : ({ attachments: [], links: [] } as Note['meta']);
+  return {
+    ...note,
+    tags,
+    meta: {
+      ...meta,
+      attachments: Array.isArray(meta.attachments) ? meta.attachments : [],
+      links: Array.isArray(meta.links) ? meta.links.filter(l => typeof l === 'string') : [],
+    },
+  };
+}
+
 function readDemoState(): WorkspaceState | null {
   try {
     const raw = localStorage.getItem(DEMO_STATE_STORAGE_KEY);
@@ -27,7 +52,7 @@ function readDemoState(): WorkspaceState | null {
     ) {
       return {
         books: parsed.books,
-        notes: parsed.notes,
+        notes: parsed.notes.map(sanitizeDemoNote),
         sessions: parsed.sessions,
         deltaLogs: parsed.deltaLogs,
       };

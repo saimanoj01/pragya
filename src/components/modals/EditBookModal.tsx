@@ -4,6 +4,7 @@ import type { Book, BookFormat, BookKind, BookStatus, PosUnit } from '../../type
 import { usePragya } from '../../context/PragyaContext';
 import { showToast } from '../../utils/toast';
 import { Modal } from '../common/Modal';
+import { describeSyncError } from '../../utils/apiErrors';
 
 export interface EditBookModalProps {
   book: Book | null;
@@ -53,28 +54,35 @@ export const EditBookModal: React.FC<EditBookModalProps> = ({ book, onClose }) =
       const nextTotal = Math.max(0, Number(totalPos) || 0);
       const nowIso = new Date().toISOString();
 
-      await updateBook({
-        ...book,
-        title: title.trim(),
-        author: author.trim() || 'Unknown Author',
-        format,
-        kind,
-        status,
-        currentPos: status === 'finished' && nextTotal > 0 ? nextTotal : nextCurrent,
-        totalPos: nextTotal,
-        posUnit,
-        docUrl: docUrl.trim(),
-        meta: {
-          ...book.meta,
-          ...(status === 'reading' && !book.meta.startedAt ? { startedAt: nowIso } : {}),
-          ...(status === 'finished' && !book.meta.finishedAt ? { finishedAt: nowIso } : {}),
-          updatedAt: nowIso,
+      await updateBook(
+        {
+          ...book,
+          title: title.trim(),
+          author: author.trim() || 'Unknown Author',
+          format,
+          kind,
+          status,
+          currentPos: status === 'finished' && nextTotal > 0 ? nextTotal : nextCurrent,
+          totalPos: nextTotal,
+          posUnit,
+          docUrl: docUrl.trim(),
+          meta: {
+            ...book.meta,
+            ...(status === 'reading' && !book.meta.startedAt ? { startedAt: nowIso } : {}),
+            ...(status === 'finished' && !book.meta.finishedAt ? { finishedAt: nowIso } : {}),
+            updatedAt: nowIso,
+          },
         },
-      });
+        {
+          // B4.1: the base is the snapshot taken when this modal opened, so a background
+          // sync that loaded a newer remote row surfaces a conflict instead of a silent clobber.
+          expectedBaseUpdatedAt: book.meta.updatedAt,
+        }
+      );
       showToast(`Updated "${title.trim()}"`, 'success');
       onClose();
     } catch (err) {
-      showToast(err instanceof Error ? err.message : 'Failed to update book', 'error');
+      showToast(err instanceof Error ? describeSyncError(err) : 'Failed to update book', 'error');
     } finally {
       setSubmitting(false);
     }

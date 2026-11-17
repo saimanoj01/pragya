@@ -32,6 +32,7 @@ import { DriveImage } from '../common/DriveImage';
 import { Modal } from '../common/Modal';
 import { WikilinkAutocomplete } from '../common/WikilinkAutocomplete';
 import { ImageLightbox } from './ImageLightbox';
+import { describeSyncError } from '../../utils/apiErrors';
 
 export interface DeepenNoteModalProps {
   note: Note | null;
@@ -357,7 +358,7 @@ export const DeepenNoteModal: React.FC<DeepenNoteModalProps> = ({
       onSaved?.(saved);
       onClose();
     } catch (err) {
-      showToast(err instanceof Error ? err.message : 'Failed to deepen note', 'error');
+      showToast(describeSyncError(err, 'Failed to deepen note'), 'error');
     } finally {
       setSubmitting(false);
     }

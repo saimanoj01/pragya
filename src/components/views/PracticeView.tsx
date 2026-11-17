@@ -21,6 +21,7 @@ import { formatPosDisplay, isUnlockedPrediction } from '../../utils/spoilerMath'
 import { getShuffleEmptyReason, selectTakeawayShuffle } from '../../utils/takeawayShuffle';
 import { showToast } from '../../utils/toast';
 import { ImportConfirmModal } from '../modals/ImportConfirmModal';
+import { describeSyncError } from '../../utils/apiErrors';
 
 export const PracticeView: React.FC = () => {
   const {
@@ -117,7 +118,7 @@ export const PracticeView: React.FC = () => {
           showToast("Logged Didn't Come Up", 'info');
         }
       } catch (err) {
-        showToast(err instanceof Error ? err.message : 'Failed to log check-in', 'error');
+        showToast(describeSyncError(err, 'Failed to log check-in'), 'error');
       }
     },
     [logDeltaOutcome]
@@ -179,15 +180,20 @@ export const PracticeView: React.FC = () => {
       return;
     }
     try {
-      await updateNote({
-        ...note,
-        deltaTrigger: normalized,
-      });
+      // R1#4: base = the note this card rendered, so a background sync can't hide a
+      // newer remote edit behind the live loaded base.
+      await updateNote(
+        {
+          ...note,
+          deltaTrigger: normalized,
+        },
+        { expectedBaseUpdatedAt: note.updatedAt }
+      );
       setEditingTriggerNoteId(null);
       setTriggerDraft('');
       showToast('Updated WHEN trigger condition', 'success');
     } catch (err) {
-      showToast(err instanceof Error ? err.message : 'Failed to update trigger', 'error');
+      showToast(describeSyncError(err, 'Failed to update trigger'), 'error');
     }
   };
 
@@ -197,10 +203,13 @@ export const PracticeView: React.FC = () => {
   ) => {
     const prevStatus = note.deltaStatus;
     try {
-      const saved = await updateNote({
-        ...note,
-        deltaStatus: nextStatus,
-      });
+      const saved = await updateNote(
+        {
+          ...note,
+          deltaStatus: nextStatus,
+        },
+        { expectedBaseUpdatedAt: note.updatedAt }
+      );
       setReactivateCapWarning(false);
       if (nextStatus === 'graduated' || nextStatus === 'paused') {
         const msg =
@@ -210,14 +219,17 @@ export const PracticeView: React.FC = () => {
             label: 'Undo',
             testId: 'toast-undo-btn',
             onClick: () => {
-              void updateNote({
-                ...saved,
-                deltaStatus: prevStatus,
-              })
+              void updateNote(
+                {
+                  ...saved,
+                  deltaStatus: prevStatus,
+                },
+                { expectedBaseUpdatedAt: saved.updatedAt }
+              )
                 .then(() => showToast('Restored Behavioral Delta status', 'info'))
                 .catch(err =>
                   showToast(
-                    err instanceof Error ? err.message : 'Failed to undo delta transition',
+                    describeSyncError(err, 'Failed to undo delta transition'),
                     'error'
                   )
                 );
@@ -231,7 +243,7 @@ export const PracticeView: React.FC = () => {
       if (nextStatus === 'active') {
         setReactivateCapWarning(true);
       }
-      showToast(err instanceof Error ? err.message : 'Failed to update delta status', 'error');
+      showToast(describeSyncError(err, 'Failed to update delta status'), 'error');
     }
   };
 
@@ -246,8 +258,10 @@ export const PracticeView: React.FC = () => {
             lastReviewedAt: todayDate,
           },
         },
-        // Reviewing is not editing: keep Notes!E updatedAt untouched.
-        { preserveUpdatedAt: true }
+        // Reviewing is not editing: keep Notes!E updatedAt untouched. The explicit base
+        // (R1#4) makes a remote edit since render a conflict instead of rolling
+        // updatedAt backwards.
+        { preserveUpdatedAt: true, expectedBaseUpdatedAt: note.updatedAt }
       );
       showToast('Marked reviewed for today', 'success', {
         action: {
@@ -265,17 +279,17 @@ export const PracticeView: React.FC = () => {
                 ...saved,
                 meta: nextMeta,
               },
-              { preserveUpdatedAt: true }
+              { preserveUpdatedAt: true, expectedBaseUpdatedAt: saved.updatedAt }
             )
               .then(() => showToast('Restored takeaway to Today Shuffle', 'info'))
               .catch(err =>
-                showToast(err instanceof Error ? err.message : 'Failed to undo review', 'error')
+                showToast(describeSyncError(err, 'Failed to undo review'), 'error')
               );
           },
         },
       });
     } catch (err) {
-      showToast(err instanceof Error ? err.message : 'Failed to mark reviewed', 'error');
+      showToast(describeSyncError(err, 'Failed to mark reviewed'), 'error');
     }
   };
 

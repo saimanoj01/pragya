@@ -36,6 +36,15 @@ export function isSafeHttpUrl(url: string | undefined | null): url is string {
   }
 }
 
+/** B4.9: a malformed percent-escape (e.g. `%E0%A4`) keeps the raw segment instead of throwing. */
+export function safeDecode(segment: string): string {
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    return segment;
+  }
+}
+
 export function parseHash(hashValue?: string): PragyaRoute {
   const raw =
     hashValue !== undefined
@@ -62,13 +71,13 @@ export function parseHash(hashValue?: string): PragyaRoute {
     return { view: 'shelf', raw };
   }
   if (head === 'book' && segments[1]) {
-    return { view: 'book', bookId: decodeURIComponent(segments[1]), raw };
+    return { view: 'book', bookId: safeDecode(segments[1]), raw };
   }
   if (head === 'notes') {
     return { view: 'notes', raw };
   }
   if (head === 'note' && segments[1]) {
-    return { view: 'note', noteSlug: decodeURIComponent(segments[1]), raw };
+    return { view: 'note', noteSlug: safeDecode(segments[1]), raw };
   }
   if (head === 'practice') {
     return { view: 'practice', raw };

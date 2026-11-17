@@ -211,8 +211,88 @@ export function splitAttachments(raw: unknown): {
   return { renderable, preserved };
 }
 
-export function mergePreservedAttachments(edited: Attachment[], preserved: unknown[]): Attachment[] {
-  return [...edited, ...(preserved as Attachment[])];
+export function mergePreservedAttachments(edited: Attachment[], preserved: unknown[]): unknown[] {
+  return [...edited, ...preserved];
+}
+
+/**
+ * R-4: recombine an editor's renderable list with the *original* stored list captured
+ * when the editor opened, keeping every stored entry in its original position:
+ * - an originally-renderable entry is replaced by its edited version (matched by id),
+ *   or dropped if the user removed it;
+ * - preserved entries (unknown/invalid/beyond the cap) stay exactly where they were;
+ * - newly added attachments are appended at the end.
+ */
+export function mergeEditedAttachments(originalRaw: unknown, edited: Attachment[]): unknown[] {
+  const original = Array.isArray(originalRaw) ? originalRaw : [];
+  // QA-13: match by occurrence (a queue per id), so duplicate ids are never dropped.
+  const editedQueues = new Map<string, Attachment[]>();
+  for (const att of edited) {
+    const queue = editedQueues.get(att.id);
+    if (queue) queue.push(att);
+    else editedQueues.set(att.id, [att]);
+  }
+  const out: unknown[] = [];
+  let renderableCount = 0;
+  for (const item of original) {
+    const valid = renderableCount < MAX_ATTACHMENTS ? toValidAttachment(item) : null;
+    if (!valid) {
+      out.push(item);
+      continue;
+    }
+    renderableCount += 1;
+    const replacement = editedQueues.get(valid.id)?.shift();
+    if (replacement) out.push(replacement);
+  }
+  for (const queue of editedQueues.values()) {
+    out.push(...queue);
+  }
+  return out;
+}
+
+/**
+ * Book meta keys the default book editors (EditBookModal, bookmark undo, restore)
+ * legitimately set or delete. Keys added here are only for UIs that edit them today;
+ * Batch 7 passes per-call-site lists (e.g. `currentChapter` for the chapter editor).
+ */
+export const BOOK_EDITOR_OWNED_META_KEYS: readonly string[] = [
+  'coverUrl',
+  'startedAt',
+  'finishedAt',
+  'updatedAt',
+];
+
+/** Note meta keys the default note editors (EditNote, Deepen, Practice) set or delete. */
+export const NOTE_EDITOR_OWNED_META_KEYS: readonly string[] = [
+  'title',
+  'attachments',
+  'links',
+  'isPrediction',
+  'socraticQuestions',
+  'lastReviewedAt',
+];
+
+/**
+ * R2#1 / R1#3: a modal opened before a reconnect/sync holds a stale meta snapshot.
+ * Editors never change keys they don't own, so for every non-editor key the LATEST
+ * loaded value wins (fills keys the snapshot lacks and overrides stale values, e.g. a
+ * `capstone` or `chapter` the CLI rewrote). Editor-owned keys keep the edited value,
+ * so a deliberate deletion is never resurrected. Keys absent from `latest` are left
+ * as edited. (If an undo flow ever needs to restore an older non-editor value, it must
+ * pass that key in `editorOwnedKeys`.)
+ */
+export function mergeUnknownMetaKeys<T extends object>(
+  edited: T,
+  latest: object | null | undefined,
+  editorOwnedKeys: readonly string[]
+): T {
+  if (!isPlainObject(latest)) return edited;
+  const out: Record<string, unknown> = { ...(edited as Record<string, unknown>) };
+  for (const [key, value] of Object.entries(latest)) {
+    if (editorOwnedKeys.includes(key)) continue;
+    out[key] = value;
+  }
+  return out as T;
 }
 
 function normalizeLinks(raw: unknown): string[] {

@@ -4,6 +4,7 @@ import type { BookFormat, BookKind, BookStatus, PosUnit } from '../../types/prag
 import { usePragya } from '../../context/PragyaContext';
 import { showToast } from '../../utils/toast';
 import { Modal } from '../common/Modal';
+import { describeSyncError } from '../../utils/apiErrors';
 
 export interface AddBookModalProps {
   isOpen: boolean;
@@ -74,7 +75,7 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({ isOpen, onClose }) =
       showToast(`Added "${title.trim()}"`, 'success');
       onClose();
     } catch (err) {
-      showToast(err instanceof Error ? err.message : 'Failed to add book', 'error');
+      showToast(describeSyncError(err, 'Failed to add book'), 'error');
     } finally {
       setSubmitting(false);
     }

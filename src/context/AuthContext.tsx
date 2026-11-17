@@ -13,6 +13,17 @@ import {
 import { OFFLINE_INFO_TOAST } from '../utils/offline';
 import { clearAllDrafts } from '../utils/draftStorage';
 import { clearPreImportBackup } from '../utils/importSafety';
+import {
+  applySignedInAccount,
+  forgetLastAccount,
+  rememberCurrentAccount,
+} from '../utils/accountSession';
+import {
+  GOOGLE_TOKEN_EXPIRES_AT_KEY,
+  computeExpiresAt,
+  isTokenExpired,
+  parseStoredExpiresAt,
+} from '../utils/tokenExpiry';
 
 export interface User {
   email: string;
@@ -21,7 +32,7 @@ export interface User {
 }
 
 export const GOOGLE_TOKEN_KEY = 'pragya_google_token';
-export const GOOGLE_USER_KEY = 'pragya_google_user';
+export const GOOGLE_USER_KEY = 'pragya_google_user'; // === GOOGLE_USER_STORAGE_KEY
 export const MOCK_SESSION_KEY = 'pragya_mock_session';
 export const MOCK_MODE_KEY = 'pragya_mock_mode';
 export const GOOGLE_CLIENT_ID_KEY = 'pragya_google_client_id';
@@ -79,6 +90,24 @@ export function isInvalidOrExpiredToken(token: string | null): boolean {
     if (exp !== null) return exp <= Date.now();
   }
   return false;
+}
+
+/** B4.11: `ya29.*` tokens expire per the stored `expires_in`; tokens without it never do. */
+function isStoredTokenExpired(): boolean {
+  try {
+    return isTokenExpired(parseStoredExpiresAt(localStorage.getItem(GOOGLE_TOKEN_EXPIRES_AT_KEY)));
+  } catch {
+    return false;
+  }
+}
+
+function isUsableStoredToken(token: string | null): boolean {
+  return !isInvalidOrExpiredToken(token) && !isStoredTokenExpired();
+}
+
+function clearStoredToken(): void {
+  localStorage.removeItem(GOOGLE_TOKEN_KEY);
+  localStorage.removeItem(GOOGLE_TOKEN_EXPIRES_AT_KEY);
 }
 
 function resolveConfiguredClientId(override?: string): string | undefined {
@@ -144,7 +173,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const [user, setUser] = useState<User | null>(() => {
     const token = localStorage.getItem(GOOGLE_TOKEN_KEY);
-    if (!isInvalidOrExpiredToken(token)) {
+    if (isUsableStoredToken(token)) {
       return getPersistedGoogleUser();
     }
     const mockRaw = localStorage.getItem(MOCK_SESSION_KEY);
@@ -160,13 +189,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => {
     const token = localStorage.getItem(GOOGLE_TOKEN_KEY);
-    if (!isInvalidOrExpiredToken(token)) return true;
+    if (isUsableStoredToken(token)) return true;
     return Boolean(localStorage.getItem(MOCK_SESSION_KEY));
   });
 
   const [isMockMode, setIsMockMode] = useState<boolean>(() => {
     const token = localStorage.getItem(GOOGLE_TOKEN_KEY);
-    if (!isInvalidOrExpiredToken(token)) return false;
+    if (isUsableStoredToken(token)) return false;
     return true;
   });
 
@@ -185,21 +214,25 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const getGoogleToken = useCallback(() => {
     const token = localStorage.getItem(GOOGLE_TOKEN_KEY);
-    if (isInvalidOrExpiredToken(token)) return null;
+    // B4.11: an expired ya29 token yields null → adapter calls onUnauthorized →
+    // SessionExpiredModal (instead of a 401 round-trip with a dead token).
+    if (!isUsableStoredToken(token)) return null;
     return token;
   }, []);
 
   const triggerSessionExpired = useCallback(() => {
-    localStorage.removeItem(GOOGLE_TOKEN_KEY);
+    clearStoredToken();
     setShowSessionExpiredModal(true);
   }, []);
 
   useEffect(() => {
+    rememberCurrentAccount();
     const existingToken = localStorage.getItem(GOOGLE_TOKEN_KEY);
-    if (existingToken && isInvalidOrExpiredToken(existingToken)) {
-      localStorage.removeItem(GOOGLE_TOKEN_KEY);
+    if (existingToken && !isUsableStoredToken(existingToken)) {
+      const expiredByClock = !isInvalidOrExpiredToken(existingToken) && isStoredTokenExpired();
+      clearStoredToken();
       localStorage.removeItem(GOOGLE_USER_KEY);
-      if (isExpiredSessionToken(existingToken)) {
+      if (expiredByClock || isExpiredSessionToken(existingToken)) {
         setShowSessionExpiredModal(true);
         setUser(null);
         setIsAuthenticated(false);
@@ -252,17 +285,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         }
 
         clearOAuthHash();
-        const previousUserRaw = localStorage.getItem(GOOGLE_USER_KEY);
-        let previousEmail: string | null = null;
-        if (previousUserRaw) {
-          try {
-            previousEmail = (JSON.parse(previousUserRaw) as Partial<User>).email || null;
-          } catch {
-            // Ignore malformed persisted user
-          }
-        }
 
         localStorage.setItem(GOOGLE_TOKEN_KEY, token);
+        const expiresAt = computeExpiresAt(params.get('expires_in'));
+        if (expiresAt !== null) {
+          localStorage.setItem(GOOGLE_TOKEN_EXPIRES_AT_KEY, String(expiresAt));
+        } else {
+          localStorage.removeItem(GOOGLE_TOKEN_EXPIRES_AT_KEY);
+        }
         localStorage.setItem(MOCK_MODE_KEY, 'false');
         localStorage.removeItem(MOCK_SESSION_KEY);
         setIsMockMode(false);
@@ -289,11 +319,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           // Network fallback profile
         }
 
-        if (previousEmail && profile.email && previousEmail !== profile.email) {
-          localStorage.removeItem(SHEETS_CACHE_STORAGE_KEY);
-          localStorage.removeItem(MEDIA_FOLDER_ID_STORAGE_KEY);
-          localStorage.removeItem(SPREADSHEET_ID_STORAGE_KEY);
-        }
+        // R1#1: compare against the durable last-account marker (survives token expiry),
+        // clearing the previous account's drafts/backup/media/cache on a switch.
+        applySignedInAccount(profile.email);
 
         localStorage.setItem(GOOGLE_USER_KEY, JSON.stringify(profile));
         setUser(profile);
@@ -382,8 +410,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const isPlaywright =
         Boolean(win) &&
         (win?.__PLAYWRIGHT__ === true ||
-          (typeof navigator !== 'undefined' && navigator.userAgent.includes('Playwright')) ||
-          win?.VITE_GOOGLE_CLIENT_ID !== undefined);
+          (typeof navigator !== 'undefined' && navigator.userAgent.includes('Playwright')));
+      // B4.11: a runtime `window.VITE_GOOGLE_CLIENT_ID` (self-hosted config) is a real
+      // client id, not a test signal — it must still redirect to Google.
 
       if (isPlaywright) {
         setIsLoading(false);
@@ -403,7 +432,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       email: 'demo@pragya.local',
       name: 'Demo Reader',
     };
-    localStorage.removeItem(GOOGLE_TOKEN_KEY);
+    clearStoredToken();
     localStorage.removeItem(GOOGLE_USER_KEY);
     clearPreImportBackup();
     localStorage.setItem(MOCK_SESSION_KEY, JSON.stringify(demoUser));
@@ -427,7 +456,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         // Ignore network errors
       }
     }
-    localStorage.removeItem(GOOGLE_TOKEN_KEY);
+    clearStoredToken();
     localStorage.removeItem(GOOGLE_USER_KEY);
     localStorage.removeItem(MOCK_SESSION_KEY);
     localStorage.removeItem(MOCK_MODE_KEY);
@@ -436,6 +465,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     localStorage.removeItem(SPREADSHEET_ID_STORAGE_KEY);
     clearAllDrafts();
     clearPreImportBackup();
+    forgetLastAccount();
     sessionStorage.removeItem(OAUTH_CSRF_STATE_KEY);
     sessionStorage.removeItem(OAUTH_RETURN_ROUTE_KEY);
     if (typeof caches !== 'undefined') {
