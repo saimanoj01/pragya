@@ -118,6 +118,23 @@ python3 scripts/pragya_cli.py --state-file pragya.json export-md --output-dir ./
 python3 scripts/pragya_cli.py --state-file pragya.json book-doc-sync --book book-systems
 ```
 
+> **Companion Doc tip:** `book-doc-sync` updates only Pragya's own marker blocks (`[note:…]` / `[capstone:…]`) in place and leaves everything else untouched. When you add your own notes under a Pragya entry in the Doc, leave a **blank line** first so they are never mistaken for a Pragya field line. Text you type after a `[note:…]` marker in a heading is kept.
+
+---
+
+## Release gates
+
+The CLI's write transports — `gsheets mutate raw-batch` (Sheets) and `gdocs mutate raw-batch` (in-place Docs edits) — can't be verified offline. **Before real CLI use (or merging to `main`), run the opt-in live probes** on a machine with authenticated `gsheets` / `gdrive` / `gdocs`:
+
+```bash
+PRAGYA_RUN_LIVE_INTEGRATION=1 python3 -m unittest tests/integration/test_live_workspace.py -v
+```
+
+- **Sheets:** `test_live_raw_batch_probe_round_trips_exact_values` checks a `gsheets mutate raw-batch` round-trip: formula-, percent-, bullet- and date-like strings come back verbatim, and the header row stays exact.
+- **Docs:** `test_live_gdocs_raw_batch_in_place_probe` checks an in-place `gdocs mutate raw-batch` edit (upgrade + backfill, with prose preserved). `test_live_gdocs_write_control_rejects_stale_revision` is **mandatory**: a request with a stale `writeControl.requiredRevisionId` must be rejected and leave the Doc unchanged.
+- Every probe creates its own **scratch** spreadsheet / Doc / Drive files and **trashes them automatically** in `finally`. Nothing touches your real `Pragya Commonplace` Sheet or Companion Docs.
+- Without `PRAGYA_RUN_LIVE_INTEGRATION=1` the suite is skipped. If a probe fails, don't use the CLI against real data. There's no legacy `gsheets mutate batch` fallback for Sheet writes: it would reintroduce `USER_ENTERED` coercion.
+
 ---
 
 ## Testing & Verification

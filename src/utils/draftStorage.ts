@@ -6,6 +6,8 @@ ensureLocalStorage();
 export const CAPTURE_DRAFT_KEY = 'pragya_draft_capture_v1';
 export const DEEPEN_DRAFT_PREFIX = 'pragya_draft_deepen_';
 export const EDIT_NOTE_DRAFT_PREFIX = 'pragya_draft_edit_';
+/** ux_spec A.6 `capstone:{bookId}`, namespaced like the other drafts so account switches wipe it. */
+export const CAPSTONE_DRAFT_PREFIX = 'pragya_draft_capstone:';
 
 export function getDeepenDraftKey(noteId: string): string {
   return `${DEEPEN_DRAFT_PREFIX}${noteId}`;
@@ -13,6 +15,18 @@ export function getDeepenDraftKey(noteId: string): string {
 
 export function getEditNoteDraftKey(noteId: string): string {
   return `${EDIT_NOTE_DRAFT_PREFIX}${noteId}`;
+}
+
+export function getCapstoneDraftKey(bookId: string): string {
+  return `${CAPSTONE_DRAFT_PREFIX}${bookId}`;
+}
+
+export interface CapstoneDraft {
+  baseUpdatedAt: string;
+  arcOrThesis: string;
+  learningsText: string;
+  perspectiveShift: string;
+  savedAt: string;
 }
 
 export interface CaptureDraft {
@@ -23,6 +37,9 @@ export interface CaptureDraft {
   tagsRaw: string;
   sparLater: boolean;
   isPrediction: boolean;
+  /** A3.3 (optional for older drafts). */
+  chapter?: string;
+  chapterTouched?: boolean;
   updatedAt: string;
 }
 
@@ -36,6 +53,8 @@ export interface DeepenDraft {
   deltaAction: string;
   deltaStatus: DeltaStatus;
   critique: string;
+  /** A3.3 (optional for older drafts). */
+  chapter?: string;
   savedAt: string;
 }
 
@@ -54,6 +73,8 @@ export interface EditNoteDraft {
   deltaTrigger: string;
   deltaAction: string;
   deltaStatus: DeltaStatus;
+  /** A3.3 (optional for older drafts). */
+  chapter?: string;
   savedAt: string;
 }
 
@@ -94,7 +115,8 @@ export function clearAllDrafts(): void {
         k &&
         (k === CAPTURE_DRAFT_KEY ||
           k.startsWith(DEEPEN_DRAFT_PREFIX) ||
-          k.startsWith(EDIT_NOTE_DRAFT_PREFIX))
+          k.startsWith(EDIT_NOTE_DRAFT_PREFIX) ||
+          k.startsWith(CAPSTONE_DRAFT_PREFIX))
       ) {
         keys.push(k);
       }

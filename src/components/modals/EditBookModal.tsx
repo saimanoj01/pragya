@@ -5,6 +5,8 @@ import { usePragya } from '../../context/PragyaContext';
 import { showToast } from '../../utils/toast';
 import { Modal } from '../common/Modal';
 import { describeSyncError } from '../../utils/apiErrors';
+import { BOOK_CHAPTER_EDITOR_OWNED_META_KEYS } from '../../utils/metaCodecs';
+import { CHAPTER_MAX_LENGTH, withChapterKey } from '../../utils/chapterFormat';
 
 export interface EditBookModalProps {
   book: Book | null;
@@ -25,6 +27,7 @@ export const EditBookModal: React.FC<EditBookModalProps> = ({ book, onClose }) =
   const [totalPos, setTotalPos] = useState('0');
   const [posUnit, setPosUnit] = useState<PosUnit>('page');
   const [docUrl, setDocUrl] = useState('');
+  const [currentChapter, setCurrentChapter] = useState('');
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
@@ -38,6 +41,7 @@ export const EditBookModal: React.FC<EditBookModalProps> = ({ book, onClose }) =
     setTotalPos(String(book.totalPos));
     setPosUnit(book.posUnit);
     setDocUrl(book.docUrl || '');
+    setCurrentChapter(typeof book.meta?.currentChapter === 'string' ? book.meta.currentChapter : '');
     setSubmitting(false);
   }, [book]);
 
@@ -67,7 +71,7 @@ export const EditBookModal: React.FC<EditBookModalProps> = ({ book, onClose }) =
           posUnit,
           docUrl: docUrl.trim(),
           meta: {
-            ...book.meta,
+            ...withChapterKey(book.meta, 'currentChapter', currentChapter),
             ...(status === 'reading' && !book.meta.startedAt ? { startedAt: nowIso } : {}),
             ...(status === 'finished' && !book.meta.finishedAt ? { finishedAt: nowIso } : {}),
             updatedAt: nowIso,
@@ -77,6 +81,8 @@ export const EditBookModal: React.FC<EditBookModalProps> = ({ book, onClose }) =
           // B4.1: the base is the snapshot taken when this modal opened, so a background
           // sync that loaded a newer remote row surfaces a conflict instead of a silent clobber.
           expectedBaseUpdatedAt: book.meta.updatedAt,
+          ownedMetaKeys: BOOK_CHAPTER_EDITOR_OWNED_META_KEYS,
+          baseMeta: book.meta,
         }
       );
       showToast(`Updated "${title.trim()}"`, 'success');
@@ -217,6 +223,27 @@ export const EditBookModal: React.FC<EditBookModalProps> = ({ book, onClose }) =
               <option value="loc">Kindle Loc</option>
             </select>
           </div>
+        </div>
+
+        <div className="space-y-1.5">
+          <label htmlFor={fid('chapter')} className="block text-eyebrow uppercase text-muted-foreground">
+            Current Chapter / Story
+          </label>
+          <input
+            id={fid('chapter')}
+            type="text"
+            maxLength={CHAPTER_MAX_LENGTH}
+            autoComplete="off"
+            data-testid="edit-book-chapter-input"
+            value={currentChapter}
+            onChange={e => setCurrentChapter(e.target.value)}
+            placeholder="e.g. Ch. 3: Run · or a story title"
+            aria-describedby={fid('chapter-help')}
+            className="w-full h-10 px-3 rounded-[10px] bg-background border border-input text-body text-foreground placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-ring/40"
+          />
+          <p id={fid('chapter-help')} className="text-label text-faint">
+            Shown on your Shelf and suggested for new notes at your bookmark.
+          </p>
         </div>
 
         <div className="space-y-1.5">

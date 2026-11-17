@@ -17,7 +17,8 @@ import { formatWhenDoDisplay, normalizeDeltaTrigger } from '../../utils/deltaFor
 import { navigateTo } from '../../utils/navigation';
 import { getLocalDateString } from '../../utils/sessionCoalesce';
 import { buildSnapshot, validateSnapshotPayload } from '../../utils/snapshot';
-import { formatPosDisplay, isUnlockedPrediction } from '../../utils/spoilerMath';
+import { isNoteSpoiler, isUnlockedPrediction } from '../../utils/spoilerMath';
+import { ChapterPosChip } from '../common/ChapterPosChip';
 import { getPracticeDeltaLists, noteHref, shieldedNoteLabel } from '../../utils/noteVisibility';
 import { getShuffleEmptyReason, selectTakeawayShuffle } from '../../utils/takeawayShuffle';
 import { showToast } from '../../utils/toast';
@@ -685,9 +686,14 @@ export const PracticeView: React.FC = () => {
                       <span className="truncate font-medium text-foreground">
                         {book?.title || 'Book'}
                       </span>
-                      <span className="num shrink-0">
-                        {formatPosDisplay(note.pos, book?.posUnit || 'page')}
-                      </span>
+                      <ChapterPosChip
+                        testIdKey={note.slug}
+                        chapter={note.meta?.chapter}
+                        pos={note.pos}
+                        posUnit={book?.posUnit || 'page'}
+                        positionOnly={book ? isNoteSpoiler(note, book) : false}
+                        className="shrink-0"
+                      />
                     </div>
 
                     {note.meta.title && (

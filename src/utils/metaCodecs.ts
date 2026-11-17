@@ -272,6 +272,78 @@ export const NOTE_EDITOR_OWNED_META_KEYS: readonly string[] = [
   'lastReviewedAt',
 ];
 
+/** Batch 7 per-call-site owned keys (EditBook / EditNote / Deepen edit chapters). */
+export const BOOK_CHAPTER_EDITOR_OWNED_META_KEYS: readonly string[] = [
+  ...BOOK_EDITOR_OWNED_META_KEYS,
+  'currentChapter',
+];
+export const NOTE_CHAPTER_EDITOR_OWNED_META_KEYS: readonly string[] = [
+  ...NOTE_EDITOR_OWNED_META_KEYS,
+  'chapter',
+];
+/** BookDetailView inline "Now in … · Change": only the chapter (+ updatedAt). */
+export const BOOK_DETAIL_CHAPTER_OWNED_META_KEYS: readonly string[] = ['currentChapter', 'updatedAt'];
+/** CapstoneModal: only the capstone (+ updatedAt). */
+export const CAPSTONE_OWNED_META_KEYS: readonly string[] = ['capstone', 'updatedAt'];
+
+/** Key-order-insensitive JSON for deep-equality checks. */
+function stableJson(value: unknown): string {
+  const ancestors = new Set<object>();
+  const sortKeys = (v: unknown): unknown => {
+    if (!v || typeof v !== 'object') return v;
+    if (ancestors.has(v as object)) return '[Circular]';
+    ancestors.add(v as object);
+    let out: unknown;
+    if (Array.isArray(v)) {
+      out = v.map(sortKeys);
+    } else {
+      const obj: Record<string, unknown> = {};
+      for (const k of Object.keys(v as Record<string, unknown>).sort()) {
+        obj[k] = sortKeys((v as Record<string, unknown>)[k]);
+      }
+      out = obj;
+    }
+    ancestors.delete(v as object);
+    return out;
+  };
+  try {
+    return JSON.stringify(sortKeys(value)) ?? 'undefined';
+  } catch {
+    return String(value);
+  }
+}
+
+export function metaValuesEqual(a: unknown, b: unknown): boolean {
+  return stableJson(a) === stableJson(b);
+}
+
+/**
+ * R2 N1: non-owned keys the EDITOR changed (edited ≠ the base snapshot it started from)
+ * whose value will be discarded because it also differs from the latest loaded value
+ * (the merge below lets the latest value win). A key another device changed while the
+ * editor left it alone is not flagged; comparisons are deep and key-order insensitive.
+ * PragyaContext warns about the result in dev mode.
+ */
+export function findOverriddenMetaKeys(
+  edited: object,
+  base: object | null | undefined,
+  latest: object | null | undefined,
+  editorOwnedKeys: readonly string[]
+): string[] {
+  if (!isPlainObject(edited) || !isPlainObject(base)) return [];
+  const latestObj: Record<string, unknown> = isPlainObject(latest) ? latest : base;
+  const editedObj = edited as Record<string, unknown>;
+  const keys = new Set([...Object.keys(editedObj), ...Object.keys(base)]);
+  const out: string[] = [];
+  for (const key of keys) {
+    if (editorOwnedKeys.includes(key)) continue;
+    if (metaValuesEqual(editedObj[key], base[key])) continue; // editor left it alone
+    if (!(key in latestObj)) continue; // merge keeps the edited value when latest lacks it
+    if (!metaValuesEqual(editedObj[key], latestObj[key])) out.push(key);
+  }
+  return out;
+}
+
 /**
  * R2#1 / R1#3: a modal opened before a reconnect/sync holds a stale meta snapshot.
  * Editors never change keys they don't own, so for every non-editor key the LATEST

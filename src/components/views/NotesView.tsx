@@ -14,7 +14,7 @@ import type { Book, Note } from '../../types/pragya';
 import { usePragya } from '../../context/PragyaContext';
 import { getRenderableAttachments } from '../../utils/metaCodecs';
 import { isSafeHttpUrl, navigateTo } from '../../utils/navigation';
-import { formatPosDisplay, isNoteSpoiler, isSealedPrediction } from '../../utils/spoilerMath';
+import { isNoteSpoiler, isSealedPrediction } from '../../utils/spoilerMath';
 import {
   SPOILER_SEARCH_FOOTNOTE,
   buildNoteSearchHaystack,
@@ -23,6 +23,7 @@ import {
 } from '../../utils/noteVisibility';
 import { extractNoteWikilinks } from '../../utils/wikilinks';
 import { DriveImage } from '../common/DriveImage';
+import { ChapterPosChip } from '../common/ChapterPosChip';
 
 type NotesFilter = 'all' | 'to-spar' | 'atomic' | 'media' | 'concepts';
 
@@ -363,7 +364,13 @@ export const NotesView: React.FC<NotesViewProps> = ({
                 <div className="flex flex-wrap items-center gap-2 text-label text-muted-foreground">
                   <span className="font-medium text-foreground">{book?.title || 'Unknown Book'}</span>
                   <span>·</span>
-                  <span className="num">{formatPosDisplay(note.pos, book?.posUnit || 'page')}</span>
+                  <ChapterPosChip
+                    testIdKey={note.slug}
+                    chapter={note.meta?.chapter}
+                    pos={note.pos}
+                    posUnit={book?.posUnit || 'page'}
+                    positionOnly={showShield}
+                  />
                   {renderStatusBadge(note, book)}
                 </div>
 

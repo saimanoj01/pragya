@@ -4,6 +4,7 @@ import {
   SPREADSHEET_ID_STORAGE_KEY,
 } from '../services/googleSheetsAdapter';
 import { clearAllDrafts } from './draftStorage';
+import { CAPSTONE_HIDDEN_KEY } from './capstonePrompt';
 import { clearPreImportBackup } from './importSafety';
 
 /** Persisted Google profile (also read by AuthContext). */
@@ -22,6 +23,8 @@ export function clearPerAccountLocalData(): void {
   localStorage.removeItem(SPREADSHEET_ID_STORAGE_KEY);
   clearAllDrafts();
   clearPreImportBackup();
+  // R1 nit: the per-device capstone Hide list belongs to the previous account's books.
+  localStorage.removeItem(CAPSTONE_HIDDEN_KEY);
   if (typeof caches !== 'undefined') {
     caches.delete('pragya-media-v1').catch(() => {});
   }

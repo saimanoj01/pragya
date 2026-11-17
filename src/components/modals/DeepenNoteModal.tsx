@@ -11,7 +11,8 @@ import {
 } from 'lucide-react';
 import type { Attachment, DeltaStatus, Note } from '../../types/pragya';
 import { usePragya } from '../../context/PragyaContext';
-import { getRenderableAttachments } from '../../utils/metaCodecs';
+import { NOTE_CHAPTER_EDITOR_OWNED_META_KEYS, getRenderableAttachments } from '../../utils/metaCodecs';
+import { CHAPTER_MAX_LENGTH, deepenChapterSuggestion, withChapterKey } from '../../utils/chapterFormat';
 import {
   formatWhenDoDisplay,
   normalizeDeltaAction,
@@ -58,6 +59,7 @@ export const DeepenNoteModal: React.FC<DeepenNoteModalProps> = ({
   const actionId = `${baseId}-action`;
   const deltaStatusId = `${baseId}-delta-status`;
   const critiqueId = `${baseId}-critique`;
+  const chapterId = `${baseId}-chapter`;
 
   const [title, setTitle] = useState('');
   const [slug, setSlug] = useState('');
@@ -67,6 +69,7 @@ export const DeepenNoteModal: React.FC<DeepenNoteModalProps> = ({
   const [deltaAction, setDeltaAction] = useState('');
   const [deltaStatus, setDeltaStatus] = useState<DeltaStatus>('none');
   const [critique, setCritique] = useState('');
+  const [chapter, setChapter] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [draftRestored, setDraftRestored] = useState(false);
   const [baseUpdatedAt, setBaseUpdatedAt] = useState('');
@@ -95,6 +98,7 @@ export const DeepenNoteModal: React.FC<DeepenNoteModalProps> = ({
     deltaAction: '',
     deltaStatus: 'none' as DeltaStatus,
     critique: '',
+    chapter: '',
   });
 
   const isDirty = useMemo(() => {
@@ -107,9 +111,10 @@ export const DeepenNoteModal: React.FC<DeepenNoteModalProps> = ({
       deltaTrigger !== c.deltaTrigger ||
       deltaAction !== c.deltaAction ||
       deltaStatus !== c.deltaStatus ||
-      critique !== c.critique
+      critique !== c.critique ||
+      chapter !== c.chapter
     );
-  }, [title, slug, takeaway, contextMechanism, deltaTrigger, deltaAction, deltaStatus, critique]);
+  }, [title, slug, takeaway, contextMechanism, deltaTrigger, deltaAction, deltaStatus, critique, chapter]);
 
   const draftStateRef = useRef<{
     key: string;
@@ -128,6 +133,7 @@ export const DeepenNoteModal: React.FC<DeepenNoteModalProps> = ({
       deltaAction: '',
       deltaStatus: 'none',
       critique: '',
+      chapter: '',
       savedAt: '',
     },
   });
@@ -144,6 +150,7 @@ export const DeepenNoteModal: React.FC<DeepenNoteModalProps> = ({
       deltaAction,
       deltaStatus,
       critique,
+      chapter,
       savedAt: new Date().toISOString(),
     },
   };
@@ -179,6 +186,7 @@ export const DeepenNoteModal: React.FC<DeepenNoteModalProps> = ({
       deltaAction: formattedDelta.actionBody,
       deltaStatus: (note.deltaStatus || 'none') as DeltaStatus,
       critique: note.critique || '',
+      chapter: typeof note.meta?.chapter === 'string' ? note.meta.chapter : '',
     };
     canonicalRef.current = canonical;
     setBaseUpdatedAt(note.updatedAt);
@@ -200,7 +208,8 @@ export const DeepenNoteModal: React.FC<DeepenNoteModalProps> = ({
         validDraft.deltaTrigger !== canonical.deltaTrigger ||
         validDraft.deltaAction !== canonical.deltaAction ||
         validDraft.deltaStatus !== canonical.deltaStatus ||
-        validDraft.critique !== canonical.critique);
+        validDraft.critique !== canonical.critique ||
+        (validDraft.chapter ?? canonical.chapter) !== canonical.chapter);
 
     if (validDraft && draftHasEdits) {
       setTitle(validDraft.title);
@@ -211,6 +220,7 @@ export const DeepenNoteModal: React.FC<DeepenNoteModalProps> = ({
       setDeltaAction(validDraft.deltaAction);
       setDeltaStatus(validDraft.deltaStatus || 'none');
       setCritique(validDraft.critique);
+      setChapter(validDraft.chapter ?? canonical.chapter);
       setDraftRestored(true);
     } else {
       setTitle(canonical.title);
@@ -221,6 +231,7 @@ export const DeepenNoteModal: React.FC<DeepenNoteModalProps> = ({
       setDeltaAction(canonical.deltaAction);
       setDeltaStatus(canonical.deltaStatus);
       setCritique(canonical.critique);
+      setChapter(canonical.chapter);
       setDraftRestored(false);
     }
 
@@ -259,6 +270,7 @@ export const DeepenNoteModal: React.FC<DeepenNoteModalProps> = ({
     deltaAction,
     deltaStatus,
     critique,
+    chapter,
   ]);
 
   useEffect(() => {
@@ -287,6 +299,7 @@ export const DeepenNoteModal: React.FC<DeepenNoteModalProps> = ({
     setDeltaAction(c.deltaAction);
     setDeltaStatus(c.deltaStatus);
     setCritique(c.critique);
+    setChapter(c.chapter);
     setDraftRestored(false);
   };
 
@@ -294,6 +307,8 @@ export const DeepenNoteModal: React.FC<DeepenNoteModalProps> = ({
     () => (note ? books.find(b => b.id === note.bookId) || null : null),
     [books, note]
   );
+  // B.2: Deepen is deliberate — suggest the bookmark chapter, never auto-fill it.
+  const chapterSuggestion = note ? deepenChapterSuggestion(note, book) : null;
 
   const otherActiveCount = useMemo(() => {
     if (!note) return 0;
@@ -341,11 +356,15 @@ export const DeepenNoteModal: React.FC<DeepenNoteModalProps> = ({
           deltaAction: normalizedAction,
           deltaStatus,
           meta: {
-            ...note.meta,
+            ...withChapterKey(note.meta, 'chapter', chapter),
             ...(title.trim() ? { title: title.trim() } : { title: undefined }),
           },
         },
-        { expectedBaseUpdatedAt: baseUpdatedAt || note.updatedAt }
+        {
+          expectedBaseUpdatedAt: baseUpdatedAt || note.updatedAt,
+          ownedMetaKeys: NOTE_CHAPTER_EDITOR_OWNED_META_KEYS,
+          baseMeta: note.meta,
+        }
       );
 
       submittedOrDiscardedRef.current = true;
@@ -554,6 +573,33 @@ export const DeepenNoteModal: React.FC<DeepenNoteModalProps> = ({
               className="w-full h-10 px-3 rounded-[10px] bg-background border border-input font-mono text-label text-foreground placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-ring/40"
             />
           </div>
+        </div>
+
+        <div className="space-y-1.5">
+          <label htmlFor={chapterId} className="block text-eyebrow uppercase text-muted-foreground">
+            Chapter / Story (Optional)
+          </label>
+          <input
+            id={chapterId}
+            type="text"
+            maxLength={CHAPTER_MAX_LENGTH}
+            autoComplete="off"
+            data-testid="deepen-chapter-input"
+            value={chapter}
+            onChange={e => setChapter(e.target.value)}
+            placeholder="e.g. Ch. 3: Run · or a story title"
+            className="w-full h-10 px-3 rounded-[10px] bg-background border border-input text-body text-foreground placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-ring/40"
+          />
+          {chapterSuggestion && !chapter.trim() && (
+            <button
+              type="button"
+              data-testid="deepen-chapter-suggestion-btn"
+              onClick={() => setChapter(chapterSuggestion)}
+              className="px-2.5 py-1 rounded-[8px] bg-surface2 border border-border text-label text-foreground hover:bg-secondary"
+            >
+              Use &quot;{chapterSuggestion}&quot;
+            </button>
+          )}
         </div>
 
         <div className="space-y-1.5 relative">

@@ -10,6 +10,11 @@ import {
   type CaptureDraft,
 } from '../../utils/draftStorage';
 import { pickKindlePositionHint, type KindlePositionHint } from '../../utils/kindlePaste';
+import {
+  CAPTURE_CHAPTER_HINTS,
+  CHAPTER_MAX_LENGTH,
+  resolveCaptureChapter,
+} from '../../utils/chapterFormat';
 import { navigateTo } from '../../utils/navigation';
 import { createUuid } from '../../utils/sessionCoalesce';
 import { parseTagsCsv } from '../../utils/sheetCodecs';
@@ -44,6 +49,7 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
   const tagsFieldId = `${baseId}-tags`;
   const sparFieldId = `${baseId}-spar`;
   const predFieldId = `${baseId}-pred`;
+  const chapterFieldId = `${baseId}-chapter`;
 
   const defaultBookId = useMemo(() => {
     if (initialBookId && books.some(b => b.id === initialBookId)) return initialBookId;
@@ -57,6 +63,9 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
   const [tagsRaw, setTagsRaw] = useState('');
   const [sparLater, setSparLater] = useState(false);
   const [isPrediction, setIsPrediction] = useState(false);
+  // A3.3: chapter inherits the book's currentChapter at the bookmark until typed in.
+  const [chapterInput, setChapterInput] = useState('');
+  const [chapterTouched, setChapterTouched] = useState(false);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [uploadingImage, setUploadingImage] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -79,8 +88,9 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
       takeaway.trim() !== '' ||
       tagsRaw.trim() !== '' ||
       sparLater ||
-      isPrediction,
-    [isPrediction, quote, sparLater, tagsRaw, takeaway]
+      isPrediction ||
+      (chapterTouched && chapterInput.trim() !== ''),
+    [chapterInput, chapterTouched, isPrediction, quote, sparLater, tagsRaw, takeaway]
   );
 
   const draftSnapshotRef = useRef<{ isDirty: boolean; payload: CaptureDraft }>({
@@ -93,6 +103,8 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
       tagsRaw: '',
       sparLater: false,
       isPrediction: false,
+      chapter: '',
+      chapterTouched: false,
       updatedAt: '',
     },
   });
@@ -106,6 +118,8 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
       tagsRaw,
       sparLater,
       isPrediction,
+      chapter: chapterInput,
+      chapterTouched,
       updatedAt: new Date().toISOString(),
     },
   };
@@ -138,7 +152,8 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
         savedDraft.takeaway.trim() !== '' ||
         savedDraft.tagsRaw.trim() !== '' ||
         savedDraft.sparLater ||
-        savedDraft.isPrediction) &&
+        savedDraft.isPrediction ||
+        Boolean(savedDraft.chapterTouched && (savedDraft.chapter || '').trim())) &&
       (!initialBookId || savedDraft.bookId === initialBookId);
 
     if (canRestoreDraft && savedDraft) {
@@ -155,6 +170,8 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
       setIsPrediction(
         resolvedBook?.kind === 'fiction' ? Boolean(savedDraft.isPrediction) : false
       );
+      setChapterInput(savedDraft.chapter || '');
+      setChapterTouched(Boolean(savedDraft.chapterTouched));
       setDraftRestored(true);
     } else {
       setBookId(chosenId);
@@ -164,6 +181,8 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
       setTagsRaw('');
       setSparLater(false);
       setIsPrediction(false);
+      setChapterInput('');
+      setChapterTouched(false);
       setDraftRestored(false);
     }
 
@@ -201,7 +220,7 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
       }
     }, 250);
     return () => window.clearTimeout(timer);
-  }, [isOpen, isDirty, bookId, pos, quote, takeaway, tagsRaw, sparLater, isPrediction]);
+  }, [isOpen, isDirty, bookId, pos, quote, takeaway, tagsRaw, sparLater, isPrediction, chapterInput, chapterTouched]);
 
   // Warn only when open with unpersisted/unsaved dirty input
   useEffect(() => {
@@ -218,12 +237,22 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
   }, [isOpen, isDirty]);
 
   const selectedBook = useMemo(() => books.find(b => b.id === bookId) || null, [books, bookId]);
+  const chapterState = resolveCaptureChapter({
+    bookChapter: selectedBook?.meta?.currentChapter,
+    pos: pos.trim() === '' ? null : Number(pos),
+    currentPos: selectedBook?.currentPos ?? 0,
+    touched: chapterTouched,
+    value: chapterInput,
+    clampTo: selectedBook,
+  });
 
   const handleBookChange = (nextId: string) => {
     setBookId(nextId);
     setKindlePosHint(null);
     dismissedHintRef.current = null;
     const nextBook = books.find(b => b.id === nextId);
+    setChapterInput('');
+    setChapterTouched(false);
     if (nextBook) {
       setPos(String(nextBook.currentPos));
       if (nextBook.kind !== 'fiction') {
@@ -259,6 +288,8 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
     setTagsRaw('');
     setSparLater(false);
     setIsPrediction(false);
+    setChapterInput('');
+    setChapterTouched(false);
     setDraftRestored(false);
     setKindlePosHint(null);
     dismissedHintRef.current = null;
@@ -435,6 +466,7 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
         sparLater,
         isPrediction: selectedBook?.kind === 'fiction' ? isPrediction : false,
         attachments,
+        chapter: chapterState.value,
       });
       submittedOrDiscardedRef.current = true;
       clearDraft(CAPTURE_DRAFT_KEY);
@@ -629,6 +661,39 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
                 </div>
               </div>
             )}
+
+            <div className="space-y-1.5">
+              <label
+                htmlFor={chapterFieldId}
+                className="block text-eyebrow uppercase text-muted-foreground"
+              >
+                Chapter / Story (Optional)
+              </label>
+              <input
+                id={chapterFieldId}
+                type="text"
+                maxLength={CHAPTER_MAX_LENGTH}
+                autoComplete="off"
+                data-testid="capture-chapter-input"
+                value={chapterState.value}
+                placeholder="e.g. Ch. 3: Run · or a story title"
+                aria-describedby={chapterState.hint ? `${chapterFieldId}-hint` : undefined}
+                onChange={e => {
+                  setChapterInput(e.target.value);
+                  setChapterTouched(true);
+                }}
+                className="w-full h-10 px-3 rounded-[10px] bg-background border border-input text-body text-foreground placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-ring/40"
+              />
+              {chapterState.hint && (
+                <p
+                  id={`${chapterFieldId}-hint`}
+                  data-testid="capture-chapter-hint"
+                  className="text-label text-faint"
+                >
+                  {CAPTURE_CHAPTER_HINTS[chapterState.hint]}
+                </p>
+              )}
+            </div>
 
             <div className="space-y-1.5">
               <label

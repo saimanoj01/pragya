@@ -35,6 +35,7 @@ import {
   BOOK_EDITOR_OWNED_META_KEYS,
   NOTE_EDITOR_OWNED_META_KEYS,
   getRenderableAttachments,
+  findOverriddenMetaKeys,
   mergeUnknownMetaKeys,
 } from '../utils/metaCodecs';
 import { resolveExpectedBase } from '../utils/conflictGuard';
@@ -47,6 +48,7 @@ import { buildSnapshot } from '../utils/snapshot';
 import { savePreImportBackup } from '../utils/importSafety';
 import { clearAllDrafts } from '../utils/draftStorage';
 import { clampNotePos } from '../utils/positionClamp';
+import { normalizeChapterInput } from '../utils/chapterFormat';
 import {
   OfflineReadOnlyError,
   STILL_OFFLINE_TOAST,
@@ -54,6 +56,23 @@ import {
   shouldBlockCloudWrite,
 } from '../utils/offline';
 import { useAuth } from './AuthContext';
+
+/** R2 N1 (dev only): an editor changed a meta key it doesn't own; the latest value wins. */
+function warnOverriddenMetaKeys(
+  entity: string,
+  edited: object,
+  base: object | null | undefined,
+  latest: object | null | undefined,
+  owned: readonly string[]
+): void {
+  if (!import.meta.env.DEV || !base) return;
+  const keys = findOverriddenMetaKeys(edited, base, latest, owned);
+  if (keys.length) {
+    console.warn(
+      `[pragya] ${entity} edit changed non-owned meta key(s) ${keys.join(', ')}; the latest loaded value was kept. Pass ownedMetaKeys at this call site if the change is intended.`
+    );
+  }
+}
 
 export interface AddBookInput {
   title: string;
@@ -77,6 +96,8 @@ export interface QuickCaptureInput {
   sparLater?: boolean;
   isPrediction?: boolean;
   attachments?: Attachment[];
+  /** A3.3: note chapter / story (trimmed, ≤ 80 chars; empty → key omitted). */
+  chapter?: string;
 }
 
 export interface UpdateNoteOptions {
@@ -86,6 +107,12 @@ export interface UpdateNoteOptions {
   expectedBaseUpdatedAt?: string;
   /** Meta keys this call site may set/delete (default NOTE_EDITOR_OWNED_META_KEYS). */
   ownedMetaKeys?: readonly string[];
+  /**
+   * R2 N1 (dev warning only): the meta snapshot this edit started from. A non-owned key
+   * is reported only when the editor changed it relative to this base; no base → no
+   * warning (a key another device changed is never reported).
+   */
+  baseMeta?: object;
 }
 
 export interface ReplaceWorkspaceOptions {
@@ -113,6 +140,12 @@ export interface BookWriteOptions {
   expectedBaseUpdatedAt?: string;
   /** Meta keys this call site may set/delete (default BOOK_EDITOR_OWNED_META_KEYS). */
   ownedMetaKeys?: readonly string[];
+  /**
+   * R2 N1 (dev warning only): the meta snapshot this edit started from. A non-owned key
+   * is reported only when the editor changed it relative to this base; no base → no
+   * warning (a key another device changed is never reported).
+   */
+  baseMeta?: object;
 }
 
 export interface BookmarkAdvanceResult {
@@ -391,6 +424,7 @@ export const PragyaProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         assertCloudWritable();
         const nowIso = new Date().toISOString();
         const loaded = booksRef.current.find(b => b.id === book.id);
+        warnOverriddenMetaKeys('Book', book.meta, options.baseMeta, loaded?.meta, options.ownedMetaKeys ?? BOOK_EDITOR_OWNED_META_KEYS);
         const nextBook: Book = {
           ...book,
           normalizedPos:
@@ -654,6 +688,7 @@ export const PragyaProvider: React.FC<{ children: React.ReactNode }> = ({ childr
           slugSource,
           notesRef.current.map(n => n.slug)
         );
+        const chapter = normalizeChapterInput(input.chapter);
 
         const newNote: Note = {
           id: createUuid(),
@@ -678,6 +713,7 @@ export const PragyaProvider: React.FC<{ children: React.ReactNode }> = ({ childr
             attachments,
             links,
             ...(book.kind === 'fiction' && input.isPrediction ? { isPrediction: true } : {}),
+            ...(chapter ? { chapter } : {}),
           },
         };
 
@@ -737,6 +773,7 @@ export const PragyaProvider: React.FC<{ children: React.ReactNode }> = ({ childr
           posChanged && book
             ? computeNormalizedPos(nextPos, book.totalPos, book.posUnit)
             : note.normalizedPos;
+        warnOverriddenMetaKeys('Note', note.meta, options.baseMeta, existingNote?.meta, options.ownedMetaKeys ?? NOTE_EDITOR_OWNED_META_KEYS);
         const updated: Note = {
           ...note,
           pos: nextPos,

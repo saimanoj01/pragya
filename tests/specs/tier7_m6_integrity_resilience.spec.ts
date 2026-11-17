@@ -298,11 +298,16 @@ test.describe('Tier 7 — M6 integrity & resilience (QA)', () => {
       }));
       expect(snapshot.expiresAt).toBeGreaterThan(Date.now() + 3_000_000);
       if (scenario === 'switch') {
+        // R2 N3 (Batch 7): calm info toast on an account switch.
+        await expect(
+          page.getByText('Signed in as a different account. Unsaved drafts from the previous account were cleared on this device.')
+        ).toBeVisible();
         expect(snapshot.draftEdit).toBeNull();
         expect(snapshot.draftCapture).toBeNull();
         expect(snapshot.backup).toBeNull();
         expect(snapshot.sheetId).not.toBe('sheet-a');
       } else {
+        await expect(page.getByText('Signed in as a different account.', { exact: false })).toHaveCount(0);
         expect(snapshot.draftEdit).toContain('A private draft');
         expect(snapshot.backup).toContain('a-secret');
       }

@@ -12,6 +12,7 @@ import {
 } from '../utils/navigation';
 import { OFFLINE_INFO_TOAST } from '../utils/offline';
 import { clearAllDrafts } from '../utils/draftStorage';
+import { CAPSTONE_HIDDEN_KEY } from '../utils/capstonePrompt';
 import { clearPreImportBackup } from '../utils/importSafety';
 import {
   applySignedInAccount,
@@ -321,7 +322,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
         // R1#1: compare against the durable last-account marker (survives token expiry),
         // clearing the previous account's drafts/backup/media/cache on a switch.
-        applySignedInAccount(profile.email);
+        if (applySignedInAccount(profile.email)) {
+          // R2 N3: say so calmly instead of silently dropping drafts.
+          showToast(
+            'Signed in as a different account. Unsaved drafts from the previous account were cleared on this device.',
+            'info'
+          );
+        }
 
         localStorage.setItem(GOOGLE_USER_KEY, JSON.stringify(profile));
         setUser(profile);
@@ -465,6 +472,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     localStorage.removeItem(SPREADSHEET_ID_STORAGE_KEY);
     clearAllDrafts();
     clearPreImportBackup();
+    localStorage.removeItem(CAPSTONE_HIDDEN_KEY);
     forgetLastAccount();
     sessionStorage.removeItem(OAUTH_CSRF_STATE_KEY);
     sessionStorage.removeItem(OAUTH_RETURN_ROUTE_KEY);

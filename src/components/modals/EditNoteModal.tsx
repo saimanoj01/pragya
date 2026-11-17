@@ -10,7 +10,12 @@ import {
 } from 'lucide-react';
 import type { Attachment, DeltaStatus, Note, NoteStatus } from '../../types/pragya';
 import { usePragya } from '../../context/PragyaContext';
-import { mergeEditedAttachments, splitAttachments } from '../../utils/metaCodecs';
+import {
+  NOTE_CHAPTER_EDITOR_OWNED_META_KEYS,
+  mergeEditedAttachments,
+  splitAttachments,
+} from '../../utils/metaCodecs';
+import { CHAPTER_MAX_LENGTH, withChapterKey } from '../../utils/chapterFormat';
 import {
   formatWhenDoDisplay,
   normalizeDeltaAction,
@@ -67,6 +72,7 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
   const actionId = `${baseId}-action`;
   const deltaStatusId = `${baseId}-delta-status`;
   const critiqueId = `${baseId}-critique`;
+  const chapterId = `${baseId}-chapter`;
 
   const [title, setTitle] = useState('');
   const [slug, setSlug] = useState('');
@@ -81,6 +87,7 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
   const [deltaTrigger, setDeltaTrigger] = useState('');
   const [deltaAction, setDeltaAction] = useState('');
   const [deltaStatus, setDeltaStatus] = useState<DeltaStatus>('none');
+  const [chapter, setChapter] = useState('');
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [draftRestored, setDraftRestored] = useState(false);
   const [baseUpdatedAt, setBaseUpdatedAt] = useState('');
@@ -119,6 +126,7 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
     deltaTrigger: '',
     deltaAction: '',
     deltaStatus: 'none' as DeltaStatus,
+    chapter: '',
   });
 
   const isDirty = useMemo(() => {
@@ -136,7 +144,8 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
       critique !== c.critique ||
       deltaTrigger !== c.deltaTrigger ||
       deltaAction !== c.deltaAction ||
-      deltaStatus !== c.deltaStatus
+      deltaStatus !== c.deltaStatus ||
+      chapter !== c.chapter
     );
   }, [
     title,
@@ -152,6 +161,7 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
     deltaTrigger,
     deltaAction,
     deltaStatus,
+    chapter,
   ]);
 
   const draftStateRef = useRef<{
@@ -176,6 +186,7 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
       deltaTrigger: '',
       deltaAction: '',
       deltaStatus: 'none',
+      chapter: '',
       savedAt: '',
     },
   });
@@ -197,6 +208,7 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
       deltaTrigger,
       deltaAction,
       deltaStatus,
+      chapter,
       savedAt: new Date().toISOString(),
     },
   };
@@ -237,6 +249,7 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
       deltaTrigger: formattedDelta.triggerBody,
       deltaAction: formattedDelta.actionBody,
       deltaStatus: (note.deltaStatus || 'none') as DeltaStatus,
+      chapter: typeof note.meta?.chapter === 'string' ? note.meta.chapter : '',
     };
     canonicalRef.current = canonical;
     setBaseUpdatedAt(note.updatedAt);
@@ -263,7 +276,8 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
         validDraft.critique !== canonical.critique ||
         validDraft.deltaTrigger !== canonical.deltaTrigger ||
         validDraft.deltaAction !== canonical.deltaAction ||
-        validDraft.deltaStatus !== canonical.deltaStatus);
+        validDraft.deltaStatus !== canonical.deltaStatus ||
+        (validDraft.chapter ?? canonical.chapter) !== canonical.chapter);
 
     if (validDraft && draftHasEdits) {
       setTitle(validDraft.title);
@@ -279,6 +293,7 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
       setDeltaTrigger(validDraft.deltaTrigger);
       setDeltaAction(validDraft.deltaAction);
       setDeltaStatus(validDraft.deltaStatus || 'none');
+      setChapter(validDraft.chapter ?? canonical.chapter);
       setDraftRestored(true);
     } else {
       setTitle(canonical.title);
@@ -294,6 +309,7 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
       setDeltaTrigger(canonical.deltaTrigger);
       setDeltaAction(canonical.deltaAction);
       setDeltaStatus(canonical.deltaStatus);
+      setChapter(canonical.chapter);
       setDraftRestored(false);
     }
 
@@ -344,6 +360,7 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
     deltaTrigger,
     deltaAction,
     deltaStatus,
+    chapter,
   ]);
 
   useEffect(() => {
@@ -377,6 +394,7 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
     setDeltaTrigger(c.deltaTrigger);
     setDeltaAction(c.deltaAction);
     setDeltaStatus(c.deltaStatus);
+    setChapter(c.chapter);
     setDraftRestored(false);
   };
 
@@ -574,7 +592,7 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
           deltaAction: normalizedAction,
           deltaStatus,
           meta: {
-            ...note.meta,
+            ...withChapterKey(note.meta, 'chapter', chapter),
             ...(title.trim() ? { title: title.trim() } : { title: undefined }),
             // R-4: merge against the list captured at open, keeping stored order.
             attachments: mergeEditedAttachments(
@@ -584,7 +602,11 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
             ...(book?.kind === 'fiction' ? { isPrediction } : {}),
           },
         },
-        { expectedBaseUpdatedAt: baseUpdatedAt || note.updatedAt }
+        {
+          expectedBaseUpdatedAt: baseUpdatedAt || note.updatedAt,
+          ownedMetaKeys: NOTE_CHAPTER_EDITOR_OWNED_META_KEYS,
+          baseMeta: note.meta,
+        }
       );
 
       submittedOrDiscardedRef.current = true;
@@ -731,6 +753,23 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
               className="w-full h-10 px-3 rounded-[10px] bg-background border border-input text-body text-foreground focus:outline-none focus:ring-2 focus:ring-ring/40"
             />
           </div>
+        </div>
+
+        <div className="space-y-1.5">
+          <label htmlFor={chapterId} className="block text-eyebrow uppercase text-muted-foreground">
+            Chapter / Story (Optional)
+          </label>
+          <input
+            id={chapterId}
+            type="text"
+            maxLength={CHAPTER_MAX_LENGTH}
+            autoComplete="off"
+            data-testid="edit-note-chapter-input"
+            value={chapter}
+            onChange={e => setChapter(e.target.value)}
+            placeholder="e.g. Ch. 3: Run · or a story title"
+            className="w-full h-10 px-3 rounded-[10px] bg-background border border-input text-body text-foreground placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-ring/40"
+          />
         </div>
 
         {book?.kind === 'fiction' && (

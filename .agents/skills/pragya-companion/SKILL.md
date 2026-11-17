@@ -13,6 +13,7 @@ description: Agent-side companion skill for Pragya — reading tracker, Socratic
 > - **Spoiler-Safe Fiction Ceiling:** Never inspect, quote, or volunteer plot points/twists (including from your own parametric book knowledge) beyond `book.currentPos` / `book.normalizedPos` unless `book.status == "finished"`.
 > - **Active Behavioral Delta Cap (`<= 5`):** Never activate more than 5 concurrent `deltaStatus == "active"` notes across all books.
 > - **UUID-Resolved Sheet Writes & Clean `WHEN`/`DO`:** Always resolve row indices via `<Tab>!A:A` at write time; store `deltaTrigger`/`deltaAction` without `WHEN`/`DO` prefixes and render at most one prefix.
+> - **Calm Companion Voice:** Confirmations are 1–2 plain sentences. No exclamation-heavy praise ("Great insight!"), no streaks, no "you haven't…", no "don't forget", no counts of pending work. Questions are invitations, never homework. Any of *"just save it"*, *"skip"*, *"not now"*, *"later"*, *"no thanks"* ends sparring immediately with no follow-up.
 
 ---
 
@@ -31,6 +32,10 @@ python3 scripts/pragya_cli.py --state-file pragya-backup.json book-list
 
 - **Live Workspace mode (default):** Discovers or creates **`Pragya Commonplace`** and **`Pragya Media/`** via `gsheets`, `gdrive`, and `gdocs` CLIs (`--spreadsheet-id <ID>` optional).
 - **Snapshot JSON mode (`--state-file <path.json>`):** Operates atomically on any `PragyaSnapshot` v1 JSON export.
+- **JSON error envelope (parse it, don't guess):**
+  - A refused command (`CliError`: validation, conflict guard, delta cap, rate-limit exhaustion…) prints `{"error": "<message>"}` to **stderr** and exits **1**. Nothing past the failing step was written — relay the message plainly.
+  - An argparse usage error (missing/unknown flag, bad choice) prints `{"error": "<message>", "usage": "<usage text>"}` to **stderr** and exits **2**. Fix the flags and retry; `--help` output is unchanged.
+- **Raw-value writes:** All Sheet writes go through `gsheets mutate raw-batch` (`updateCells`/`appendCells` with `stringValue`/`numberValue`), so `=SUM(…)`, `+10%`, `- bullet` and `YYYY-MM-DD` are stored verbatim. There is no legacy `gsheets mutate batch` fallback for Sheet data. Google `429`/`RESOURCE_EXHAUSTED` responses are retried with backoff (1 s, 2 s; 3 attempts), then the command fails with a calm message that names the **Paste Card** fallback — earlier steps may already be saved, so check with `recall` / `book-list` before re-running (re-running `capture` would duplicate the note).
 
 ### Mode B — Native Google Workspace / MCP Fallback (Gemini Spark)
 
@@ -38,6 +43,23 @@ If `gsheets`, `gdrive`, or `gdocs` binaries are missing from `PATH` (`pragya_cli
 1. Consult [`references/schema_and_ops.md`](references/schema_and_ops.md) for the exact 4-tab column layouts (`Books!A:L`, `Notes!A:R`, `Sessions!A:G`, `DeltaLogs!A:E`), normalized position math, UUID `A:A` lookup, and 30-min session coalescing rules.
 2. Read/write directly via your native Google Sheets / Drive / Docs connector.
 3. **Offline / Disconnected Degradation Tier:** If neither Mode A CLIs nor Mode B Workspace connectors are reachable (or offline), offer `--state-file` snapshot editing or output a structured **Paste Card** for the PWA — never pretend a remote write succeeded.
+
+---
+
+## Socratic Triage Rubric — When to Spar vs. Log Quietly
+
+Default to the lightest path that honors what the user said. Sparring is offered only when an idea is genuinely unfinished — never a toll for saving a note.
+
+| Path | The user is… | Do | Say (shape, not script) |
+|---|---|---|---|
+| **A · Progress / context** | reporting where they are, or asking a factual question about their reading | `progress` (+ `--chapter` if mentioned); answer directly | "Logged — you're at p. 142, Ch. 7." Zero questions, zero note. |
+| **B · Bookmark / quote / light observation** | sharing a line they liked or a quick reaction | `capture` (`saved`) in their own words; `--chapter` if known | "Saved to *Thinking in Systems* at p. 88." Zero questions. |
+| **C · Already-articulated insight** | explaining a mechanism *and* its limits in their own words | `capture --atomic` with only the fields they actually said | "Saved as an atomic note, including the boundary you mentioned." No redundant sparring. |
+| **D · Live tension** | voicing a clash between instinct and value, an unfinished hunch, or a prescription they haven't tested | `capture --spar` → `reflect --stage 1` → ask **2** Socratic questions → **stop and wait** | "Saved. Two questions, if you'd like to sit with it — or say *just save it* and I'll leave it there." |
+
+**Escape hatch (Path D):** if the user says *just save it* / *skip* / *not now*, run `note-update --note <id|slug> --status saved` and confirm in one sentence. Don't re-raise the questions later unless the user brings the note back up. (This changes only `status` + `updatedAt`; saved questions, `sparStage`, attachments and paused/graduated deltas are kept.) One exception: a note whose delta is still **active** is refused (an active delta needs an atomic note) — tell the user plainly and offer to pause the delta first (`--delta-status paused`) or keep it as is.
+
+**When unsure between B and D, choose B.** A missed sparring opportunity costs nothing; an unwanted interrogation erodes the habit.
 
 ---
 
@@ -57,22 +79,71 @@ python3 scripts/pragya_cli.py book-add \
 
 # Advance reading progress (+delta, exact --pos, or --finish; coalesces 30-min sessions)
 python3 scripts/pragya_cli.py progress --book "Thinking in Systems" --delta 18 --session-note "Feedback delays ch. 2"
+python3 scripts/pragya_cli.py progress --book "Thinking in Systems" --pos 142 --chapter "Ch. 3: Run"
 python3 scripts/pragya_cli.py progress --book "Exhalation" --finish
+
+# Chapter only: saves meta.currentChapter without moving the bookmark or creating a session
+python3 scripts/pragya_cli.py progress --book "Thinking in Systems" --chapter "Ch. 4"
 
 # Update metadata or status (returns unlockedPredictionsCount when finishing fiction)
 python3 scripts/pragya_cli.py book-update --book "book-exhalation" --status finished
+python3 scripts/pragya_cli.py book-update --book "Thinking in Systems" --chapter ""   # empty string clears
 ```
+
+- **Chapter / story anchors (`--chapter`):** accepted by `progress`, `book-update` (book `meta.currentChapter`), `capture`, `reflect --stage commit` and `note-update` (note `meta.chapter`). An empty string (`--chapter ""`) clears; omitting the flag leaves the value untouched. `progress --chapter` alone is valid (re-sending the same value is a no-op, `chapterChanged: false`).
+- **Chapter label rule:** a purely ASCII-numeric value (`3`) renders as `Ch. 3`; anything else is shown verbatim (`Ch. 3: Run`, `The Lifecycle of Software Objects`). The badge is `[Ch. 3 · p. 42]` (`[Run · 10%]` for percent books; `[p. 42]` with no chapter).
+- `progress` always returns `unlockedPredictionsCount` (0 unless this call finished a fiction book); `book-update` returns it too.
+
+#### Finishing a Book (`progress --finish` / `book-update --status finished`)
+
+Both commands return the same finish payload on a transition into `finished`: `unlockedPredictionsCount` and `capstonePending` (bool) are **always** present; when `capstonePending` is `true` the result also carries `notesSummary` + `notesSummaryOmittedCount`.
+
+1. Mark the book finished. Acknowledge it once, plainly: "Marked *Born a Crime* as finished."
+2. If the CLI returns `unlockedPredictionsCount > 0`, state it as a fact, not a task: "Your 3 sealed predictions are unlocked whenever you'd like to revisit them."
+3. If `capstonePending` is `true` and `notesSummary` has notes, offer a **candidate Whole-Book Picture** drafted strictly from those notes — the user's phrasing, no outside facts or plot detail:
+   - **Arc** (fiction) / **Thesis** (non-fiction): 2–3 sentences
+   - **Key Learnings:** 3–5 one-line bullets
+   - **How My Thinking Shifted:** 1–2 sentences
+   Then one line: "I can save this as your Whole-Book Picture as-is, or adjust anything."
+4. **At most one optional closing question**, only if the notes leave an obvious gap (e.g. nothing about how their view changed). Place it after the draft, marked optional: "(Optional: what will you do differently because of this book?)"
+5. On approval → `book-capstone …` then `book-doc-sync`. Confirm in one sentence: "Saved, and added to the top of your Pragya doc."
+6. If the user declines, ignores the offer, or changes topic → write nothing and **never bring it up again** unprompted. The PWA keeps a quiet, optional entry point on the book page.
+7. If `notesSummary` is empty, skip the draft. Offer once: "If you ever want to capture the shape of this book, I can help." — then drop it.
+
+```bash
+# Save the approved Whole-Book Picture (--thesis is an alias of --arc; --learning of --learnings)
+python3 scripts/pragya_cli.py book-capstone \
+  --book "Thinking in Systems" \
+  --thesis "Systems behave according to their structure, not the intentions of the people inside them." \
+  --learnings "Delays in balancing loops cause oscillation." \
+  --learnings "Stocks buffer change; flows are where leverage lives." \
+  --learnings "Look for the loop before blaming the person." \
+  --shift "I now look for the loop before blaming the person."
+# Optional: --completed-at 2026-11-12T18:00:00Z (ISO-8601; default keeps the existing value, else now)
+# Optional: --allow-unfinished (otherwise a non-finished book is refused and nothing is written)
+
+python3 scripts/pragya_cli.py book-doc-sync --book "Thinking in Systems"
+```
+
+- `book-capstone` needs `--arc`/`--thesis`, 1–7 `--learnings` (blank entries dropped) and `--shift`. It stores `metaJson.capstone = {arcOrThesis, keyLearnings[], perspectiveShift, completedAt}`, starting from the stored capstone object so unknown inner keys survive.
+- **`notesSummary` contract** (locked by tests):
+  - Entry keys are exactly `{id, slug, status, pos, posDisplay, label, chapter, title, quote, takeaway, delta}`. `label` is the unbracketed chapter·pos form (`Ch. 3 · p. 42`).
+  - Only the book's `saved` + `atomic` notes, in reading order. `quote` / `takeaway` are truncated to 280 chars ending in `…` (stored notes are untouched).
+  - Capped at **60** entries: all atomic notes are kept first, then the most recent saved notes, then re-sorted to reading order. `notesSummaryOmittedCount` reports what was trimmed.
+  - `delta` is an **object** `{trigger, action}` (WHEN/DO prefixes stripped) or `null`. Contrast: the PWA "Copy Capstone Prompt" renders a `Delta: WHEN … → DO …` **string** line — don't confuse the two shapes.
 
 ### 2. Quick or Conversation-First Deep Capture (`capture`)
 
 - `--pos` is optional (defaults to `book.currentPos` without creating a synthetic session).
-- Use `--spar` for `"inbox"` (spar later), default for `"saved"`, or `--atomic` ONLY when the user has already discussed and articulated Layer 2 fields live in conversation.
+- Use `--spar` for `"inbox"` (spar later), default for `"saved"`, or `--atomic` ONLY when the user has already discussed and articulated Layer 2 fields live in conversation (see Triage Rubric Path C).
+- `--chapter` sets the note's `meta.chapter` (`--chapter ""` = no chapter). When omitted, the note inherits the book's `meta.currentChapter` **only** if `--pos` is omitted or equals the book's `currentPos`; a note at an earlier or later position never inherits.
 
 ```bash
 # Quick capture with photo & spar flag
 python3 scripts/pragya_cli.py capture \
   --book "Thinking in Systems" \
   --pos 156 \
+  --chapter "Ch. 3: Run" \
   --quote "A delay in a balancing loop can cause oscillation." \
   --takeaway "Wait out natural lag before changing rules." \
   --tags "#systems, #delays" \
@@ -92,7 +163,7 @@ python3 scripts/pragya_cli.py capture \
   --atomic
 ```
 
-### 3. Socratic Reflection Sparring (`reflect --stage 1` -> WAIT -> `--stage commit`)
+### 3. Socratic Reflection Sparring (Path D only) (`reflect --stage 1` -> WAIT -> `--stage commit`)
 
 ```bash
 # Stage 1: Persist Socratic prompts (optional custom --q1/--q2 overrides) and STOP
@@ -114,8 +185,24 @@ python3 scripts/pragya_cli.py reflect \
   --critique "Unsafe during runaway cascades or safety emergencies." \
   --trigger "alert spikes right after deploy" \
   --action "wait one full cycle before adjusting thresholds" \
-  --delta-status active
+  --delta-status active \
+  --chapter "Ch. 3: Run"
 ```
+
+**Targeted edits & "just save it" (`note-update`):** edit one note without the reflect state machine. Only passed flags change; `metaJson` is carried over untouched (`socraticQuestions`, `sparStage`, attachments, unknown keys). It **never re-slugs**.
+
+```bash
+# Escape hatch: leave an inbox / in-reflection note as a plain saved note
+python3 scripts/pragya_cli.py note-update --note delays-in-feedback-loops --status saved
+
+# Targeted field edits (empty --title / --chapter / --tags clears)
+python3 scripts/pragya_cli.py note-update --note delays-in-feedback-loops \
+  --chapter "Ch. 3: Run" --tags "#systems, #delays"
+```
+
+- Flags: `--status saved|inbox|in-reflection|atomic`, `--title`, `--quote`, `--takeaway`, `--context`, `--critique`, `--trigger`, `--action`, `--delta-status none|active|paused|graduated`, `--chapter`, `--tags` (replaces the list). At least one is required.
+- Delta rules: only a note whose resulting delta is **active** must be `atomic` (pass `--status atomic`, or pause with `--delta-status paused`). WHEN/DO are required only when `--delta-status` / `--trigger` / `--action` is passed, so unrelated edits on legacy rows aren't blocked. The `<= 5` active cap is enforced when `--delta-status` is passed. WHEN/DO prefixes are normalized.
+- The note must keep a takeaway, quote or renderable attachment. Conflict guard applies (`--force` to bypass after confirming with the user).
 
 ### 4. Spoiler-Safe Recall, Check-In & Takeaway Shuffle (`recall`)
 
@@ -141,7 +228,23 @@ python3 scripts/pragya_cli.py recall --mode shuffle --mark-reviewed delays-in-fe
 python3 scripts/pragya_cli.py ocr-backfill --ocr-cmd "tesseract {path} stdout"
 python3 scripts/pragya_cli.py export-md --output-dir ./reading-notes
 python3 scripts/pragya_cli.py book-doc-sync --book "Thinking in Systems"
+# Opt-ins (both commands): also include inbox/in-reflection drafts, or notes ahead of the bookmark
+python3 scripts/pragya_cli.py book-doc-sync --book "Thinking in Systems" --include-drafts
+python3 scripts/pragya_cli.py export-md --output-dir ./reading-notes --include-spoilers
 ```
+
+**`book-doc-sync` — Companion Doc `Pragya · <Book Title>`:**
+- **Two-tier timeline** in reading order `(normalizedPos, pos, createdAt)`:
+  - **Atomic** → `HEADING_2` `[<badge>] <Title> [note:<uuid>]`, then only the non-empty lines among `Quote:`, `Takeaway:`, `Mechanism:`, `WHEN …`, `DO …`, `Critique:` (in that order).
+  - **Saved** → `HEADING_3` with only `Quote:` / `Takeaway:` (never Layer 2). Untitled saved title = the takeaway's first 8 words (`…` appended only when cut); `Quick Note` when the takeaway is empty. A derived title drops one trailing `.`, and the `Takeaway:` line is omitted when the heading already carries the whole takeaway.
+  - `--include-drafts` adds inbox / in-reflection notes as saved-tier (`HEADING_3`) entries.
+- **Capstone block:** `## Whole-Book Picture [capstone:<bookId>]` sits directly under the header (`Thesis:` / `Arc:`, `Key Learnings:` + `• ` lines, `How My Thinking Shifted:`, `Written YYYY-MM-DD`); absent without a capstone.
+- **Spoiler shield (default):** for an unfinished book, notes ahead of the bookmark and sealed predictions are left out and counted in `shieldedCount`; `--include-spoilers` opts in. A block already in the Doc is never deleted because it became shielded.
+- **True in-place sync:** only Pragya marker blocks (`[note:<uuid>]` / `[capstone:<bookId>]` heading + its Pragya field lines) are replaced or inserted, via one `gdocs mutate raw-batch` guarded by `writeControl.requiredRevisionId`. If the revision was rejected (the user edited concurrently), it re-reads and re-plans once; otherwise it falls back to append-only from a fresh read, with a warning. Everything outside markers is byte-preserved; new notes are backfilled in reading order.
+- **Result keys:** `mode` (`DOC_SYNC_MODES`: `created`, `in-place`, `append`, `append-fallback`, `unchanged`), `capstone` (`CAPSTONE_SYNC_STATES`: `absent`, `unchanged`, `added`, `updated`, `removed`, `skipped`), `addedNoteIds`, `updatedNoteIds`, `syncedNoteIds`, `syncedNoteCount` (= added + updated), `shieldedCount`, `warnings`. Relay any `warnings` plainly.
+- **Advise the user:** when writing their own notes under a Pragya entry in the Companion Doc, leave a **blank line** first so the text is never mistaken for a Pragya field line. Text they type after a `[note:…]` marker in a heading is kept on re-sync.
+
+**`export-md`:** writes per-note `<slug>.md` files for **atomic notes only** (incremental via `exportedAt`), plus a per-book index `books/<book-slug>.md` (front-matter incl. `currentChapter`, Whole-Book Picture, `##` atomic entries linking `[[slug]]`, `###` saved entries inline). Same `--include-drafts` / `--include-spoilers` opt-ins and `shieldedCount`.
 
 ---
 
@@ -150,4 +253,4 @@ python3 scripts/pragya_cli.py book-doc-sync --book "Thinking in Systems"
 - **Unit Mismatch Guard:** Before logging `progress` or `capture --pos`, check `book.posUnit` (`page` vs `percent` vs `loc`). If the user says `"45%"` on a `page`-tracked book, confirm or convert (`0.45 * totalPos`) rather than writing `45` as page 45.
 - **Backward Bookmark Guard:** `progress` and `book-update` reject lowering `currentPos` unless `--force-pos` is explicitly confirmed by the user. (`capture --pos` on an earlier page logs the note cleanly at that page without lowering the book bookmark.)
 - **Attachment & Image Hygiene:** Enforce `<= 3` attachments per note before uploading. When a user uploads a mobile camera photo (HEIC/JPEG), convert/compress to `<= 1600px` `.webp` when tooling permits, and use multimodal vision OCR to populate `quote` cleanly (or run `ocr-backfill`).
-- **Google Docs Formatting:** `book-doc-sync` writes native Google Docs headings (`HEADING_1`/`HEADING_2`) via `gdocs mutate batch` and deduplicates by `[note:<uuid>]` markers so re-runs never duplicate Docs or entries.
+- **Google Docs Formatting:** `book-doc-sync` writes `HEADING_1` (book), `HEADING_2` (Whole-Book Picture + atomic notes), `HEADING_3` (saved notes); replaces `[note:<uuid>]` / `[capstone:<bookId>]` blocks in place, in reading order, so re-runs never duplicate Docs or entries.

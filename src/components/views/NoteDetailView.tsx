@@ -19,7 +19,6 @@ import { getRenderableAttachments } from '../../utils/metaCodecs';
 import { formatWhenDoDisplay } from '../../utils/deltaFormat';
 import { isSafeHttpUrl, navigateTo, replaceHash } from '../../utils/navigation';
 import {
-  formatPosDisplay,
   isSealedPrediction,
   isUnlockedPrediction,
 } from '../../utils/spoilerMath';
@@ -33,6 +32,7 @@ import {
   shieldedNoteLabel,
 } from '../../utils/noteVisibility';
 import { DriveImage } from '../common/DriveImage';
+import { ChapterPosChip } from '../common/ChapterPosChip';
 import { ImageLightbox } from '../modals/ImageLightbox';
 
 export interface NoteDetailViewProps {
@@ -274,7 +274,13 @@ export const NoteDetailView: React.FC<NoteDetailViewProps> = ({
               <span className="font-semibold text-foreground">Book</span>
             )}
             <span>·</span>
-            <span className="num">{formatPosDisplay(note.pos, book?.posUnit || 'page')}</span>
+            <ChapterPosChip
+              testIdKey={note.id}
+              chapter={note.meta?.chapter}
+              pos={note.pos}
+              posUnit={book?.posUnit || 'page'}
+              positionOnly={visibility.shielded}
+            />
             <span>·</span>
             <span className="uppercase text-[11px] font-semibold px-2 py-0.5 rounded bg-surface2 border border-border text-foreground">
               {note.status}
@@ -314,7 +320,7 @@ export const NoteDetailView: React.FC<NoteDetailViewProps> = ({
 
         {visibility.shielded && (
           <div
-            data-testid={`spoiler-shield-${note.slug}`}
+            data-testid={`spoiler-shield-${note.id}`}
             role="region"
             aria-label="Spoiler shield"
             className="rounded-[12px] bg-surface2/70 border border-border p-5 text-center space-y-2.5"
@@ -328,7 +334,7 @@ export const NoteDetailView: React.FC<NoteDetailViewProps> = ({
             </p>
             <button
               type="button"
-              data-testid={`spoiler-reveal-btn-${note.slug}`}
+              data-testid={`spoiler-reveal-btn-${note.id}`}
               onClick={revealNote}
               className="h-9 px-4 rounded-[10px] bg-primary text-primary-foreground text-label font-semibold hover:opacity-90 transition-opacity inline-flex items-center gap-1.5"
             >

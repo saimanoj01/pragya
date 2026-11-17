@@ -8,6 +8,9 @@ import { test, expect, type Page } from '@playwright/test';
  */
 
 const SPOILER_SLUG = 'effective-dreaming-ethics';
+// QA-14 (Batch 7): NoteDetailView shield test IDs are keyed by note id (the slug derives from
+// the note's text); list cards keep the slug.
+const SPOILER_NOTE_ID = 'note-effective-dreaming';
 const SECRET_TEXT = ['Burden of Effective Dreaming', 'omniscience', 'reality-warping'];
 
 async function demo(page: Page) {
@@ -40,7 +43,7 @@ test.describe('Tier 7 — Spoiler Shield (QA)', () => {
     await goNote(page, SPOILER_SLUG);
 
     await expect(page.getByTestId('note-detail-title')).toHaveText('Shielded note');
-    await expect(page.getByTestId(`spoiler-shield-${SPOILER_SLUG}`)).toBeVisible();
+    await expect(page.getByTestId(`spoiler-shield-${SPOILER_NOTE_ID}`)).toBeVisible();
     await expectNoSecrets(page, 'shielded detail');
     const text = await page.evaluate(() => document.body.innerText);
     expect(text).not.toContain(`[[${SPOILER_SLUG}]]`);
@@ -155,9 +158,10 @@ test.describe('Tier 7 — Spoiler Shield (QA)', () => {
     await expect.poll(() => page.evaluate(() => window.location.hash)).toBe('#/note/note-effective-dreaming');
     await expectNoSecrets(page, 'uuid route');
     expect(await page.evaluate(() => window.location.href)).not.toContain(SPOILER_SLUG);
+    expect(await page.getByTestId('note-detail-view').innerHTML()).not.toContain(SPOILER_SLUG);
 
     const historyBefore = await page.evaluate(() => history.length);
-    await page.getByTestId('spoiler-reveal-btn-effective-dreaming-ethics').click();
+    await page.getByTestId(`spoiler-reveal-btn-${SPOILER_NOTE_ID}`).click();
     await expect(page.getByTestId('note-detail-title')).toHaveText('Burden of Effective Dreaming');
     await expect.poll(() => page.evaluate(() => window.location.hash)).toBe(`#/note/${SPOILER_SLUG}`);
     expect(await page.evaluate(() => history.length)).toBe(historyBefore);

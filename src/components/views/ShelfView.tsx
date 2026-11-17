@@ -20,6 +20,7 @@ import {
 } from '../../utils/spoilerMath';
 import { showToast } from '../../utils/toast';
 import { describeSyncError } from '../../utils/apiErrors';
+import { normalizeChapterInput } from '../../utils/chapterFormat';
 
 export interface ShelfViewProps {
   onOpenAddBook: () => void;
@@ -330,12 +331,30 @@ export const ShelfView: React.FC<ShelfViewProps> = ({
 
                     {/* Progress */}
                     <div className="space-y-1.5">
-                      <div className="flex items-center justify-between text-label num">
-                        <span className="text-foreground font-medium">
-                          {formatPosDisplay(book.currentPos, book.posUnit)}
-                          {book.totalPos > 0 ? ` / ${book.totalPos}` : ''}
+                      <div className="flex items-center justify-between gap-2 min-w-0 text-label num">
+                        <span className="flex items-center gap-1.5 min-w-0 text-foreground font-medium">
+                          <span className="shrink-0">
+                            {formatPosDisplay(book.currentPos, book.posUnit)}
+                            {book.totalPos > 0 ? ` / ${book.totalPos}` : ''}
+                          </span>
+                          {normalizeChapterInput(
+                            typeof book.meta?.currentChapter === 'string' ? book.meta.currentChapter : undefined
+                          ) && (
+                            <>
+                              <span aria-hidden="true" className="text-muted-foreground shrink-0">
+                                ·
+                              </span>
+                              <span
+                                data-testid={`shelf-chapter-${book.id}`}
+                                title={String(book.meta.currentChapter).trim()}
+                                className="text-muted-foreground font-normal truncate max-w-[160px] sm:max-w-[220px]"
+                              >
+                                {String(book.meta.currentChapter).trim()}
+                              </span>
+                            </>
+                          )}
                         </span>
-                        <span className="text-muted-foreground">{pct}%</span>
+                        <span className="text-muted-foreground shrink-0">{pct}%</span>
                       </div>
                       <div className="h-2 rounded-full bg-surface2 overflow-hidden">
                         <div

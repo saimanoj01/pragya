@@ -174,11 +174,21 @@ export type BookKind = 'nonfiction' | 'fiction';
 export type BookStatus = 'reading' | 'queued' | 'finished' | 'paused';
 export type PosUnit = 'page' | 'percent' | 'loc';
 
+export interface BookCapstone {
+  arcOrThesis: string;
+  keyLearnings: string[]; // 1–7 items
+  perspectiveShift: string;
+  completedAt: string;    // set on first save, preserved on edit
+}
+
 export interface BookMetaJson {
   coverUrl?: string;
   startedAt?: string;
   finishedAt?: string;
   updatedAt: string;
+  currentChapter?: string; // legacy `chapterNote` is canonicalized here and dropped on write
+  capstone?: unknown;      // stored verbatim (unknown inner keys survive); typed view via getBookCapstone()
+  [extraKey: string]: unknown; // unknown keys preserved on every round-trip
 }
 
 export interface Book {
@@ -227,13 +237,16 @@ export type Attachment =
 
 export interface NoteMetaJson {
   title?: string;
-  attachments: Attachment[]; // max 3 per note
+  attachments: unknown[];    // stored verbatim (any count, unknown entries kept); render via getRenderableAttachments() (Attachment, max 3)
   links: string[];           // optional standalone URLs for back-compat / CLI
   isPrediction?: boolean;
-  socraticQuestions?: [string, string];
+  socraticQuestions?: string[]; // canonical, 1–3 trimmed questions; legacy top-level q1/q2(/q3) are read into it and dropped on write
   ocrBackfilled?: boolean;
   exportedAt?: string;
   lastReviewedAt?: string;
+  chapter?: string;
+  sparStage?: unknown;       // agent-owned, passed through verbatim
+  [extraKey: string]: unknown; // unknown keys preserved on every round-trip
 }
 
 export interface Note {
@@ -318,6 +331,7 @@ On initial Sheets connection (and after creating a new spreadsheet):
    - On app load (when not clicking manual `Sync Now (R)`), first call `GET https://www.googleapis.com/drive/v3/files/{spreadsheetId}?fields=modifiedTime`.
    - If `remote.modifiedTime === cached.modifiedTime`, hydrate from `pragya_sheets_cache_v1` in `0ms` and skip fetching `Books!A:L`, `Notes!A:R`, `Sessions!A:G`, `DeltaLogs!A:E`.
    - After any local Sheet mutation, update `pragya_sheets_cache_v1` optimistically and refresh `modifiedTime`.
+   - **Codec versioning:** every cache write stamps `codecVersion: 2` (`SHEETS_CACHE_CODEC_VERSION`); the key name `pragya_sheets_cache_v1` is unchanged. The `modifiedTime` fast-reload hit requires `codecVersion === 2` — a legacy cache (missing/older `codecVersion`) triggers a full `values:batchGet` re-decode even when `modifiedTime` matches, then is rewritten as v2. A legacy cache is still accepted for the account check and the offline read-only fallback (read-only, so no wipe risk).
 5. **Normalized Spoiler Math (`0.0–1.0`):**
    - `computeNormalizedPos(pos, totalPos, posUnit)`:
      - If `posUnit === 'percent'`: `clamp01(pos / 100)`
@@ -357,15 +371,18 @@ Modeled strictly after `/tmp/expense-ref/src/context/AuthContext.tsx`:
 3. **CSRF & Implicit Flow:**
    - Generate `csrfState = crypto.randomUUID()`, persist in `sessionStorage.setItem('pragya_oauth_csrf_state', csrfState)`.
    - Redirect URI: `window.location.origin + window.location.pathname`.
-   - Test hook: When `window.__PLAYWRIGHT__ === true || navigator.userAgent.includes('Playwright') || window.VITE_GOOGLE_CLIENT_ID !== undefined`, `login()` awaits SPA `hashchange` instead of navigating away to `accounts.google.com`.
+   - Test hook: When `window.__PLAYWRIGHT__ === true || navigator.userAgent.includes('Playwright')`, `login()` awaits SPA `hashchange` instead of navigating away to `accounts.google.com`. (B4.11: a runtime `window.VITE_GOOGLE_CLIENT_ID` no longer skips the redirect — it now redirects to Google like a build-time client id; Playwright tiers set `__PLAYWRIGHT__`.)
 4. **SPA Hash Token Extraction BEFORE Hash Router:**
    - `AuthContext` runs first on mount and `hashchange`:
      - If `window.location.hash.includes('access_token=')`, parse `access_token` and `state`, verify `state === sessionStorage.getItem('pragya_oauth_csrf_state')`, fetch `https://www.googleapis.com/oauth2/v3/userinfo` (graceful fallback `{ email: 'cloud@example.com', name: 'Google User' }`), save `pragya_google_token` + `pragya_google_user`, set `pragya_mock_mode = 'false'`, and reset hash to `#/shelf`.
+     - If the hash carries `expires_in`, store the absolute expiry (ms) as `pragya_google_token_expires_at`. A token without `expires_in` (e.g. mock hashes) never expires by time.
      - If `hash.includes('error=access_denied')`, surface `"Access Denied"` toast and clear hash.
    - `navigation.ts` `parseHash()` MUST treat `access_token=` / `error=` hashes as non-navigation OAuth callbacks (never breaking on unparseable route segments).
 5. **Token Validation & 401 Expiry Modal:**
    - `isInvalidOrExpiredToken(token)` checks empty string, `'EXPIRED_TOKEN'`, or expired JWT `exp <= Date.now()` while allowing opaque `ya29...` tokens.
+   - **Token expiry (B4.11):** `getGoogleToken()` and the initial auth state treat `pragya_google_token_expires_at <= now + 30 s` as expired — `getGoogleToken()` returns `null`, the adapter calls `onUnauthorized`, and `session-expired-modal` opens (also on mount when the stored token is already expired). The key is cleared on logout, mock login, session-expired, and whenever a new token arrives.
    - Any `401 Unauthorized` response from Sheets/Drive APIs clears `pragya_google_token` and opens `session-expired-modal` with **"Reconnect Google"** and **"Continue in Demo Mode"** actions without discarding the user's current route.
+   - **Account switch:** the last signed-in email is remembered in `pragya_last_account_email` (survives token expiry; cleared only by explicit logout). After a sign-in whose email differs (trimmed, case-insensitive), `clearPerAccountLocalData()` removes the previous account's local data: `pragya_sheets_cache_v1`, the stored spreadsheet / media-folder ids, `pragya_draft_*` drafts, the pre-import backup, and the `pragya-media-v1` cache. Same-account re-login keeps everything.
 6. **Demo Mode (`loginAsMock()`):**
    - Works completely offline with zero Client ID required.
    - Seeds deterministic, rich initial data (`Thinking in Systems: A Primer`, `Exhalation: Stories`, `The Lathe of Heaven`, `Finite and Infinite Games`, plus 8 realistic commonplace/atomic/prediction/spoiler notes, 11 reading sessions across recent days, and delta logs) stored in `localStorage('pragya_demo_state_v1')`.
@@ -447,8 +464,16 @@ Location: `.agents/skills/pragya-companion/` (self-contained skill bundle with `
 6. **`export-md` (`pragya_cli.py export-md`):**
    - Idempotent incremental 1-way Markdown export to `<output_dir>/<slug>.md` (default `./reading-notes/<slug>.md`).
    - Processes ONLY rows with `status === 'atomic'` where `!metaJson.exportedAt || updatedAt > exportedAt`, atomically stamping `metaJson.exportedAt` without bumping `updatedAt` after disk write succeeds.
+   - Also writes a per-book index `<output_dir>/books/<book-slug>.md` (front-matter incl. `currentChapter`, Whole-Book Picture, `##` atomic entries linking `[[slug]]`, `###` saved entries inline). Per-note files stay atomic-only. `--include-drafts` / `--include-spoilers` opt-ins; spoilers of unfinished books are shielded by default (`shieldedCount`).
 7. **`book-doc-sync` (`pragya_cli.py book-doc-sync`):**
-   - Creates or updates a Book Companion Google Doc via `gdocs` (`gdocs mutate batch` structured headings/paragraphs deduplicated by `[note:<id>]` markers), links `Books.docUrl` via UUID-resolved update, and appends distilled atomic notes without creating duplicate replacement Docs.
+   - Creates or updates a Book Companion Google Doc via `gdocs`, links `Books.docUrl` via UUID-resolved update, and never creates duplicate replacement Docs.
+   - Two-tier timeline in reading order: `HEADING_1` book, `HEADING_2` `Whole-Book Picture [capstone:<bookId>]` (directly under the header) and atomic notes, `HEADING_3` saved notes; heading text `[<Ch. X · p. N>] <Title> [note:<uuid>]`.
+   - Existing Docs are updated **in place**: only Pragya marker blocks are replaced/inserted through one `gdocs mutate raw-batch` guarded by `writeControl.requiredRevisionId` (re-plan once on rejection, else append-only fallback from a fresh read). Content outside markers is byte-preserved. New Docs and tail-only appends use `gdocs mutate batch` append ops.
+   - `--include-drafts` / `--include-spoilers` opt-ins; result keys `mode`, `capstone`, `addedNoteIds`, `updatedNoteIds`, `syncedNoteIds`, `syncedNoteCount`, `shieldedCount`, `warnings`.
+8. **`book-capstone` (`pragya_cli.py book-capstone`):** `--book --arc/--thesis --learnings (repeat 1–7, alias --learning) --shift [--completed-at] [--allow-unfinished]` writes `Books.metaJson.capstone` (raw object pass-through; refuses non-finished books unless `--allow-unfinished`).
+9. **`note-update` (`pragya_cli.py note-update`):** targeted single-note edits (`--status`, `--title`, `--quote`, `--takeaway`, `--context`, `--critique`, `--trigger`, `--action`, `--delta-status`, `--chapter`, `--tags`); never re-slugs; `--status saved` is the skill's "just save it" escape hatch.
+
+**CLI write transport & errors:** all Sheet writes use `gsheets mutate raw-batch` (`updateCells` / `appendCells` with `stringValue` / `numberValue` — never `USER_ENTERED`); `429` / `RESOURCE_EXHAUSTED` is retried with backoff, then fails with a Paste Card hint. A refused command prints `{"error": …}` to stderr and exits `1`; an argparse usage error prints `{"error": …, "usage": …}` and exits `2`. `progress`, `book-update`, `capture`, `reflect --stage commit` and `note-update` accept `--chapter` (empty string clears).
 
 ---
 
@@ -482,11 +507,19 @@ Location: `.agents/skills/pragya-companion/` (self-contained skill bundle with `
 - `edit-book-modal`
 - `deepen-note-modal`, `deepen-source-reference`, `deepen-source-toggle`, `deepen-source-quote`, `deepen-attachment-image-{id}`, `deepen-title-input`, `deepen-slug-input`, `deepen-takeaway-input`, `deepen-context-input`, `deepen-trigger-input`, `deepen-action-input`, `deepen-delta-status-select`, `deepen-delta-cap-warning`, `deepen-critique-input`, `deepen-save-draft-btn`, `deepen-submit-btn`
 - `edit-note-modal`, `wikilink-autocomplete`, `wikilink-option-{slug}`, `image-lightbox`, `import-confirm-modal`, `import-download-backup-btn`, `import-confirm-btn`
+- Chapter inputs (M6): `capture-chapter-input` (QuickCaptureModal), `edit-note-chapter-input` (EditNoteModal), `deepen-chapter-input`, `deepen-chapter-suggestion-btn` (DeepenNoteModal "Use {currentChapter}" chip — a suggestion, never an auto-fill), `edit-book-chapter-input` (EditBookModal)
+- Whole-Book Picture modals (M6): `capstone-modal`, `capstone-arc-input`, `capstone-learnings-input` (one learning per line), `capstone-shift-input`, `capstone-save-btn`, `capstone-prompt-fallback-modal` (shown when the clipboard write fails); paste helper `capstone-paste-input`, `capstone-fill-btn`, `capstone-paste-status`; `capstone-modal-copy-prompt-btn`; `capstone-offline-helper`
 
 ### Views & Actions
 - `shelf-view`, `add-book-btn`, `activity-dots`, `activity-dot-{i}`, `activity-count`, `now-reading-section`, `empty-now-reading-cta`, `empty-shelf-add-book-btn`, `empty-shelf-start-{id}`, `book-card-{id}`, `advance-10p-btn-{id}`, `advance-exact-input-{id}`, `advance-exact-btn-{id}`, `book-capture-btn-{id}`, `book-start-btn-{id}`
 - `book-detail-view`, `back-to-shelf-btn`, `manual-pos-override-checkbox`, `book-detail-advance-input`, `book-detail-advance-btn`, `mark-finished-btn`
-- `notes-view`, `notes-search-input`, `notes-filter-all`, `notes-filter-to-spar`, `notes-filter-atomic`, `notes-filter-media`, `notes-filter-concepts`, `note-card-{slug}`, `spoiler-shield-{slug}`, `spoiler-reveal-btn-{slug}`
-- `note-detail-view`, `back-to-notes-btn`, `edit-note-btn`, `deepen-note-btn`, `socratic-recovery-banner`, `wikilink-chip-{slug}`, `backlinks-section`, `backlink-item-{slug}`, `attachment-image-{id}`
-- `practice-view`, `active-deltas-section`, `active-deltas-count`, `delta-card-{id}`, `delta-checked-today-{id}`, `delta-apply-btn-{id}`, `delta-missed-btn-{id}`, `delta-notrigger-btn-{id}`, `delta-trigger-edit-input-{id}`, `delta-trigger-save-btn-{id}`, `delta-graduate-btn-{id}`, `delta-pause-btn-{id}`, `delta-reactivate-btn-{id}`, `takeaway-shuffle-section`, `shuffle-empty-state`, `shuffle-card-{slug}`, `shuffle-review-btn-{slug}`, `unlocked-predictions-section`, `export-json-btn`, `import-json-input`
+- BookDetailView M6: `capstone-card`, `capstone-edit-btn`, `capstone-empty-state` (finished books only), `copy-capstone-prompt-btn`, `capstone-write-btn`, `capstone-hide-btn`; chapter line `book-detail-chapter-input`, `book-detail-chapter-change-btn`, `book-detail-chapter-save-btn` (plus `book-detail-chapter-line`, `book-detail-chapter-form`); `capstone-add-link` (after Hide); optional `chapter-divider-{index}`; per-note `chapter-pos-chip-{slug}` (NoteDetailView keys its chip by note id, `chapter-pos-chip-{noteId}`, like its QA-14 shield IDs); ShelfView `shelf-chapter-{bookId}`; QuickCapture `capture-chapter-hint`
+- `notes-view`, `notes-search-input`, `notes-filter-all`, `notes-filter-to-spar`, `notes-filter-atomic`, `notes-filter-media`, `notes-filter-concepts`, `note-card-{slug}`, `spoiler-shield-{slug}`, `spoiler-reveal-btn-{slug}`, `notes-spoiler-search-footnote`
+- `note-detail-view`, `note-detail-title`, `back-to-notes-btn`, `edit-note-btn`, `deepen-note-btn`, `socratic-recovery-banner`, `wikilink-chip-{slug}`, `backlinks-section`, `backlink-item-{slug}`, `attachment-image-{id}`, `spoiler-shield-{noteId}`, `spoiler-reveal-btn-{noteId}`
+  - **Shield ID keying (QA-14):** NoteDetailView's shield IDs are keyed by **note id** (`spoiler-shield-{noteId}` / `spoiler-reveal-btn-{noteId}`) so a shielded note's slug never appears in the DOM; list cards (NotesView, BookDetailView) keep `spoiler-shield-{slug}` / `spoiler-reveal-btn-{slug}`.
+- `practice-view`, `active-deltas-section`, `active-deltas-count`, `delta-card-{id}`, `delta-checked-today-{id}`, `delta-apply-btn-{id}`, `delta-missed-btn-{id}`, `delta-notrigger-btn-{id}`, `delta-trigger-edit-input-{id}`, `delta-trigger-save-btn-{id}`, `delta-graduate-btn-{id}`, `delta-pause-btn-{id}`, `delta-reactivate-btn-{id}`, `delta-reveal-btn-{noteId}` (shielded delta row), `takeaway-shuffle-section`, `shuffle-empty-state`, `shuffle-card-{slug}`, `shuffle-review-btn-{slug}`, `unlocked-predictions-section`, `export-json-btn`, `import-json-input`
 - `settings-view`, `sync-now-btn`, `settings-offline-badge`, `settings-client-id-input`, `settings-oauth-guide-toggle`, `settings-spreadsheet-id`, `restore-pre-import-backup-btn`, `reset-demo-btn`
+
+### Resilience (M6)
+- `error-boundary-fallback`, `error-reload-btn`, `error-go-shelf-btn` (top-level ErrorBoundary)
+- `sw-offline-page` (service-worker inline offline page, production only), `sw-update-reload-btn` ("A new version of Pragya is ready." toast action)

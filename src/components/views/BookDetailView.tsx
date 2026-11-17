@@ -1,9 +1,12 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useId, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   ArrowLeft,
   ArrowRight,
+  BookOpen,
   CheckCircle2,
+  Compass,
+  Copy,
   Edit3,
   ExternalLink,
   Eye,
@@ -17,7 +20,7 @@ import {
 import type { Book, Note } from '../../types/pragya';
 import { usePragya } from '../../context/PragyaContext';
 import { isEditableElement } from '../../hooks/useKeyboardShortcuts';
-import { getRenderableAttachments } from '../../utils/metaCodecs';
+import { BOOK_DETAIL_CHAPTER_OWNED_META_KEYS, getRenderableAttachments } from '../../utils/metaCodecs';
 import { isSafeHttpUrl, navigateTo } from '../../utils/navigation';
 import {
   computePercentDisplay,
@@ -31,6 +34,31 @@ import { showToast } from '../../utils/toast';
 import { DriveImage } from '../common/DriveImage';
 import { describeSyncError } from '../../utils/apiErrors';
 import { noteHref } from '../../utils/noteVisibility';
+import {
+  CHAPTER_MAX_LENGTH,
+  chapterDividerLabel,
+  computeChapterDividers,
+  normalizeChapterInput,
+  withChapterKey,
+} from '../../utils/chapterFormat';
+import {
+  CAPSTONE_COPY_SUCCESS_MESSAGE,
+  buildCapstonePrompt,
+  countCapstoneEligibleNotes,
+  getFilledCapstone,
+  hideCapstonePromptForBook,
+  isIsoTimestamp,
+  readHiddenCapstoneBooks,
+  tryCopyText,
+} from '../../utils/capstonePrompt';
+import { ChapterPosChip } from '../common/ChapterPosChip';
+import { CapstoneModal, CapstonePromptFallbackModal } from '../modals/CapstoneModal';
+
+const BTN_SECONDARY =
+  'h-9 px-3 rounded-[10px] bg-surface2 border border-border text-label font-medium text-foreground hover:bg-secondary inline-flex items-center gap-1.5 whitespace-nowrap disabled:opacity-50';
+const BTN_TERTIARY =
+  'inline-flex items-center gap-1 text-label font-medium text-muted-foreground hover:text-foreground';
+const EYEBROW = 'text-eyebrow uppercase text-muted-foreground';
 
 export interface BookDetailViewProps {
   bookId: string;
@@ -43,7 +71,7 @@ export const BookDetailView: React.FC<BookDetailViewProps> = ({
   onEditBook,
   onOpenCaptureForBook,
 }) => {
-  const { books, notes, advanceBookPosition, revertBookmarkAdvance, markBookFinished, restoreBook } =
+  const { books, notes, advanceBookPosition, revertBookmarkAdvance, markBookFinished, restoreBook, updateBook } =
     usePragya();
 
   const book = useMemo(() => books.find(b => b.id === bookId) || null, [books, bookId]);
@@ -59,6 +87,16 @@ export const BookDetailView: React.FC<BookDetailViewProps> = ({
   const [manualOverride, setManualOverride] = useState<boolean>(false);
   const [revealedSlugs, setRevealedSlugs] = useState<Set<string>>(new Set());
   const [focusedIndex, setFocusedIndex] = useState<number>(0);
+  const [editingChapter, setEditingChapter] = useState<boolean>(false);
+  const [chapterDraft, setChapterDraft] = useState<string>('');
+  const [savingChapter, setSavingChapter] = useState<boolean>(false);
+  const chapterTriggerRef = useRef<HTMLButtonElement>(null);
+  const chapterInputRef = useRef<HTMLInputElement>(null);
+  const restoreChapterFocusRef = useRef<boolean>(false);
+  const [capstoneOpen, setCapstoneOpen] = useState<boolean>(false);
+  const [capstoneHidden, setCapstoneHidden] = useState<boolean>(false);
+  const [fallbackPrompt, setFallbackPrompt] = useState<string | null>(null);
+  const capstoneHeadingId = useId();
 
   useEffect(() => {
     setExactInput(book ? String(book.currentPos) : '0');
@@ -66,7 +104,21 @@ export const BookDetailView: React.FC<BookDetailViewProps> = ({
 
   useEffect(() => {
     setFocusedIndex(0);
+    setEditingChapter(false);
+    setCapstoneHidden(readHiddenCapstoneBooks().includes(bookId));
   }, [bookId]);
+
+  useEffect(() => {
+    if (editingChapter) {
+      chapterInputRef.current?.focus();
+    } else if (restoreChapterFocusRef.current) {
+      restoreChapterFocusRef.current = false;
+      chapterTriggerRef.current?.focus();
+    }
+  }, [editingChapter]);
+
+  const capstone = book ? getFilledCapstone(book) : undefined;
+  const canOpenCapstone = Boolean(book && (book.status === 'finished' || capstone));
 
   const revealSlug = (slug: string) => {
     setRevealedSlugs(prev => {
@@ -98,6 +150,11 @@ export const BookDetailView: React.FC<BookDetailViewProps> = ({
         window.open(book.docUrl.trim(), '_blank', 'noopener,noreferrer');
         return;
       }
+      if (key === 'c' && canOpenCapstone) {
+        e.preventDefault();
+        setCapstoneOpen(true);
+        return;
+      }
 
       if (bookNotes.length === 0) return;
 
@@ -124,7 +181,19 @@ export const BookDetailView: React.FC<BookDetailViewProps> = ({
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [book, bookNotes, focusedIndex, onEditBook, revealedSlugs]);
+  }, [book, bookNotes, canOpenCapstone, focusedIndex, onEditBook, revealedSlugs]);
+
+  // ux_spec B.4: chapter dividers over contiguous runs; shielded runs never name a chapter.
+  const chapterDividers = useMemo(
+    () =>
+      book
+        ? computeChapterDividers(
+            bookNotes,
+            note => isNoteSpoiler(note, book) && !revealedSlugs.has(note.slug)
+          )
+        : new Map(),
+    [book, bookNotes, revealedSlugs]
+  );
 
   if (!book) {
     return (
@@ -261,6 +330,69 @@ export const BookDetailView: React.FC<BookDetailViewProps> = ({
     }
   };
 
+  const currentChapter = normalizeChapterInput(
+    typeof book.meta?.currentChapter === 'string' ? book.meta.currentChapter : undefined
+  );
+
+  const startChapterEdit = () => {
+    setChapterDraft(currentChapter || '');
+    setEditingChapter(true);
+  };
+
+  const cancelChapterEdit = () => {
+    restoreChapterFocusRef.current = true;
+    setEditingChapter(false);
+  };
+
+  const handleSaveChapter = async (e?: React.FormEvent) => {
+    e?.preventDefault();
+    if (savingChapter) return;
+    if ((normalizeChapterInput(chapterDraft) || '') === (currentChapter || '')) {
+      cancelChapterEdit();
+      return;
+    }
+    setSavingChapter(true);
+    try {
+      // Writes only meta.currentChapter (+ updatedAt), guarded on the row as rendered.
+      await updateBook(
+        { ...book, meta: withChapterKey(book.meta, 'currentChapter', chapterDraft) },
+        {
+          expectedBaseUpdatedAt: book.meta?.updatedAt,
+          ownedMetaKeys: BOOK_DETAIL_CHAPTER_OWNED_META_KEYS,
+          baseMeta: book.meta,
+        }
+      );
+      showToast('Chapter updated.', 'success');
+      restoreChapterFocusRef.current = true;
+      setEditingChapter(false);
+    } catch (err) {
+      showToast(describeSyncError(err, 'Failed to update chapter'), 'error');
+    } finally {
+      setSavingChapter(false);
+    }
+  };
+
+  const eligibleCapstoneNotes = countCapstoneEligibleNotes(book, notes);
+
+  const handleCopyCapstonePrompt = async () => {
+    const prompt = buildCapstonePrompt(book, notes);
+    if (await tryCopyText(prompt)) {
+      showToast(CAPSTONE_COPY_SUCCESS_MESSAGE, 'success');
+    } else {
+      setFallbackPrompt(prompt);
+    }
+  };
+
+  const handleHideCapstone = () => {
+    try {
+      hideCapstonePromptForBook(book.id);
+    } catch {
+      // Storage unavailable: still hide for this session.
+    }
+    setCapstoneHidden(true);
+    showToast('Hidden. You can add it anytime from the Finished line above.', 'info');
+  };
+
   const renderNoteBadge = (note: Note) => {
     if (isSealedPrediction(note, book)) {
       return (
@@ -382,6 +514,79 @@ export const BookDetailView: React.FC<BookDetailViewProps> = ({
           </div>
         </div>
 
+        {/* A3.4 Current chapter (bookmark area) */}
+        {editingChapter ? (
+          <form
+            onSubmit={e => void handleSaveChapter(e)}
+            className="flex flex-wrap items-center gap-2"
+            data-testid="book-detail-chapter-form"
+          >
+            <input
+              ref={chapterInputRef}
+              type="text"
+              data-testid="book-detail-chapter-input"
+              aria-label="Current chapter or story"
+              maxLength={CHAPTER_MAX_LENGTH}
+              autoComplete="off"
+              value={chapterDraft}
+              onChange={e => setChapterDraft(e.target.value)}
+              onKeyDown={e => {
+                if (e.key === 'Escape') {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  cancelChapterEdit();
+                }
+              }}
+              placeholder="e.g. Ch. 3: Run · or a story title"
+              className="h-11 sm:h-9 w-full sm:w-64 px-3 rounded-[8px] bg-background border border-input text-label text-foreground placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-ring/40"
+            />
+            <button
+              type="submit"
+              data-testid="book-detail-chapter-save-btn"
+              disabled={savingChapter}
+              className={BTN_SECONDARY}
+            >
+              {savingChapter ? 'Saving…' : 'Save'}
+            </button>
+            <button type="button" onClick={cancelChapterEdit} className={BTN_TERTIARY}>
+              Cancel
+            </button>
+          </form>
+        ) : currentChapter ? (
+          <div
+            data-testid="book-detail-chapter-line"
+            className="flex items-center gap-2 text-label text-muted-foreground min-w-0"
+          >
+            <BookOpen className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+            <span className="shrink-0">Now in</span>
+            <span className="text-foreground font-medium truncate max-w-[280px]" title={currentChapter}>
+              {currentChapter}
+            </span>
+            <button
+              ref={chapterTriggerRef}
+              type="button"
+              data-testid="book-detail-chapter-change-btn"
+              onClick={startChapterEdit}
+              className={`${BTN_TERTIARY} shrink-0`}
+            >
+              Change
+            </button>
+          </div>
+        ) : book.status !== 'finished' ? (
+          <div className="flex items-center gap-2 text-label text-muted-foreground min-w-0">
+            <button
+              ref={chapterTriggerRef}
+              type="button"
+              data-testid="book-detail-chapter-change-btn"
+              onClick={startChapterEdit}
+              className={BTN_TERTIARY}
+            >
+              <Plus className="w-3.5 h-3.5" aria-hidden="true" />
+              <span>Add chapter</span>
+            </button>
+          </div>
+        ) : null}
+
         {/* Monotonic / Override Bookmark Controls & Mark Finished */}
         <div className="pt-3 border-t border-border/60 flex flex-col lg:flex-row lg:items-center justify-between gap-3">
           <div className="space-y-2">
@@ -442,13 +647,124 @@ export const BookDetailView: React.FC<BookDetailViewProps> = ({
               <span>Mark as Finished</span>
             </button>
           ) : (
-            <div className="inline-flex items-center gap-1.5 text-label font-medium text-positive">
-              <CheckCircle2 className="w-4 h-4" />
-              <span>Finished{book.meta.finishedAt ? ` · ${book.meta.finishedAt.slice(0, 10)}` : ''}</span>
+            <div className="flex flex-wrap items-center gap-3">
+              <div className="inline-flex items-center gap-1.5 text-label font-medium text-positive">
+                <CheckCircle2 className="w-4 h-4" />
+                <span>Finished{book.meta.finishedAt ? ` · ${book.meta.finishedAt.slice(0, 10)}` : ''}</span>
+              </div>
+              {!capstone && capstoneHidden && (
+                <button
+                  type="button"
+                  data-testid="capstone-add-link"
+                  onClick={() => setCapstoneOpen(true)}
+                  className={BTN_TERTIARY}
+                >
+                  <Plus className="w-3.5 h-3.5" aria-hidden="true" />
+                  <span>Add Whole-Book Picture</span>
+                </button>
+              )}
             </div>
           )}
         </div>
       </section>
+
+      {/* A2 Whole-Book Picture (capstone) */}
+      {capstone ? (
+        <section
+          aria-labelledby={capstoneHeadingId}
+          data-testid="capstone-card"
+          className="bg-card border border-border rounded-[14px] p-5 space-y-4"
+        >
+          <div className="flex items-center justify-between gap-2">
+            <h2 id={capstoneHeadingId} className={`flex items-center gap-1.5 ${EYEBROW}`}>
+              <Compass className="w-4 h-4" aria-hidden="true" />
+              <span>Whole-Book Picture</span>
+            </h2>
+            <button
+              type="button"
+              data-testid="capstone-edit-btn"
+              aria-label="Edit Whole-Book Picture"
+              onClick={() => setCapstoneOpen(true)}
+              className={BTN_SECONDARY}
+            >
+              <Edit3 className="w-3.5 h-3.5" />
+              <span>Edit (C)</span>
+            </button>
+          </div>
+          {capstone.arcOrThesis.trim() && (
+            <div className="space-y-1">
+              <h3 className={EYEBROW}>{book.kind === 'fiction' ? 'The Arc' : 'The Thesis'}</h3>
+              <p className="text-body text-foreground whitespace-pre-wrap">{capstone.arcOrThesis}</p>
+            </div>
+          )}
+          {capstone.keyLearnings.length > 0 && (
+            <div className="space-y-1">
+              <h3 className={EYEBROW}>Key Learnings</h3>
+              <ol className="list-decimal pl-5 space-y-1 text-body text-foreground num">
+                {capstone.keyLearnings.map((learning, i) => (
+                  <li key={`${i}-${learning}`}>{learning}</li>
+                ))}
+              </ol>
+            </div>
+          )}
+          {capstone.perspectiveShift.trim() && (
+            <div className="pl-4 border-l-2 border-foreground/40 space-y-1">
+              <h3 className={EYEBROW}>How My Thinking Shifted</h3>
+              <p className="text-body text-foreground whitespace-pre-wrap">{capstone.perspectiveShift}</p>
+            </div>
+          )}
+          {isIsoTimestamp(capstone.completedAt) && (
+            <p className="text-label text-faint num">Written {capstone.completedAt.slice(0, 10)}</p>
+          )}
+        </section>
+      ) : book.status === 'finished' && !capstoneHidden ? (
+        <section
+          aria-labelledby={capstoneHeadingId}
+          data-testid="capstone-empty-state"
+          className="bg-card border border-dashed border-border rounded-[14px] p-5 space-y-3"
+        >
+          <h2 id={capstoneHeadingId} className={`flex items-center gap-1.5 ${EYEBROW}`}>
+            <Compass className="w-4 h-4" aria-hidden="true" />
+            <span>Whole-Book Picture</span>
+          </h2>
+          <p className="text-body text-muted-foreground">
+            {eligibleCapstoneNotes > 0
+              ? "While it's fresh, you can capture the shape of this book in a few lines. Entirely optional."
+              : 'Capture the shape of this book in a few lines, whenever you like. Entirely optional.'}
+          </p>
+          <div className="flex flex-wrap items-center gap-2">
+            {eligibleCapstoneNotes > 0 && (
+              <button
+                type="button"
+                data-testid="copy-capstone-prompt-btn"
+                onClick={() => void handleCopyCapstonePrompt()}
+                className={BTN_SECONDARY}
+              >
+                <Copy className="w-3.5 h-3.5" />
+                <span>Copy Capstone Prompt</span>
+              </button>
+            )}
+            <button
+              type="button"
+              data-testid="capstone-write-btn"
+              onClick={() => setCapstoneOpen(true)}
+              className={BTN_SECONDARY}
+            >
+              <Edit3 className="w-3.5 h-3.5" />
+              <span>Write It Myself</span>
+            </button>
+            <button
+              type="button"
+              data-testid="capstone-hide-btn"
+              aria-label="Hide Whole-Book Picture suggestion for this book"
+              onClick={handleHideCapstone}
+              className={`ml-auto ${BTN_TERTIARY}`}
+            >
+              Hide
+            </button>
+          </div>
+        </section>
+      ) : null}
 
       {/* Book Notes */}
       <section className="space-y-3">
@@ -466,10 +782,21 @@ export const BookDetailView: React.FC<BookDetailViewProps> = ({
               const spoiler = isNoteSpoiler(note, book) && !revealedSlugs.has(note.slug);
               const isFocused = idx === focusedIndex;
               const attachments = getRenderableAttachments(note.meta);
+              const divider = chapterDividers.get(idx);
 
               return (
+                <React.Fragment key={note.id}>
+                {divider && (
+                  <h3
+                    data-testid={`chapter-divider-${idx}`}
+                    className="flex items-center gap-3 pt-2 text-eyebrow uppercase text-muted-foreground"
+                  >
+                    <span className="truncate">{chapterDividerLabel(divider)}</span>
+                    <span className="num text-faint">{divider.count}</span>
+                    <span aria-hidden="true" className="h-px flex-1 bg-border" />
+                  </h3>
+                )}
                 <article
-                  key={note.id}
                   data-testid={`note-card-${note.slug}`}
                   data-focused={isFocused ? 'true' : undefined}
                   className={`bg-card border rounded-[14px] p-4 space-y-2.5 transition-colors ${
@@ -478,9 +805,13 @@ export const BookDetailView: React.FC<BookDetailViewProps> = ({
                 >
                   <div className="flex flex-wrap items-center justify-between gap-2 text-label text-muted-foreground">
                     <div className="flex flex-wrap items-center gap-2">
-                      <span className="num font-medium text-foreground">
-                        {formatPosDisplay(note.pos, book.posUnit)}
-                      </span>
+                      <ChapterPosChip
+                        testIdKey={note.slug}
+                        chapter={note.meta?.chapter}
+                        pos={note.pos}
+                        posUnit={book.posUnit}
+                        positionOnly={spoiler || chapterDividers.size > 0}
+                      />
                       {renderNoteBadge(note)}
                     </div>
                     <button
@@ -563,11 +894,19 @@ export const BookDetailView: React.FC<BookDetailViewProps> = ({
                     </>
                   )}
                 </article>
+                </React.Fragment>
               );
             })}
           </div>
         )}
       </section>
+
+      <CapstoneModal isOpen={capstoneOpen} onClose={() => setCapstoneOpen(false)} book={book} />
+      <CapstonePromptFallbackModal
+        isOpen={fallbackPrompt !== null}
+        onClose={() => setFallbackPrompt(null)}
+        prompt={fallbackPrompt || ''}
+      />
     </div>
   );
 };
