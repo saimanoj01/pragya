@@ -350,7 +350,10 @@ class TestEmptyDocText(unittest.TestCase):
         self.assertIn("Thinking in Systems", h1[0]["text"])
         res = json.loads(out.getvalue())
         self.assertGreaterEqual(res["syncedNoteCount"], 1)
-        entry_markers = [op for op in ops if op.get("op") == "heading" and op.get("level") == "2"]
+        # Batch 6: atomic entries are HEADING_2 and saved entries HEADING_3.
+        entry_markers = [
+            op for op in ops if op.get("op") == "heading" and op.get("level") in ("2", "3") and "[note:" in op["text"]
+        ]
         self.assertEqual(len(entry_markers), res["syncedNoteCount"])
 
 
@@ -638,7 +641,11 @@ class TestFixUpDocTextFallback(unittest.TestCase):
         fake, res = self._sync(payload)
         # The marker-bearing note is deduped; only the genuinely missing atomic note is added.
         self.assertNotIn(self.MARKER_ID, res["syncedNoteIds"])
-        self.assertEqual(res["syncedNoteIds"], ["note-old-eligible"])
+        # Batch 6: saved notes are part of the timeline now, so they are appended too.
+        self.assertEqual(
+            res["syncedNoteIds"], ["note-old-reviewed-today", "note-too-new", "note-old-eligible"]
+        )
+        self.assertEqual(res["mode"], "append-fallback")
         ops = [op for batch in fake.doc_batches for op in batch]
         self.assertFalse(any(op.get("op") == "heading" and op.get("level") == "1" for op in ops))
         self.assertNotIn(f"[note:{self.MARKER_ID}]", json.dumps(ops))
@@ -659,8 +666,9 @@ class TestFixUpDocTextFallback(unittest.TestCase):
         fake, res = self._sync(payload)
         ops = [op for batch in fake.doc_batches for op in batch]
         self.assertFalse(any(op.get("op") == "heading" and op.get("level") == "1" for op in ops))
+        # Batch 6: atomic entries are HEADING_2, saved entries HEADING_3.
         self.assertEqual(
-            len([op for op in ops if op.get("op") == "heading" and op.get("level") == "2"]),
+            len([op for op in ops if op.get("op") == "heading" and op.get("level") in ("2", "3")]),
             res["syncedNoteCount"],
         )
 

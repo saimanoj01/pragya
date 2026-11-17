@@ -565,5 +565,104 @@ class LiveWorkspaceIntegrationTests(unittest.TestCase):
                     f"'{scratch_title}' manually. create() returned: {created}"
                 )
 
+    def test_live_gdocs_raw_batch_in_place_probe(self) -> None:
+        """M6 Batch 6 (A1.4 / OQ-2) RELEASE GATE: `gdocs mutate raw-batch` in-place sync.
+
+        Uses only its own scratch Doc (created here, trashed in finally): writes a header,
+        a saved block and user prose, then upgrades the block to atomic and inserts a
+        backfilled note through doc_plan_to_requests, and checks the read-back text and
+        that the prose is byte-preserved.
+        """
+        run_tag = uuid.uuid4().hex[:8]
+        backend = pragya_cli.GoogleWorkspaceBackend(runner=_rate_limit_safe_runner)
+        doc_id = ""
+        try:
+            book = {
+                "id": f"probe-book-{run_tag}", "title": f"Pragya Scratch Doc Probe {run_tag}",
+                "author": "Probe", "kind": "nonfiction", "status": "reading", "currentPos": 100,
+                "totalPos": 200, "posUnit": "page", "normalizedPos": 0.5, "meta": {},
+            }
+            def note(nid, pos, status, **kw):
+                base = {"id": nid, "slug": nid, "bookId": book["id"], "pos": pos, "status": status,
+                        "createdAt": "2026-01-01T00:00:00.000Z", "takeaway": f"takeaway {nid}",
+                        "quote": "", "contextMechanism": "", "critique": "", "deltaTrigger": "",
+                        "deltaAction": "", "deltaStatus": "none", "meta": {}}
+                base.update(kw)
+                return base
+            saved = note("probe-a", 50, "saved")
+            doc_id, _url = backend.create_companion_doc(book["title"], "", book_id=book["id"])
+            prose = "My own prose 🧠 — must survive byte-for-byte."
+            initial = pragya_cli.lines_to_text(pragya_cli.render_full_companion_doc(book, [saved]))
+            backend.append_doc_text(doc_id, initial + "\n" + prose + "\n")
+
+            snap = backend.read_doc_snapshot(doc_id)
+            self.assertIsNotNone(snap, "documents.get structure should be parseable for a fresh Doc")
+            self.assertTrue(snap.revision_id, "documents.get must return a revisionId for writeControl")
+            lines = snap.lines
+            upgraded = dict(saved, status="atomic", critique="probe critique")
+            backfill = note("probe-early", 10, "saved")
+            timeline = [backfill, upgraded]
+            plan = pragya_cli.plan_companion_doc(lines, book, timeline)
+            self.assertEqual((plan.added_ids, plan.updated_ids), (["probe-early"], ["probe-a"]))
+            # R1#6: the real sync path must take the in-place route on a real Doc read
+            # (revision-guarded raw-batch with writeControl.requiredRevisionId).
+            outcome = pragya_cli._sync_existing_doc(backend, doc_id, book, timeline, None)
+            self.assertEqual(outcome.mode, "in-place", outcome.warnings)
+            self.assertEqual((outcome.added, outcome.updated), (["probe-early"], ["probe-a"]))
+
+            after = backend.read_doc_lines(doc_id)
+            self.assertIsNotNone(after)
+            expected = [(ln.level, ln.text) for ln in pragya_cli.apply_doc_plan(lines, plan)]
+            got = [(ln.level, ln.text) for ln in after]
+            print("\n[M6 LIVE GDOCS RAW-BATCH PROBE]", json.dumps({"expected": expected, "got": got}, ensure_ascii=False))
+            self.assertEqual(got, expected)
+            self.assertIn((0, prose), got)
+            # A second plan on the result is a no-op (zero writes).
+            self.assertEqual(pragya_cli.plan_companion_doc(after, book, timeline).edits, [])
+            # A stale revision must be rejected by the API (writeControl works live).
+            stale = pragya_cli.plan_companion_doc(after, book, [backfill, dict(upgraded, critique="again")])
+            stale_requests = pragya_cli.doc_plan_to_requests(after, stale)
+            self.assertTrue(stale_requests, "the stale-revision probe must actually send requests")
+            fresh = backend.read_doc_snapshot(doc_id)
+            self.assertNotEqual(fresh.revision_id, snap.revision_id, "the in-place write must bump the revision")
+            with self.assertRaises(pragya_cli.CliError):
+                backend.batch_update_doc(doc_id, stale_requests, snap.revision_id)
+        finally:
+            if doc_id:
+                try:
+                    _run_cli_json(["gdrive", "mutate", "trash", doc_id, "--json"])
+                except Exception as exc:
+                    print(f"[M6 CLEANUP WARNING] Failed to trash scratch Doc {doc_id}: {exc}")
+
+    def test_live_gdocs_write_control_rejects_stale_revision(self) -> None:
+        """M6 Batch 6 RELEASE GATE (mandatory whenever the live suite runs): a raw-batch sent
+        with an outdated writeControl.requiredRevisionId must be rejected, so stale indexes
+        can never delete text a user typed after our read. Own scratch Doc, trashed in finally."""
+        run_tag = uuid.uuid4().hex[:8]
+        backend = pragya_cli.GoogleWorkspaceBackend(runner=_rate_limit_safe_runner)
+        doc_id = ""
+        try:
+            doc_id, _url = backend.create_companion_doc(f"Pragya Scratch Rev Probe {run_tag}", "", book_id=run_tag)
+            backend.append_doc_text(doc_id, "# Rev probe\nfirst line\n")
+            old = backend.read_doc_snapshot(doc_id)
+            self.assertIsNotNone(old)
+            self.assertTrue(old.revision_id, "documents.get must return a revisionId")
+            backend.append_doc_text(doc_id, "\nconcurrent user line\n")  # bumps the revision
+            new = backend.read_doc_snapshot(doc_id)
+            self.assertNotEqual(new.revision_id, old.revision_id)
+            insert = [{"insertText": {"location": {"index": old.lines[-1].end - 1}, "text": " STALE"}}]
+            with self.assertRaises(pragya_cli.CliError):
+                backend.batch_update_doc(doc_id, insert, old.revision_id)
+            self.assertNotIn("STALE", backend.read_doc_text(doc_id))
+            # The same request with the current revision is accepted.
+            backend.batch_update_doc(doc_id, insert, new.revision_id)
+        finally:
+            if doc_id:
+                try:
+                    _run_cli_json(["gdrive", "mutate", "trash", doc_id, "--json"])
+                except Exception as exc:
+                    print(f"[M6 CLEANUP WARNING] Failed to trash scratch Doc {doc_id}: {exc}")
+
+
 if __name__ == "__main__":
     unittest.main()

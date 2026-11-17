@@ -34,7 +34,7 @@ const __dirname = path.dirname(__filename);
 const repoRoot = path.resolve(__dirname, '../..');
 const load = rel => import(pathToFileURL(path.join(repoRoot, rel)).href);
 
-const { effectiveNoteNorm, isNoteSpoiler } = await load('src/utils/spoilerMath.ts');
+const { effectiveNoteNorm, isNoteSpoiler, SPOILER_NORM_EPSILON } = await load('src/utils/spoilerMath.ts');
 const {
   SHIELDED_NOTE_TITLE,
   REVEAL_TO_EDIT_TOOLTIP,
@@ -646,4 +646,12 @@ test('Fix-up R1#6: throttled update check fires at most once per interval', () =
   t += 30 * 60 * 1000;
   assert.equal(check(), true);
   assert.equal(checks, 2);
+});
+
+test('Batch 6: a note exactly at the bookmark is not shielded by 6-decimal Sheet rounding (CLI parity)', () => {
+  // sheetCodecs/CLI store normalizedPos via toFixed(6): 142/218 -> 0.651376 < 0.6513761...
+  const b = book({ currentPos: 142, totalPos: 218, normalizedPos: Number((142 / 218).toFixed(6)) });
+  assert.equal(isNoteSpoiler(note({ pos: 142, normalizedPos: 0 }), b), false);
+  assert.equal(isNoteSpoiler(note({ pos: 143, normalizedPos: 0 }), b), true);
+  assert.equal(SPOILER_NORM_EPSILON, 1e-6);
 });

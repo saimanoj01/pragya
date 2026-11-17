@@ -998,7 +998,9 @@ class TestPragyaCli(unittest.TestCase):
             )
             self.assertEqual(rc1, 0, err1)
             self.assertTrue(r1["createdDoc"])
-            self.assertEqual(r1["syncedNoteCount"], 2)
+            # Batch 6 (A1.1): saved notes are now synced too — book-systems has 2 atomic +
+            # 2 saved notes in _make_sample_snapshot (pm_plan said 5; the fixture has 4).
+            self.assertEqual(r1["syncedNoteCount"], 4)
             doc_url = r1["docUrl"]
             self.assertIn("docs.google.com/document/d/", doc_url)
             doc_txt = doc_out.read_text(encoding="utf-8")
@@ -1271,7 +1273,17 @@ class TestPragyaCli(unittest.TestCase):
             self.assertEqual(rc_doc_2, 0)
             res_doc_2 = json.loads(doc_sync_2_out.getvalue())
             self.assertFalse(res_doc_2["createdDoc"])
-            self.assertEqual(res_doc_2["syncedNoteCount"], 0)
+            # Batch 6: this AST (body + a differing tab, no indexes) can't be edited in place,
+            # so the sync falls back to append-only by marker: the two marker-bearing notes
+            # are not re-added, saved notes now in the timeline are appended, no new Doc and
+            # no second H1.
+            self.assertEqual(res_doc_2["mode"], "append-fallback")
+            self.assertTrue(res_doc_2["warnings"])
+            # Both book-systems timeline notes (filler-row-2/3) already carry markers and the
+            # captured p. 160 note is ahead of the static p. 142 bookmark (shielded), so the
+            # fallback appends nothing: exactly zero synced notes and no new gdocs batch.
+            self.assertEqual(res_doc_2["syncedNoteIds"], [])
+            self.assertEqual(res_doc_2["shieldedCount"], 1)
             self.assertEqual(len(created_doc_calls), 1)
             self.assertEqual(len(appended_doc_calls), 1)
 

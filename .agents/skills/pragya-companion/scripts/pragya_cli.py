@@ -35,6 +35,7 @@ import urllib.parse
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from dataclasses import dataclass, field
 from typing import Any, Callable
 
 SPREADSHEET_TITLE = "Pragya Commonplace"
@@ -200,12 +201,20 @@ def effective_note_norm(note: dict[str, Any], book: dict[str, Any] | None) -> fl
     return _safe_float(note.get("normalizedPos"), 0.0)
 
 
+# Only safe because distinct positions are always > 1e-6 apart in normalized space, which
+# holds for any book under 1,000,000 pages / locations (R2 nit).
+SPOILER_NORM_EPSILON = 1e-6
+
+
 def is_note_spoiler(note: dict[str, Any], book: dict[str, Any] | None) -> bool:
     if not book or book.get("status") == "finished":
         return False
     total_pos = _safe_float(book.get("totalPos"), 0.0)
     if total_pos > 0 or book.get("posUnit") == "percent":
-        return effective_note_norm(note, book) > _safe_float(book.get("normalizedPos"), 0.0)
+        # Stored normalizedPos is rounded to 6 decimals on every Sheet write (TS and CLI),
+        # so a note exactly at the bookmark must not read as ahead of it (parity:
+        # SPOILER_NORM_EPSILON in src/utils/spoilerMath.ts).
+        return effective_note_norm(note, book) > _safe_float(book.get("normalizedPos"), 0.0) + SPOILER_NORM_EPSILON
     return _safe_float(note.get("pos"), 0.0) > _safe_float(book.get("currentPos"), 0.0)
 
 
@@ -1314,6 +1323,19 @@ class WorkspaceBackend:
     def append_doc_text(self, doc_id: str, text: str) -> None:
         raise NotImplementedError
 
+    def read_doc_snapshot(self, doc_id: str) -> DocSnapshot | None:
+        """Indexed Doc paragraphs + revisionId for in-place sync, or None when unsafe."""
+        return None
+
+    def read_doc_lines(self, doc_id: str) -> list[DocLine] | None:
+        snap = self.read_doc_snapshot(doc_id)
+        return snap.lines if snap is not None else None
+
+    def batch_update_doc(
+        self, doc_id: str, requests: list[dict[str, Any]], required_revision_id: str | None = None
+    ) -> None:
+        raise NotImplementedError
+
 
 def _upsert_by_id(items: list[dict[str, Any]], item: dict[str, Any]) -> list[dict[str, Any]]:
     out = list(items)
@@ -2004,6 +2026,39 @@ class GoogleWorkspaceBackend(WorkspaceBackend):
             with os.fdopen(fd, "w", encoding="utf-8") as fh:
                 fh.write(json_dumps_strict(ops, ensure_ascii=False))
             self._run_ok(["gdocs", "mutate", "batch", doc_id, "-f", tmp_path, "--json"])
+        finally:
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+
+    def read_doc_snapshot(self, doc_id: str) -> DocSnapshot | None:
+        res = self._run_json(["gdocs", "readonly", "read", doc_id, "--json"])
+        lines = parse_gdoc_lines(res)
+        if lines is None:
+            return None
+        rev = res.get("revisionId") if isinstance(res, dict) else None
+        return DocSnapshot(lines=lines, revision_id=rev if isinstance(rev, str) and rev else None)
+
+    def batch_update_doc(
+        self, doc_id: str, requests: list[dict[str, Any]], required_revision_id: str | None = None
+    ) -> None:
+        """A1.4 in-place sync: one Docs API `documents.batchUpdate` with raw requests.
+
+        RELEASE GATE (like the Sheets raw-batch, decisions Batch 2): the `gdocs mutate
+        raw-batch` transport is unverified offline; book-doc-sync falls back to
+        append-only (with a warning) if it fails.
+        """
+        if not requests:
+            return
+        payload: dict[str, Any] = {"requests": requests}
+        if required_revision_id:
+            # R1#1: the Docs API rejects the whole batch if the Doc changed since our read,
+            # so stale indexes can never delete user text typed in the meantime.
+            payload["writeControl"] = {"requiredRevisionId": required_revision_id}
+        fd, tmp_path = tempfile.mkstemp(prefix=".pragya_gdocs_raw_", suffix=".json")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(json_dumps_strict(payload, ensure_ascii=False))
+            self._run_ok(["gdocs", "mutate", "raw-batch", doc_id, "-f", tmp_path, "--json"])
         finally:
             if os.path.exists(tmp_path):
                 os.unlink(tmp_path)
@@ -3515,10 +3570,50 @@ def cmd_export_md(args: argparse.Namespace, backend: WorkspaceBackend) -> dict[s
         )
         exported_files.append(str(dest_file))
 
+    # A1.5: per-book Markdown index books/<book-slug>.md (atomic files above stay OQ-8).
+    books_dir = out_dir / "books"
+    books_dir_resolved = books_dir.resolve()
+    index_written: list[str] = []
+    index_unchanged = 0
+    include_drafts = bool(getattr(args, "include_drafts", False))
+    include_spoilers = bool(getattr(args, "include_spoilers", False))
+    shielded_total = 0
+    pending: list[tuple[dict[str, Any], list[dict[str, Any]]]] = []
+    for book in ws["books"]:
+        timeline, shielded = select_book_timeline_with_shield(
+            ws["notes"], book, include_drafts, include_spoilers
+        )
+        shielded_total += shielded
+        if timeline or has_book_capstone(book.get("meta")):
+            pending.append((book, timeline))
+    slugs = assign_book_index_slugs([b for b, _ in pending])
+    for book, timeline in pending:
+        dest = books_dir / f"{slugs[str(book.get('id'))]}.md"
+        if not dest.resolve().is_relative_to(books_dir_resolved):
+            raise CliError(f"Unsafe book index path for: {book.get('title')}")
+        content = render_book_index_md(book, timeline)
+        if dest.exists() and dest.read_text(encoding="utf-8") == content:
+            index_unchanged += 1
+            continue
+        books_dir.mkdir(parents=True, exist_ok=True)
+        fd, tmp_name = tempfile.mkstemp(prefix=".pragya_book_", suffix=".md", dir=str(books_dir))
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(content)
+            os.replace(tmp_name, dest)
+        finally:
+            if os.path.exists(tmp_name):
+                os.unlink(tmp_name)
+        index_written.append(str(dest))
+
     return {
         "exportedCount": len(exported_files),
         "exportedFiles": exported_files,
         "skippedCount": skipped,
+        "bookIndexWritten": len(index_written),
+        "bookIndexFiles": index_written,
+        "bookIndexUnchanged": index_unchanged,
+        "shieldedCount": shielded_total,
     }
 
 
@@ -3541,72 +3636,946 @@ def _companion_text_to_gdocs_ops(text: str) -> list[dict[str, Any]]:
         elif line.startswith("## "):
             flush_paragraph()
             ops.append({"op": "heading", "text": line[3:].strip(), "level": "2"})
+        elif line.startswith("### "):
+            flush_paragraph()
+            ops.append({"op": "heading", "text": line[4:].strip(), "level": "3"})
         else:
             paragraph_lines.append(line)
     flush_paragraph()
     return ops
 
 
-def _format_companion_entry(note: dict[str, Any], book: dict[str, Any]) -> str:
-    meta = note.get("meta") or {}
-    title = meta.get("title") or note["slug"]
-    pos_str = format_pos_display(float(note.get("pos") or 0), book.get("posUnit") or "page")
-    _, _, when_line, do_line = format_when_do_lines(
-        note.get("deltaTrigger") or "",
-        note.get("deltaAction") or "",
+# ---------------------------------------------------------------------------
+# Batch 6: Companion Doc / Markdown timelines (ux_spec E.1 / E.2)
+# ---------------------------------------------------------------------------
+
+TIMELINE_STATUSES = ("saved", "atomic")
+DRAFT_STATUSES = ("inbox", "in-reflection")
+# OQ-3: lines that belong to a Pragya-managed block (anything else is user prose).
+PRAGYA_FIELD_PREFIXES = (
+    "Quote:", "Takeaway:", "Mechanism:", "Critique:", "WHEN ", "DO ",
+    "Thesis:", "Arc:", "Key Learnings:", "• ", "How My Thinking Shifted:", "Written ",
+)
+# R1 nit 8: the marker is the LAST `[note:…]` / `[capstone:…]` in a heading; any text a
+# user typed after it is kept as a suffix (not a reason to treat the block as unknown).
+DOC_MARKER_RE = re.compile(r"\[(note|capstone):([^\]\s]+)\]")
+# R1#2 / QA-18: per-kind block grammar — each field at most once, in render order.
+NOTE_FIELD_ORDER = ("Quote:", "Takeaway:", "Mechanism:", "WHEN ", "DO ", "Critique:")
+SAVED_FIELD_COUNT = 2  # HEADING_3 (saved / draft) blocks only ever render Quote + Takeaway
+CAPSTONE_FIELD_ORDER = (("Thesis:", "Arc:"), ("Key Learnings:",), ("• ",), ("How My Thinking Shifted:",), ("Written ",))
+CAPSTONE_BULLET_INDEX = 2
+# Header lines the planner recognizes under the H1 (R1 nit 7; `Now in:` = pre-Batch-6 Docs).
+DOC_HEADER_PREFIXES = ("Author:", "Now in:")
+# Result vocabularies (quoted by the Batch 7 skill docs).
+DOC_SYNC_MODES = ("created", "in-place", "append", "append-fallback", "unchanged")
+CAPSTONE_SYNC_STATES = ("absent", "unchanged", "added", "updated", "removed", "skipped")
+SAVED_TITLE_WORDS = 8
+UNTITLED_NOTE_TITLE = "Quick Note"
+
+
+def _is_timeline_shielded(note: dict[str, Any], book: dict[str, Any]) -> bool:
+    """decisions Batch 6 (1): notes ahead of the bookmark and sealed fiction predictions of
+    an unfinished book are shielded from Doc / Markdown timelines by default."""
+    return is_note_spoiler(note, book) or is_sealed_prediction(note, book)
+
+
+def select_book_timeline_with_shield(
+    notes: list[dict[str, Any]],
+    book: dict[str, Any],
+    include_drafts: bool = False,
+    include_spoilers: bool = False,
+) -> tuple[list[dict[str, Any]], int]:
+    """(timeline, shieldedCount): see select_book_timeline."""
+    statuses = TIMELINE_STATUSES + (DRAFT_STATUSES if include_drafts else ())
+    picked = [n for n in notes if n.get("bookId") == book.get("id") and n.get("status") in statuses]
+    shielded = 0
+    if not include_spoilers:
+        visible = [n for n in picked if not _is_timeline_shielded(n, book)]
+        shielded = len(picked) - len(visible)
+        picked = visible
+    picked.sort(
+        key=lambda n: (
+            effective_note_norm(n, book),
+            _safe_float(n.get("pos"), 0.0),
+            str(n.get("createdAt") or ""),
+        )
     )
-    parts = [
-        f"## {title} ({pos_str}) [note:{note['id']}]",
+    return picked, shielded
+
+
+def select_book_timeline(
+    notes: list[dict[str, Any]],
+    book: dict[str, Any],
+    include_drafts: bool = False,
+    include_spoilers: bool = False,
+) -> list[dict[str, Any]]:
+    """A1.1: the book's saved + atomic notes (plus inbox / in-reflection with
+    --include-drafts) in reading order: (effective_note_norm, pos, createdAt).
+
+    Spoiler notes and sealed predictions of an unfinished book are excluded unless
+    include_spoilers (decisions Batch 6). Already-synced Doc blocks of a note that becomes
+    shielded later (bookmark moved back) are left in the Doc untouched by the planner.
+    """
+    return select_book_timeline_with_shield(notes, book, include_drafts, include_spoilers)[0]
+
+
+def _one_line(value: Any) -> str:
+    """OQ-3: newlines inside a field value collapse to single spaces."""
+    text = value if isinstance(value, str) else ("" if value is None else str(value))
+    return re.sub(r"\s*[\r\n]+\s*", " ", text).strip()
+
+
+def _saved_title_info(note: dict[str, Any]) -> tuple[str, bool]:
+    """(title, takeaway_redundant) for a saved / draft note.
+
+    decisions #1: meta.title -> first 8 words of the takeaway (+ "…" when cut) -> Quick Note.
+    R2#1: a derived heading drops one trailing "." and, when it carries the WHOLE takeaway
+    (nothing was cut), the Takeaway line is omitted (it would only echo the heading).
+    """
+    title = _one_line((note.get("meta") or {}).get("title"))
+    if title:
+        return title, False
+    words = _one_line(note.get("takeaway")).split()
+    if words:
+        head = " ".join(words[:SAVED_TITLE_WORDS])
+        cut = len(words) > SAVED_TITLE_WORDS
+        stripped = head[:-1] if head.endswith(".") and len(head) > 1 else head
+        return (stripped + "…", False) if cut else (stripped, True)
+    return UNTITLED_NOTE_TITLE, False
+
+
+def _saved_note_title(note: dict[str, Any]) -> str:
+    return _saved_title_info(note)[0]
+
+
+def _note_heading_title(note: dict[str, Any]) -> str:
+    if note.get("status") == "atomic":
+        return _one_line((note.get("meta") or {}).get("title")) or str(note.get("slug") or "")
+    return _saved_note_title(note)
+
+
+def _note_badge(note: dict[str, Any], book: dict[str, Any]) -> str:
+    chapter = (note.get("meta") or {}).get("chapter")
+    return format_chapter_badge(chapter, _safe_float(note.get("pos"), 0.0), book.get("posUnit") or "page")
+
+
+def _iso_date(value: Any) -> str:
+    dt = parse_iso_utc(_coerce_meta_string(value) or "")
+    return dt.strftime("%Y-%m-%d") if dt else ""
+
+
+def _kind_label(book: dict[str, Any]) -> str:
+    return "Fiction" if book.get("kind") == "fiction" else "Non-fiction"
+
+
+@dataclass
+class DocLine:
+    """One Doc paragraph / text line. `level` 0 = normal text, 1-3 = heading level.
+
+    `raw` is the exact original text line (text mode) so untouched lines are written
+    back byte-for-byte; `start`/`end` are Docs API UTF-16 indexes (Docs mode).
+    """
+
+    level: int
+    text: str
+    raw: str | None = None
+    start: int | None = None
+    end: int | None = None
+
+    def key(self) -> tuple[int, str]:
+        return (self.level, self.text.rstrip())
+
+
+@dataclass
+class DocSnapshot:
+    """A documents.get read: indexed lines + the revisionId used for writeControl."""
+
+    lines: list[DocLine]
+    revision_id: str | None = None
+
+
+def _new_line(level: int, text: str) -> DocLine:
+    return DocLine(level=level, text=text)
+
+
+def render_doc_header(book: dict[str, Any]) -> list[DocLine]:
+    """E.1 header: H1 + `Author: … · Kind · Finished YYYY-MM-DD` (decisions Batch 6 (3):
+    no `Now in:` line — it would go stale because header lines are never rewritten)."""
+    meta = book.get("meta") or {}
+    parts = [f"Author: {_one_line(book.get('author')) or 'Unknown Author'}", _kind_label(book)]
+    if book.get("status") == "finished":
+        finished = _iso_date(meta.get("finishedAt"))
+        parts.append(f"Finished {finished}" if finished else "Finished")
+    return [_new_line(1, f"Pragya · {_one_line(book.get('title'))}"), _new_line(0, " · ".join(parts))]
+
+
+def render_capstone_block(book: dict[str, Any]) -> list[DocLine]:
+    """A1.3 / E.1: `## Whole-Book Picture [capstone:<bookId>]` + label lines (empty if none)."""
+    meta = book.get("meta") or {}
+    if not has_book_capstone(meta):
+        return []
+    cap = get_book_capstone(meta) or {}
+    lines = [_new_line(2, f"Whole-Book Picture [capstone:{book['id']}]")]
+    arc = _one_line(cap.get("arcOrThesis"))
+    if arc:
+        lines.append(_new_line(0, f"{'Arc' if book.get('kind') == 'fiction' else 'Thesis'}: {arc}"))
+    learnings = [_one_line(item) for item in cap.get("keyLearnings") or []]
+    learnings = [item for item in learnings if item]
+    if learnings:
+        lines.append(_new_line(0, "Key Learnings:"))
+        lines.extend(_new_line(0, f"• {item}") for item in learnings)
+    shift = _one_line(cap.get("perspectiveShift"))
+    if shift:
+        lines.append(_new_line(0, f"How My Thinking Shifted: {shift}"))
+    written = _iso_date(cap.get("completedAt"))
+    if written:
+        lines.append(_new_line(0, f"Written {written}"))
+    return lines
+
+
+def render_note_block(note: dict[str, Any], book: dict[str, Any]) -> list[DocLine]:
+    """A1.2: atomic = HEADING_2 with every non-empty field; saved (and drafts) = HEADING_3
+    with Quote (if any) + Takeaway only. Heading `[<badge>] <Title> [note:<uuid>]`."""
+    atomic = note.get("status") == "atomic"
+    heading = f"{_note_badge(note, book)} {_note_heading_title(note)} [note:{note['id']}]"
+    lines = [_new_line(2 if atomic else 3, heading)]
+    quote = _one_line(note.get("quote"))
+    takeaway = _one_line(note.get("takeaway"))
+    takeaway_redundant = (not atomic) and _saved_title_info(note)[1]
+    if quote:
+        lines.append(_new_line(0, f'Quote: "{quote}"'))
+    if takeaway and not takeaway_redundant:
+        lines.append(_new_line(0, f"Takeaway: {takeaway}"))
+    if atomic:
+        mechanism = _one_line(note.get("contextMechanism"))
+        if mechanism:
+            lines.append(_new_line(0, f"Mechanism: {mechanism}"))
+        _, _, when_line, do_line = format_when_do_lines(
+            _one_line(note.get("deltaTrigger")), _one_line(note.get("deltaAction"))
+        )
+        if when_line:
+            lines.append(_new_line(0, when_line))
+        if do_line:
+            lines.append(_new_line(0, do_line))
+        critique = _one_line(note.get("critique"))
+        if critique:
+            lines.append(_new_line(0, f"Critique: {critique}"))
+    return lines
+
+
+def _format_companion_entry(note: dict[str, Any], book: dict[str, Any]) -> str:
+    """Plain-text rendering of one note block (kept for callers of the old helper)."""
+    return lines_to_text(render_note_block(note, book))
+
+
+def render_full_companion_doc(book: dict[str, Any], timeline: list[dict[str, Any]]) -> list[DocLine]:
+    """A fresh Doc: header, capstone (if any), then every timeline note, blank-separated."""
+    lines = render_doc_header(book)
+    for block in [render_capstone_block(book)] + [render_note_block(n, book) for n in timeline]:
+        if block:
+            lines.append(_new_line(0, ""))
+            lines.extend(block)
+    return lines
+
+
+def text_to_doc_lines(text: str) -> list[DocLine]:
+    lines: list[DocLine] = []
+    if not text:
+        return lines
+    for raw in text.split("\n"):
+        level = 0
+        body = raw
+        for lvl, prefix in ((3, "### "), (2, "## "), (1, "# ")):
+            if raw.startswith(prefix):
+                level, body = lvl, raw[len(prefix):]
+                break
+        lines.append(DocLine(level=level, text=body.rstrip("\r"), raw=raw))
+    return lines
+
+
+def lines_to_text(lines: list[DocLine]) -> str:
+    out = []
+    for ln in lines:
+        if ln.raw is not None:
+            out.append(ln.raw)
+        else:
+            out.append(("#" * ln.level + " " if ln.level else "") + ln.text)
+    return "\n".join(out)
+
+
+def _is_blank(line: DocLine) -> bool:
+    return not line.text.strip()
+
+
+@dataclass
+class DocBlock:
+    kind: str
+    ident: str
+    start: int
+    end: int  # exclusive
+    suffix: str = ""  # user text after the marker in the heading (kept verbatim)
+
+
+@dataclass
+class DocEdit:
+    """Replace lines[start:end] with `lines` (start == end -> pure insertion)."""
+
+    start: int
+    end: int
+    lines: list[DocLine]
+
+
+@dataclass
+class CompanionDocPlan:
+    edits: list[DocEdit] = field(default_factory=list)
+    added_ids: list[str] = field(default_factory=list)
+    updated_ids: list[str] = field(default_factory=list)
+    capstone: str = "absent"  # absent | unchanged | added | updated | removed
+
+    @property
+    def only_tail_appends(self) -> bool:
+        return all(e.start == e.end for e in self.edits)
+
+
+def _block_field_index(kind: str, level: int, text: str) -> int | None:
+    if kind == "note":
+        allowed = NOTE_FIELD_ORDER[:SAVED_FIELD_COUNT] if level == 3 else NOTE_FIELD_ORDER
+        for idx, prefix in enumerate(allowed):
+            if text.startswith(prefix):
+                return idx
+        return None
+    for idx, prefixes in enumerate(CAPSTONE_FIELD_ORDER):
+        if text.startswith(prefixes):
+            return idx
+    return None
+
+
+def parse_doc_blocks(lines: list[DocLine]) -> list[DocBlock]:
+    """A1.4: a block = a HEADING_2/3 carrying a `[note:<id>]` / `[capstone:<id>]` marker plus
+    the following normal lines that fit that block kind's grammar (R1#2 / QA-18):
+
+    - note blocks: Quote, Takeaway, Mechanism, WHEN, DO, Critique — each at most once and
+      in render order (HEADING_3 saved blocks: Quote, Takeaway only);
+    - capstone blocks: Thesis/Arc, Key Learnings:, `• ` lines only after Key Learnings:,
+      How My Thinking Shifted:, Written (last).
+
+    Parsing stops at the first line that doesn't fit, so a user line typed directly under a
+    block (a second `Takeaway:`, `• aside`, `Written …`) stays prose and is never deleted.
+    """
+    blocks: list[DocBlock] = []
+    i, n = 0, len(lines)
+    while i < n:
+        ln = lines[i]
+        matches = list(DOC_MARKER_RE.finditer(ln.text)) if ln.level in (2, 3) else []
+        if not matches:
+            i += 1
+            continue
+        m = matches[-1]
+        kind = m.group(1)
+        j = i + 1
+        last = -1
+        while j < n and lines[j].level == 0:
+            idx = _block_field_index(kind, ln.level, lines[j].text)
+            if idx is None:
+                break
+            if kind == "capstone" and idx == CAPSTONE_BULLET_INDEX:
+                if last not in (CAPSTONE_BULLET_INDEX - 1, CAPSTONE_BULLET_INDEX):
+                    break
+            elif idx <= last:
+                break
+            last = idx
+            j += 1
+        blocks.append(
+            DocBlock(kind=kind, ident=m.group(2), start=i, end=j, suffix=ln.text[m.end():].rstrip())
+        )
+        i = j
+    return blocks
+
+
+def _header_end(lines: list[DocLine], blocks: list[DocBlock]) -> int:
+    """Index just after the H1 + its `Author:` (and legacy `Now in:`) lines (R1 nit 7: user
+    prose typed directly under the header is not header, so a capstone goes above it)."""
+    block_starts = {b.start for b in blocks}
+    for idx, ln in enumerate(lines):
+        if ln.level == 1:
+            j = idx + 1
+            while (
+                j < len(lines)
+                and lines[j].level == 0
+                and lines[j].text.startswith(DOC_HEADER_PREFIXES)
+                and j not in block_starts
+            ):
+                j += 1
+            return j
+    return 0
+
+
+def plan_companion_doc(
+    lines: list[DocLine], book: dict[str, Any], timeline: list[dict[str, Any]]
+) -> CompanionDocPlan:
+    """A1.4 pure planner (decisions OQ-2 override): only Pragya-managed marker blocks are
+    replaced or deleted, new blocks are inserted at computed positions, and every other
+    line (header, user prose, unknown / other-book markers) is left untouched.
+
+    - Changed `[note:]` blocks are re-rendered in place (incl. `###` -> `##` upgrades and
+      the legacy `Title (p. N) [note:id]` format); unchanged ones produce no edit.
+    - New notes are inserted before the next timeline note already in the Doc (so a
+      backfilled earlier note lands in reading order and prose anchored after the
+      previous block stays with it); with no later neighbour they append at the end.
+    - The capstone block sits directly under the H1 header lines; it is replaced when it
+      changes and removed when the capstone is cleared.
+    - Duplicate markers are never created; extra copies already in the Doc are left alone.
+    """
+    plan = CompanionDocPlan()
+    blocks = parse_doc_blocks(lines)
+    first: dict[tuple[str, str], DocBlock] = {}
+    for b in blocks:
+        first.setdefault((b.kind, b.ident), b)
+    n = len(lines)
+    inserts: dict[int, list[tuple[int, list[DocLine]]]] = {}
+
+    def existing_keys(b: DocBlock) -> list[tuple[int, str]]:
+        return [ln.key() for ln in lines[b.start:b.end]]
+
+    def matches_render(b: DocBlock, rendered: list[DocLine]) -> bool:
+        """Unchanged if the block equals the render, or its first lines do and the rest
+        are user lines that merely fit the grammar (QA-18: never 'update' those away)."""
+        want = [ln.key() for ln in rendered]
+        if existing_keys(b) == want:
+            return True
+        end = b.start + len(want)
+        return end < b.end and [ln.key() for ln in lines[b.start:end]] == want
+
+    def narrowed(b: DocBlock, rendered: list[DocLine], note: dict[str, Any] | None = None) -> DocBlock:
+        """R1 R2-a / QA-21: a grammar line is managed only if its field is present in the
+        fresh render; lines for absent / cleared fields stay as prose (a cleared field's
+        old line becomes a stale line — fail-safe, never a deletion of user text).
+
+        A saved (HEADING_3) block only ever had a Pragya `Takeaway:` line when its heading
+        was a cut (`…`) derived title or an explicit meta.title; otherwise (heading-only
+        block) a `Takeaway:` line under it is the user's, even if the note is now atomic."""
+        level = 2 if b.kind == "note" else 0
+        allowed = {_block_field_index(b.kind, level, ln.text) for ln in rendered[1:]}
+        allowed.discard(None)
+        if b.kind == "note" and note is not None and lines[b.start].level == 3:
+            head = lines[b.start].text
+            marker = list(DOC_MARKER_RE.finditer(head))[-1]
+            old_title = head[: marker.start()].rstrip()
+            had_takeaway_line = old_title.endswith("…") or bool(_one_line((note.get("meta") or {}).get("title")))
+            if not had_takeaway_line:
+                allowed.discard(NOTE_FIELD_ORDER.index("Takeaway:"))
+        j = b.start + 1
+        while j < b.end and _block_field_index(b.kind, level, lines[j].text) in allowed:
+            j += 1
+        return DocBlock(kind=b.kind, ident=b.ident, start=b.start, end=j, suffix=b.suffix)
+
+    def with_suffix(rendered: list[DocLine], b: DocBlock) -> list[DocLine]:
+        if not b.suffix:
+            return rendered
+        head = rendered[0]
+        return [DocLine(level=head.level, text=head.text + " " + b.suffix.lstrip())] + rendered[1:]
+
+    # Capstone
+    desired_cap = render_capstone_block(book)
+    cap_block = first.get(("capstone", str(book.get("id"))))
+    if desired_cap and cap_block:
+        desired_cap = with_suffix(desired_cap, cap_block)
+        cap_block = narrowed(cap_block, desired_cap)
+        if not matches_render(cap_block, desired_cap):
+            plan.edits.append(DocEdit(cap_block.start, cap_block.end, desired_cap))
+            plan.capstone = "updated"
+        else:
+            plan.capstone = "unchanged"
+    elif desired_cap:
+        at = _header_end(lines, blocks)
+        if at == 0:
+            new = desired_cap + [_new_line(0, "")]
+        else:
+            new = [_new_line(0, "")] + desired_cap
+            if at < n and not _is_blank(lines[at]):
+                new.append(_new_line(0, ""))
+        inserts.setdefault(at, []).append((0, new))
+        plan.capstone = "added"
+    elif cap_block:
+        start = cap_block.start
+        if start > 0 and _is_blank(lines[start - 1]):
+            start -= 1
+        plan.edits.append(DocEdit(start, cap_block.end, []))
+        plan.capstone = "removed"
+
+    # Notes
+    present = [first.get(("note", str(note["id"]))) for note in timeline]
+    for idx, note in enumerate(timeline):
+        rendered = render_note_block(note, book)
+        block = present[idx]
+        if block is not None:
+            rendered = with_suffix(rendered, block)
+            block = narrowed(block, rendered, note)
+            if not matches_render(block, rendered):
+                plan.edits.append(DocEdit(block.start, block.end, rendered))
+                plan.updated_ids.append(note["id"])
+            continue
+        successor = next((present[k] for k in range(idx + 1, len(timeline)) if present[k] is not None), None)
+        if successor is not None:
+            inserts.setdefault(successor.start, []).append((1, rendered + [_new_line(0, "")]))
+        else:
+            inserts.setdefault(n, []).append((1, [_new_line(0, "")] + rendered))
+        plan.added_ids.append(note["id"])
+
+    for at, chunks in inserts.items():
+        chunks.sort(key=lambda c: c[0])  # capstone first; notes keep timeline order (stable)
+        new_lines: list[DocLine] = []
+        for _prio, chunk in chunks:
+            new_lines.extend(chunk)
+        if at == n and n > 0 and new_lines and _is_blank(new_lines[0]) and _is_blank(lines[-1]):
+            new_lines = new_lines[1:]
+        plan.edits.append(DocEdit(at, at, new_lines))
+    return plan
+
+
+def _sorted_edits(edits: list[DocEdit]) -> list[DocEdit]:
+    # Bottom-up so earlier indexes stay valid; at one position, replace before insert.
+    return sorted(edits, key=lambda e: (e.start, 1 if e.end > e.start else 0), reverse=True)
+
+
+def apply_doc_plan(lines: list[DocLine], plan: CompanionDocPlan) -> list[DocLine]:
+    out = list(lines)
+    for e in _sorted_edits(plan.edits):
+        out[e.start:e.end] = e.lines
+    return out
+
+
+def plan_companion_text(
+    existing_text: str, book: dict[str, Any], timeline: list[dict[str, Any]]
+) -> tuple[str, list[str], list[str]]:
+    """Pure text form of the planner: (full_text, added_ids, updated_ids)."""
+    lines = text_to_doc_lines(existing_text)
+    if not any(ln.text.strip() for ln in lines):
+        full = render_full_companion_doc(book, timeline)
+        return lines_to_text(full) + "\n", [n["id"] for n in timeline], []
+    plan = plan_companion_doc(lines, book, timeline)
+    return lines_to_text(apply_doc_plan(lines, plan)), plan.added_ids, plan.updated_ids
+
+
+def _utf16_len(text: str) -> int:
+    return len(text.encode("utf-16-le")) // 2
+
+
+_NAMED_STYLE = {0: "NORMAL_TEXT", 1: "HEADING_1", 2: "HEADING_2", 3: "HEADING_3"}
+
+
+# R1#4: inserted Pragya text must not inherit the anchor's character style / list bullets.
+RESET_TEXT_STYLE_FIELDS = (
+    "bold,italic,underline,strikethrough,smallCaps,link,foregroundColor,backgroundColor,"
+    "baselineOffset,fontSize,weightedFontFamily"
+)
+
+
+def _style_requests(start: int, new_lines: list[DocLine]) -> list[dict[str, Any]]:
+    total = sum(_utf16_len(ln.text) + 1 for ln in new_lines)
+    reqs: list[dict[str, Any]] = []
+    if total:
+        rng = {"startIndex": start, "endIndex": start + total}
+        reqs.append({"updateTextStyle": {"range": dict(rng), "textStyle": {}, "fields": RESET_TEXT_STYLE_FIELDS}})
+        reqs.append({"deleteParagraphBullets": {"range": dict(rng)}})
+    offset = start
+    for ln in new_lines:
+        length = _utf16_len(ln.text) + 1
+        reqs.append(
+            {
+                "updateParagraphStyle": {
+                    "range": {"startIndex": offset, "endIndex": offset + length},
+                    "paragraphStyle": {"namedStyleType": _NAMED_STYLE.get(ln.level, "NORMAL_TEXT")},
+                    "fields": "namedStyleType",
+                }
+            }
+        )
+        offset += length
+    return reqs
+
+
+def doc_plan_to_requests(lines: list[DocLine], plan: CompanionDocPlan) -> list[dict[str, Any]]:
+    """Docs API batchUpdate requests touching ONLY the planned block ranges (OQ-2).
+
+    Edits are emitted bottom-up, so every request's indexes are valid when it runs.
+    Paragraph indexes are the Docs API's UTF-16 offsets from documents.get.
+    """
+    reqs: list[dict[str, Any]] = []
+    n = len(lines)
+    for e in _sorted_edits(plan.edits):
+        texts = [ln.text for ln in e.lines]
+        if e.end > e.start and e.lines:
+            start = lines[e.start].start
+            keep_end = lines[e.end - 1].end - 1  # keep the block's final newline
+            if keep_end > start:
+                reqs.append({"deleteContentRange": {"range": {"startIndex": start, "endIndex": keep_end}}})
+            reqs.append({"insertText": {"location": {"index": start}, "text": "\n".join(texts)}})
+            reqs.extend(_style_requests(start, e.lines))
+        elif e.end > e.start:
+            if e.end < n:
+                rng = (lines[e.start].start, lines[e.end].start)
+            elif e.start > 0:
+                rng = (lines[e.start - 1].end - 1, lines[e.end - 1].end - 1)
+            else:
+                rng = (lines[e.start].start, lines[e.end - 1].end - 1)
+            if rng[1] > rng[0]:
+                reqs.append({"deleteContentRange": {"range": {"startIndex": rng[0], "endIndex": rng[1]}}})
+        elif e.start < n:
+            at = lines[e.start].start
+            reqs.append({"insertText": {"location": {"index": at}, "text": "\n".join(texts) + "\n"}})
+            reqs.extend(_style_requests(at, e.lines))
+        else:
+            at = lines[n - 1].end - 1
+            reqs.append({"insertText": {"location": {"index": at}, "text": "\n" + "\n".join(texts)}})
+            reqs.extend(_style_requests(at + 1, e.lines))
+    return reqs
+
+
+def _gdoc_paragraph_level(para: dict[str, Any]) -> int:
+    style = (para.get("paragraphStyle") or {}).get("namedStyleType")
+    return {"HEADING_1": 1, "TITLE": 1, "HEADING_2": 2, "HEADING_3": 3}.get(style, 0)
+
+
+def parse_gdoc_lines(doc: Any) -> list[DocLine] | None:
+    """Docs API documents.get JSON -> indexed DocLines, or None when the structure can't be
+    parsed safely (unknown wrapper, multiple / nested tabs, missing indexes). Tables, TOCs
+    and other non-paragraph elements become opaque lines that are never edited."""
+    if not isinstance(doc, dict) or not doc.get("documentId"):
+        return None
+    if any(key not in _GDOCS_DOCUMENT_KEYS for key in doc):
+        return None
+    body = doc.get("body")
+    tabs = doc.get("tabs")
+    if tabs is not None:
+        if not isinstance(tabs, list) or len(tabs) != 1 or not isinstance(tabs[0], dict):
+            return None
+        if tabs[0].get("childTabs"):
+            return None
+        tab_body = (tabs[0].get("documentTab") or {}).get("body")
+        if body is not None and body != tab_body:
+            return None
+        body = tab_body
+    if not isinstance(body, dict) or not isinstance(body.get("content"), list):
+        return None
+    lines: list[DocLine] = []
+    for elem in body["content"]:
+        if not isinstance(elem, dict):
+            return None
+        if "sectionBreak" in elem:
+            continue
+        start, end = elem.get("startIndex"), elem.get("endIndex")
+        if not isinstance(start, int) or not isinstance(end, int) or end <= start:
+            return None
+        para = elem.get("paragraph")
+        if isinstance(para, dict):
+            parts: list[str] = []
+            for p_elem in para.get("elements") or []:
+                tr = p_elem.get("textRun") if isinstance(p_elem, dict) else None
+                if isinstance(tr, dict) and isinstance(tr.get("content"), str):
+                    parts.append(tr["content"])
+                else:
+                    parts.append("\ufffc")  # inline object / chip: opaque, never a field line
+            text = "".join(parts)
+            if text.endswith("\n"):
+                text = text[:-1]
+            lines.append(DocLine(level=_gdoc_paragraph_level(para), text=text, start=start, end=end))
+        else:
+            lines.append(DocLine(level=0, text="\ufffc", start=start, end=end))
+    if lines and lines[0].start is not None and any(
+        lines[i].start != lines[i - 1].end for i in range(1, len(lines))
+    ):
+        return None  # non-contiguous indexes: not a structure we can safely edit
+    return lines
+
+
+def _yaml_str(val: Any) -> str:
+    text = "" if val is None else str(val)
+    escaped = text.replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ")
+    return f'"{escaped}"'
+
+
+BOOK_INDEX_SLUG_MAX = 80  # QA-20: keeps `<slug>[-<id>][-N].md` well under ~120 bytes
+BOOK_INDEX_ID_SUFFIX_MAX = 24
+
+
+def assign_book_index_slugs(books: list[dict[str, Any]]) -> dict[str, str]:
+    """QA-19 / QA-20: unique, length-capped `books/<slug>.md` names that don't depend on the
+    order of `books`. Within a title collision the smallest id keeps the plain slug; the
+    others get the shortest unique `-<id-slug>` prefix (8 chars and up), then `-2`, `-3`…"""
+    def base_of(book: dict[str, Any]) -> str:
+        base = slugify(str(book.get("title") or ""))[:BOOK_INDEX_SLUG_MAX].strip("-")
+        return base or "book"
+
+    ordered = sorted(books, key=lambda b: (base_of(b), str(b.get("id") or "")))
+    taken: set[str] = set()
+    out: dict[str, str] = {}
+    bases = [base_of(b) for b in ordered]
+    for book, base in zip(ordered, bases):
+        book_id = str(book.get("id") or "")
+        candidate = base
+        if candidate in taken:
+            id_slug = slugify(book_id)[:BOOK_INDEX_ID_SUFFIX_MAX]
+            candidate = ""
+            for length in range(min(8, len(id_slug)), len(id_slug) + 1):
+                trial = f"{base}-{id_slug[:length].strip('-')}"
+                if trial not in taken:
+                    candidate = trial
+                    break
+            counter = 2
+            while not candidate or candidate in taken:
+                candidate = f"{base}-{id_slug[:8].strip('-') or 'book'}-{counter}"
+                counter += 1
+        taken.add(candidate)
+        out[book_id] = candidate
+    return out
+
+
+def render_book_index_md(book: dict[str, Any], timeline: list[dict[str, Any]]) -> str:
+    """A1.5 / ux_spec E.2: per-book Markdown index (front-matter, capstone, both tiers)."""
+    meta = book.get("meta") or {}
+    lines = [
+        "---",
+        f"title: {_yaml_str(book.get('title'))}",
+        f"author: {_yaml_str(book.get('author'))}",
+        f"kind: {book.get('kind') or 'nonfiction'}",
+        f"status: {book.get('status') or 'reading'}",
     ]
-    if (note.get("quote") or "").strip():
-        parts.append(f'Quote: "{note["quote"].strip()}"')
-    if (note.get("takeaway") or "").strip():
-        parts.append(f"Takeaway: {note['takeaway'].strip()}")
-    if (note.get("contextMechanism") or "").strip():
-        parts.append(f"Mechanism: {note['contextMechanism'].strip()}")
-    if when_line:
-        parts.append(when_line)
-    if do_line:
-        parts.append(do_line)
-    if (note.get("critique") or "").strip():
-        parts.append(f"Critique: {note['critique'].strip()}")
-    return "\n".join(parts)
+    chapter = format_chapter_label(meta.get("currentChapter"))
+    if chapter:
+        lines.append(f"currentChapter: {_yaml_str(chapter)}")
+    lines.extend([f"pragya_book_id: {_yaml_str(book.get('id'))}", "---", "", f"# {_one_line(book.get('title'))}"])
+    byline = [_one_line(book.get("author")) or "Unknown Author", _kind_label(book)]
+    if book.get("status") == "finished":
+        finished = _iso_date(meta.get("finishedAt"))
+        byline.append(f"Finished {finished}" if finished else "Finished")
+    lines.append(f"*{' · '.join(byline)}*")
+
+    if has_book_capstone(meta):
+        cap = get_book_capstone(meta) or {}
+        lines.extend(["", "## Whole-Book Picture", f"<!-- capstone:{book['id']} -->"])
+        arc = _one_line(cap.get("arcOrThesis"))
+        if arc:
+            lines.append(f"**{'Arc' if book.get('kind') == 'fiction' else 'Thesis'}:** {arc}")
+        learnings = [x for x in (_one_line(i) for i in cap.get("keyLearnings") or []) if x]
+        if learnings:
+            lines.extend(["", "**Key Learnings**"])
+            lines.extend(f"- {item}" for item in learnings)
+        shift = _one_line(cap.get("perspectiveShift"))
+        if shift:
+            lines.extend(["", f"**How My Thinking Shifted:** {shift}"])
+        written = _iso_date(cap.get("completedAt"))
+        if written:
+            lines.extend(["", f"*Written {written}*"])
+
+    for note in timeline:
+        atomic = note.get("status") == "atomic"
+        badge = _note_badge(note, book)
+        if atomic:
+            lines.extend(["", f"## {badge} [[{note.get('slug')}]]"])
+        else:
+            lines.extend(["", f"### {badge} {_saved_note_title(note)}"])
+        lines.append(f"<!-- note:{note['id']} -->")
+        quote = (note.get("quote") or "").strip()
+        if quote:
+            lines.extend(f"> {q}".rstrip() for q in quote.splitlines())
+        body: list[str] = []
+        takeaway = _one_line(note.get("takeaway"))
+        if takeaway and (atomic or not _saved_title_info(note)[1]):
+            body.append(f"**Takeaway:** {takeaway}")
+        if atomic:
+            trig, act, _, _ = format_when_do_lines(
+                _one_line(note.get("deltaTrigger")), _one_line(note.get("deltaAction"))
+            )
+            delta_parts = []
+            if trig:
+                delta_parts.append(f"**WHEN** {trig}")
+            if act:
+                delta_parts.append(f"**DO** {act}")
+            if delta_parts:
+                body.append(" → ".join(delta_parts))
+        if body:
+            if quote:
+                lines.append("")
+            # Markdown hard line break ("two trailing spaces") between Takeaway and Delta.
+            lines.extend(line + ("  " if i < len(body) - 1 else "") for i, line in enumerate(body))
+    return "\n".join(lines).rstrip() + "\n"
+
+
+DOC_FALLBACK_WARNING = (
+    "The Companion Doc's structure could not be parsed safely, so only new notes were "
+    "appended at the end; existing entries and the capstone were not updated in place."
+)
+DOC_INPLACE_FAILED_WARNING = (
+    "In-place Doc update is unavailable (gdocs mutate raw-batch failed); only new notes "
+    "were appended at the end. Existing entries were left as they were."
+)
+
+
+def _append_only_payload(
+    existing_text: str, book: dict[str, Any], timeline: list[dict[str, Any]]
+) -> tuple[str, list[str]]:
+    """Legacy-safe path: append blocks whose marker is missing (header once if empty)."""
+    missing = [n for n in timeline if f"[note:{n['id']}]" not in existing_text]
+    if not existing_text.strip():
+        return lines_to_text(render_full_companion_doc(book, timeline)) + "\n", [n["id"] for n in timeline]
+    if not missing:
+        return "", []
+    entries = "\n\n".join(lines_to_text(render_note_block(n, book)) for n in missing)
+    return "\n\n" + entries + "\n", [n["id"] for n in missing]
+
+
+DOC_NO_REVISION_WARNING = (
+    "The Companion Doc read did not include a revisionId, so in-place edits could not be "
+    "guarded against concurrent typing; only new notes were appended at the end."
+)
+
+
+@dataclass
+class SyncOutcome:
+    """Result of syncing into an existing Doc (R2#2)."""
+
+    mode: str = "unchanged"
+    added: list[str] = field(default_factory=list)
+    updated: list[str] = field(default_factory=list)
+    capstone: str = "absent"
+    mirror_text: str | None = None
+    warnings: list[str] = field(default_factory=list)
+
+
+def _fallback_append(
+    backend: WorkspaceBackend,
+    doc_id: str,
+    book: dict[str, Any],
+    timeline: list[dict[str, Any]],
+    warning: str,
+    planned_capstone: str | None = None,
+) -> SyncOutcome:
+    """Append-only by marker from a FRESH read of the Doc (R1#3), plus a warning."""
+    existing_text = backend.read_doc_text(doc_id)
+    payload, added = _append_only_payload(existing_text, book, timeline)
+    out = SyncOutcome(mode="append-fallback", added=added, warnings=[warning])
+    if payload:
+        backend.append_doc_text(doc_id, payload)
+        out.mirror_text = (existing_text.rstrip() + payload) if existing_text.strip() else payload
+    if render_capstone_block(book):
+        present = f"[capstone:{book['id']}]" in existing_text
+        needs_edit = planned_capstone in ("added", "updated", "removed") or not present
+        out.capstone = "skipped" if needs_edit else "unchanged"
+    return out
+
+
+def _sync_existing_doc(
+    backend: WorkspaceBackend,
+    doc_id: str,
+    book: dict[str, Any],
+    timeline: list[dict[str, Any]],
+    doc_out_path: Path | None,
+) -> SyncOutcome:
+    """A1.4 sync into an existing Doc. Google: documents.get snapshot -> pure plan -> one
+    revision-guarded raw-batch (re-read + re-plan once on rejection, else append-only from a
+    fresh read). Text (doc-out / state file): plan applied to the mirror file."""
+    if isinstance(backend, GoogleWorkspaceBackend):
+        snap = backend.read_doc_snapshot(doc_id)
+        if snap is None:
+            return _fallback_append(backend, doc_id, book, timeline, DOC_FALLBACK_WARNING)
+        lines, docs_mode = snap.lines, True
+    elif doc_out_path is not None and doc_out_path.exists():
+        snap, docs_mode = None, False
+        lines = text_to_doc_lines(doc_out_path.read_text(encoding="utf-8"))
+    else:
+        snap, docs_mode, lines = None, False, []
+
+    if not any(ln.text.strip() for ln in lines):
+        # B4.5: an existing but empty Doc gets the header once, then the timeline.
+        full = lines_to_text(render_full_companion_doc(book, timeline)) + "\n"
+        backend.append_doc_text(doc_id, full)
+        has_content = bool(timeline) or bool(render_capstone_block(book))
+        return SyncOutcome(
+            mode="append" if has_content else "unchanged",
+            added=[n["id"] for n in timeline],
+            capstone="added" if render_capstone_block(book) else "absent",
+            mirror_text=full,
+        )
+
+    plan = plan_companion_doc(lines, book, timeline)
+    out = SyncOutcome(capstone=plan.capstone)
+    if not plan.edits:
+        if doc_out_path is not None and not doc_out_path.exists():
+            out.mirror_text = lines_to_text(lines)
+        return out
+
+    if not docs_mode:
+        out.mode, out.added, out.updated = "in-place", plan.added_ids, plan.updated_ids
+        out.mirror_text = lines_to_text(apply_doc_plan(lines, plan))
+        return out
+
+    if all(e.start == e.end == len(lines) for e in plan.edits):
+        tail = "\n".join(lines_to_text(e.lines) for e in plan.edits)
+        backend.append_doc_text(doc_id, tail + "\n")
+        out.mode, out.added, out.updated = "append", plan.added_ids, plan.updated_ids
+        out.mirror_text = lines_to_text(apply_doc_plan(lines, plan))
+        return out
+
+    assert snap is not None
+    if not snap.revision_id:
+        return _fallback_append(backend, doc_id, book, timeline, DOC_NO_REVISION_WARNING, plan.capstone)
+
+    applied_plan = plan
+    for attempt in range(2):
+        try:
+            backend.batch_update_doc(doc_id, doc_plan_to_requests(lines, plan), snap.revision_id)
+            out.mode, out.added, out.updated = "in-place", plan.added_ids, plan.updated_ids
+            out.capstone = plan.capstone
+            out.mirror_text = lines_to_text(apply_doc_plan(lines, plan))
+            return out
+        except CliError:
+            fresh = backend.read_doc_snapshot(doc_id)
+            if fresh is None:
+                break
+            replan = plan_companion_doc(fresh.lines, book, timeline)
+            if not replan.edits:
+                # The batch landed after all (late success) or the Doc already matches.
+                out.mode, out.added, out.updated = "in-place", applied_plan.added_ids, applied_plan.updated_ids
+                out.mirror_text = lines_to_text(fresh.lines)
+                return out
+            if attempt == 0 and fresh.revision_id and fresh.revision_id != snap.revision_id:
+                # Rejected because the Doc changed: re-plan once against the fresh read.
+                snap, lines, plan = fresh, fresh.lines, replan
+                applied_plan = replan
+                continue
+            break
+    return _fallback_append(backend, doc_id, book, timeline, DOC_INPLACE_FAILED_WARNING, plan.capstone)
 
 
 def cmd_book_doc_sync(args: argparse.Namespace, backend: WorkspaceBackend) -> dict[str, Any]:
+    """A1.1-A1.4: two-tier timeline sync with true in-place block replacement (OQ-2).
+
+    `mode` is one of DOC_SYNC_MODES:
+    - created: a new Doc was created with the full timeline.
+    - in-place: planned block replacements/insertions (doc-out text, or one
+      revision-guarded Docs batchUpdate).
+    - append: only tail additions / an empty existing Doc (sent through the append ops).
+    - append-fallback: structure unsafe, no revisionId, or the in-place write failed ->
+      append-only by marker from a fresh read + a warning.
+    - unchanged: nothing to write.
+    `capstone` is one of CAPSTONE_SYNC_STATES.
+    """
     ws = backend.load_workspace()
     book = resolve_book(ws["books"], args.book)
-
-    atomic_notes = [
-        n
-        for n in ws["notes"]
-        if n.get("bookId") == book["id"] and n.get("status") == "atomic"
-    ]
-    atomic_notes.sort(key=lambda n: (float(n.get("pos") or 0), str(n.get("createdAt") or "")))
+    timeline, shielded_count = select_book_timeline_with_shield(
+        ws["notes"],
+        book,
+        bool(getattr(args, "include_drafts", False)),
+        bool(getattr(args, "include_spoilers", False)),
+    )
 
     existing_doc_url = (book.get("docUrl") or "").strip()
     doc_id = parse_doc_id(existing_doc_url)
+    doc_out_path = Path(args.doc_out) if getattr(args, "doc_out", None) else None
     created_doc = False
 
-    doc_out_path = Path(args.doc_out) if getattr(args, "doc_out", None) else None
-    existing_text = ""
-    if doc_out_path and doc_out_path.exists():
-        existing_text = doc_out_path.read_text(encoding="utf-8")
-    elif doc_id and isinstance(backend, GoogleWorkspaceBackend):
-        existing_text = backend.read_doc_text(doc_id)
-
-    unsynced = [
-        n for n in atomic_notes if f"[note:{n['id']}]" not in existing_text
-    ]
-
-    header_block = f"# Pragya · {book['title']}\nAuthor: {book['author']}\n"
-    entries_text = "\n\n".join(_format_companion_entry(n, book) for n in unsynced)
-
     if not doc_id:
-        full_initial = header_block + ("\n" + entries_text if entries_text else "")
-        doc_id, new_url = backend.create_companion_doc(
-            f"Pragya · {book['title']}", "", book_id=book["id"]
-        )
+        doc_id, new_url = backend.create_companion_doc(f"Pragya · {book['title']}", "", book_id=book["id"])
         created_doc = True
         updated_book = json.loads(json.dumps(book))
         updated_book["docUrl"] = new_url
@@ -3616,37 +4585,41 @@ def cmd_book_doc_sync(args: argparse.Namespace, backend: WorkspaceBackend) -> di
             expected_base_updated_at=(book.get("meta") or {}).get("updatedAt"),
             force=bool(getattr(args, "force", False)),
         )
-        if full_initial.strip():
-            backend.append_doc_text(doc_id, full_initial.rstrip() + "\n")
+        full = lines_to_text(render_full_companion_doc(book, timeline)) + "\n"
+        backend.append_doc_text(doc_id, full)
+        outcome = SyncOutcome(
+            mode="created",
+            added=[n["id"] for n in timeline],
+            capstone="added" if render_capstone_block(book) else "absent",
+            mirror_text=full,
+        )
         final_doc_url = new_url
-        if doc_out_path:
-            doc_out_path.parent.mkdir(parents=True, exist_ok=True)
-            doc_out_path.write_text(full_initial.rstrip() + "\n", encoding="utf-8")
     else:
         final_doc_url = existing_doc_url
-        if entries_text:
-            # B4.5: an existing but empty Doc gets the header once, then the entries.
-            prefix = "\n\n" if existing_text.strip() else header_block + "\n"
-            append_payload = prefix + entries_text + "\n"
-            backend.append_doc_text(doc_id, append_payload)
-            if doc_out_path:
-                doc_out_path.parent.mkdir(parents=True, exist_ok=True)
-                base_txt = existing_text if existing_text.strip() else header_block
-                doc_out_path.write_text(
-                    base_txt.rstrip() + "\n\n" + entries_text + "\n",
-                    encoding="utf-8",
-                )
-        elif doc_out_path and not doc_out_path.exists():
-            doc_out_path.parent.mkdir(parents=True, exist_ok=True)
-            doc_out_path.write_text(header_block.rstrip() + "\n", encoding="utf-8")
+        outcome = _sync_existing_doc(backend, doc_id, book, timeline, doc_out_path)
 
+    if doc_out_path is not None:
+        text = outcome.mirror_text
+        if text is None and not doc_out_path.exists():
+            text = lines_to_text(render_doc_header(book))
+        if text is not None:
+            doc_out_path.parent.mkdir(parents=True, exist_ok=True)
+            doc_out_path.write_text(text if text.endswith("\n") else text + "\n", encoding="utf-8")
+
+    synced = outcome.added + [i for i in outcome.updated if i not in outcome.added]
     return {
         "bookId": book["id"],
         "docId": doc_id,
         "docUrl": final_doc_url,
         "createdDoc": created_doc,
-        "syncedNoteCount": len(unsynced),
-        "syncedNoteIds": [n["id"] for n in unsynced],
+        "mode": outcome.mode,
+        "syncedNoteCount": len(synced),
+        "syncedNoteIds": synced,
+        "addedNoteIds": outcome.added,
+        "updatedNoteIds": outcome.updated,
+        "capstone": outcome.capstone,
+        "shieldedCount": shielded_count,
+        "warnings": outcome.warnings,
     }
 
 
@@ -3830,11 +4803,15 @@ def build_parser() -> argparse.ArgumentParser:
     # 5. export-md
     p_exp = sub.add_parser("export-md", parents=[common], help="Idempotent 1-way Markdown export.")
     p_exp.add_argument("--output-dir", default="./reading-notes", help="Target directory for .md files.")
+    p_exp.add_argument("--include-drafts", action="store_true", help="Also list inbox / in-reflection notes in books/<book>.md.")
+    p_exp.add_argument("--include-spoilers", action="store_true", help="Also list notes ahead of the bookmark / sealed predictions in books/<book>.md.")
 
     # 6. book-doc-sync
-    p_doc = sub.add_parser("book-doc-sync", parents=[common], help="Sync atomic notes to a Book Companion Doc.")
+    p_doc = sub.add_parser("book-doc-sync", parents=[common], help="Sync the book's notes timeline (atomic + saved) and capstone into its Companion Doc, in place; never touches your own text.")
     p_doc.add_argument("--book", required=True, help="Book UUID or title.")
     p_doc.add_argument("--doc-out", default="", help="Optional local text output mirror for offline testing.")
+    p_doc.add_argument("--include-drafts", action="store_true", help="Also sync inbox / in-reflection notes (as saved-tier entries).")
+    p_doc.add_argument("--include-spoilers", action="store_true", help="Also sync notes ahead of the bookmark / sealed predictions of an unfinished book.")
 
     return parser
 

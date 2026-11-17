@@ -32,12 +32,19 @@ export function effectiveNoteNorm(note: Note, book?: Book | null): number {
   return Number.isFinite(note.normalizedPos) ? note.normalizedPos : 0;
 }
 
+/**
+ * normalizedPos is rounded to 6 decimals on every Sheet write (sheetCodecs toFixed(6) and
+ * the CLI), so a note exactly at the bookmark must not read as ahead of it.
+ * Parity: SPOILER_NORM_EPSILON in scripts/pragya_cli.py.
+ */
+export const SPOILER_NORM_EPSILON = 1e-6;
+
 export function isNoteSpoiler(note: Note, book?: Book | null): boolean {
   if (!book || book.status === 'finished') {
     return false;
   }
   if (book.totalPos > 0 || book.posUnit === 'percent') {
-    return effectiveNoteNorm(note, book) > book.normalizedPos;
+    return effectiveNoteNorm(note, book) > book.normalizedPos + SPOILER_NORM_EPSILON;
   }
   return Number(note.pos) > book.currentPos;
 }
