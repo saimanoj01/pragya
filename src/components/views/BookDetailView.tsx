@@ -30,6 +30,7 @@ import {
 import { showToast } from '../../utils/toast';
 import { DriveImage } from '../common/DriveImage';
 import { describeSyncError } from '../../utils/apiErrors';
+import { noteHref } from '../../utils/noteVisibility';
 
 export interface BookDetailViewProps {
   bookId: string;
@@ -116,7 +117,7 @@ export const BookDetailView: React.FC<BookDetailViewProps> = ({
         const active = bookNotes[focusedIndex];
         if (active) {
           e.preventDefault();
-          navigateTo(`#/note/${encodeURIComponent(active.slug)}`);
+          navigateTo(noteHref(active, book, revealedSlugs.has(active.slug)));
         }
       }
     };
@@ -484,7 +485,7 @@ export const BookDetailView: React.FC<BookDetailViewProps> = ({
                     </div>
                     <button
                       type="button"
-                      onClick={() => navigateTo(`#/note/${encodeURIComponent(note.slug)}`)}
+                      onClick={() => navigateTo(noteHref(note, book, revealedSlugs.has(note.slug)))}
                       className="font-semibold text-foreground hover:underline whitespace-nowrap"
                     >
                       View Note ↗

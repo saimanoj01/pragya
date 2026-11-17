@@ -702,6 +702,58 @@ test('Fix-up R1#2: deleteSession re-verifies right before deleteDimension (shift
   }
 });
 
+test('Batch 4 R2-a: deleteRowById is idempotent — id gone on re-resolve → false, no batchUpdate, no throw', async () => {
+  localStorage.clear();
+  const orig = globalThis.fetch;
+  try {
+    localStorage.setItem(SPREADSHEET_ID_STORAGE_KEY, 'sheet-1');
+    const calls = [];
+    let colAReads = 0;
+    globalThis.fetch = idCellFetch({
+      calls,
+      colA: [['id']],
+      // Another device deleted sess-target between the first A:A read and the verify.
+      idAt: (tab, row) => (tab === 'Sessions' && row === 2 ? 'sess-other' : ''),
+      extra: [
+        u =>
+          u.includes('fields=sheets.properties')
+            ? json({ sheets: [{ properties: { sheetId: 22, title: 'Sessions' } }] })
+            : null,
+        u =>
+          u.includes('/values/Sessions!A%3AA')
+            ? json({ values: ++colAReads === 1 ? [['id'], ['sess-target']] : [['id'], ['sess-other']] })
+            : null,
+      ],
+    });
+    const adapter = new GoogleSheetsAdapter(() => 'tok', undefined, undefined, { sleep: noSleep });
+    assert.equal(await adapter.deleteRowById('Sessions', 'sess-target'), false);
+    assert.equal(calls.filter(c => c.url.includes(':batchUpdate')).length, 0);
+    colAReads = 0;
+    await adapter.deleteSession('sess-target');
+    assert.equal(calls.filter(c => c.url.includes(':batchUpdate')).length, 0);
+  } finally {
+    globalThis.fetch = orig;
+    localStorage.clear();
+  }
+});
+
+test('Batch 4 R2-b: account email compare is case-insensitive (no false switch, no data wipe)', () => {
+  localStorage.clear();
+  try {
+    applySignedInAccount('Reader@Example.com');
+    seedAccountArtifacts();
+    assert.equal(applySignedInAccount('reader@example.com'), false);
+    assert.equal(applySignedInAccount('  READER@EXAMPLE.COM '), false);
+    assert.ok(readDraft(CAPTURE_DRAFT_KEY));
+    assert.equal(localStorage.getItem(SPREADSHEET_ID_STORAGE_KEY), 'sheet-a');
+    // A genuinely different account still switches.
+    assert.equal(applySignedInAccount('other@example.com'), true);
+    assert.equal(readDraft(CAPTURE_DRAFT_KEY), null);
+  } finally {
+    localStorage.clear();
+  }
+});
+
 test('Fix-up R1#3 / R2#1: latest wins for non-editor keys; chapter keys are not editor-owned', () => {
   for (const key of ['currentChapter', 'chapter', 'exportedAt', 'ocrBackfilled']) {
     assert.equal(BOOK_EDITOR_OWNED_META_KEYS.includes(key) || NOTE_EDITOR_OWNED_META_KEYS.includes(key), false, key);

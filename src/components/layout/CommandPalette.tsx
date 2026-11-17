@@ -14,6 +14,7 @@ import {
 import type { Book, Note } from '../../types/pragya';
 import { navigateTo } from '../../utils/navigation';
 import { isNoteSpoiler } from '../../utils/spoilerMath';
+import { buildNoteSearchHaystack, noteHref, shieldedNoteLabel } from '../../utils/noteVisibility';
 
 export interface CommandPaletteProps {
   isOpen: boolean;
@@ -180,24 +181,29 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
     for (const note of notes) {
       const book = bookMap.get(note.bookId);
       const spoiler = isNoteSpoiler(note, book);
-      const title = String(note.meta?.title || note.slug || '');
+      // B2.2 / decisions.md #2: a shielded note shows only its position; title, slug and
+      // content never reach the palette (title, keywords or the DOM test id).
+      const title = spoiler
+        ? shieldedNoteLabel(note, book)
+        : String(note.meta?.title || note.slug || '');
       list.push({
-        id: `note-${note.slug}`,
+        id: spoiler ? `note-shielded-${note.id}` : `note-${note.slug}`,
         title,
         subtitle: spoiler
           ? `${book?.title || 'Book'} · Spoiler Shielded`
           : `${book?.title || 'Book'} · ${note.takeaway || note.quote}`.slice(0, 90),
         category: 'Notes',
         icon: FileText,
-        keywords: [
-          title.toLowerCase(),
-          String(note.slug || '').toLowerCase(),
-          ...(spoiler
-            ? []
-            : [String(note.takeaway || '').toLowerCase(), String(note.quote || '').toLowerCase()]),
-          ...(Array.isArray(note.tags) ? note.tags : []).map(t => String(t).toLowerCase()),
-        ],
-        action: () => navigateTo(`#/note/${encodeURIComponent(note.slug)}`),
+        keywords: spoiler
+          ? [buildNoteSearchHaystack(note, book)]
+          : [
+              title.toLowerCase(),
+              String(note.slug || '').toLowerCase(),
+              String(note.takeaway || '').toLowerCase(),
+              String(note.quote || '').toLowerCase(),
+              ...(Array.isArray(note.tags) ? note.tags : []).map(t => String(t).toLowerCase()),
+            ],
+        action: () => navigateTo(noteHref(note, book)),
       });
     }
 

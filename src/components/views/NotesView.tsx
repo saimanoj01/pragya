@@ -15,6 +15,12 @@ import { usePragya } from '../../context/PragyaContext';
 import { getRenderableAttachments } from '../../utils/metaCodecs';
 import { isSafeHttpUrl, navigateTo } from '../../utils/navigation';
 import { formatPosDisplay, isNoteSpoiler, isSealedPrediction } from '../../utils/spoilerMath';
+import {
+  SPOILER_SEARCH_FOOTNOTE,
+  buildNoteSearchHaystack,
+  isShielded,
+  noteHref,
+} from '../../utils/noteVisibility';
 import { extractNoteWikilinks } from '../../utils/wikilinks';
 import { DriveImage } from '../common/DriveImage';
 
@@ -88,22 +94,21 @@ export const NotesView: React.FC<NotesViewProps> = ({
         }
 
         if (!q) return true;
-        const book = bookMap.get(n.bookId);
-        const hideSpoilerContent = isNoteSpoiler(n, book) && !revealedSlugs.has(n.slug);
-        const haystack = [
-          n.meta?.title || '',
-          n.slug,
-          ...(hideSpoilerContent ? [] : [n.quote, n.takeaway]),
-          ...(Array.isArray(n.tags) ? n.tags : []),
-          book?.title || '',
-          book?.author || '',
-        ]
-          .join(' ')
-          .toLowerCase();
+        // B2.2: an unrevealed spoiler is searchable by tags + book title/author only.
+        const haystack = buildNoteSearchHaystack(n, bookMap.get(n.bookId), {
+          revealed: revealedSlugs.has(n.slug),
+        });
         return haystack.includes(q);
       })
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   }, [bookMap, filter, notes, query, revealedSlugs]);
+
+  const showSpoilerSearchFootnote = useMemo(
+    () =>
+      query.trim() !== '' &&
+      notes.some(n => isShielded(n, bookMap.get(n.bookId), revealedSlugs.has(n.slug))),
+    [bookMap, notes, query, revealedSlugs]
+  );
 
   const revealNote = (slug: string) => {
     setRevealedSlugs(prev => {
@@ -157,7 +162,7 @@ export const NotesView: React.FC<NotesViewProps> = ({
         const active = filteredNotes[focusedIndex];
         if (active) {
           e.preventDefault();
-          navigateTo(`#/note/${encodeURIComponent(active.slug)}`);
+          navigateTo(noteHref(active, bookMap.get(active.bookId), revealedSlugs.has(active.slug)));
         }
       } else if (key === 'd' && onDeepenNote) {
         const active = filteredNotes[focusedIndex];
@@ -459,7 +464,7 @@ export const NotesView: React.FC<NotesViewProps> = ({
 
                   <button
                     type="button"
-                    onClick={() => navigateTo(`#/note/${encodeURIComponent(note.slug)}`)}
+                    onClick={() => navigateTo(noteHref(note, book, isRevealed))}
                     className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground hover:text-foreground inline-flex items-center gap-1 whitespace-nowrap"
                   >
                     <span>VIEW NOTE</span>
@@ -470,6 +475,12 @@ export const NotesView: React.FC<NotesViewProps> = ({
             );
           })}
         </div>
+      )}
+
+      {showSpoilerSearchFootnote && (
+        <p data-testid="notes-spoiler-search-footnote" className="text-label text-muted-foreground">
+          {SPOILER_SEARCH_FOOTNOTE}
+        </p>
       )}
     </div>
   );

@@ -1,11 +1,17 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import type { Note } from '../../types/pragya';
+import type { Book, Note } from '../../types/pragya';
+import { filterWikilinkCandidates } from '../../utils/noteVisibility';
 
 export interface WikilinkAutocompleteProps {
   textareaRef: React.RefObject<HTMLTextAreaElement | null>;
   value: string;
   cursorPos: number | null;
   notes: Note[];
+  /**
+   * B2.3: notes ahead of their book's bookmark are never offered. Required (R2#3) so a
+   * new caller cannot silently skip the spoiler filter.
+   */
+  books: Book[];
   excludeNoteId?: string;
   excludeSlug?: string;
   onSelect: (nextValue: string, nextCursorPos: number) => void;
@@ -34,6 +40,7 @@ export const WikilinkAutocomplete: React.FC<WikilinkAutocompleteProps> = ({
   value,
   cursorPos,
   notes,
+  books,
   excludeNoteId,
   excludeSlug,
   onSelect,
@@ -55,20 +62,11 @@ export const WikilinkAutocomplete: React.FC<WikilinkAutocompleteProps> = ({
 
   const options = useMemo(() => {
     if (!match) return [];
-    const q = match.query.trim().toLowerCase();
-    return notes
-      .filter(n => {
-        if (excludeNoteId && n.id === excludeNoteId) return false;
-        if (excludeSlug && n.slug === excludeSlug) return false;
-        if (!q) return true;
-        return (
-          n.slug.toLowerCase().includes(q) ||
-          (n.meta?.title || '').toLowerCase().includes(q) ||
-          n.takeaway.toLowerCase().includes(q)
-        );
-      })
-      .slice(0, 6);
-  }, [excludeNoteId, excludeSlug, match, notes]);
+    return filterWikilinkCandidates(notes, books, match.query, {
+      noteId: excludeNoteId,
+      slug: excludeSlug,
+    });
+  }, [books, excludeNoteId, excludeSlug, match, notes]);
 
   const isOpen = Boolean(
     match && dismissedAtStart !== match.startIndex && options.length > 0

@@ -2,9 +2,11 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import App from './App.tsx';
 import { ErrorBoundary } from './components/common/ErrorBoundary';
+import { watchServiceWorkerUpdates } from './utils/swUpdate';
 import './index.css';
 
 if (import.meta.env.PROD && 'serviceWorker' in navigator) {
+  watchServiceWorkerUpdates(navigator.serviceWorker);
   const registerSw = () => {
     navigator.serviceWorker.register(`${import.meta.env.BASE_URL}sw.js`).catch(() => {
       // Ignore registration failure in restricted webviews

@@ -251,7 +251,8 @@ export const PragyaProvider: React.FC<{ children: React.ReactNode }> = ({ childr
           servedOffline = Boolean(ws.isOfflineReadOnly) && !isMockModeRef.current;
           if (ws.servedFromCacheDueToRateLimit) servedRateLimitedCache = true;
           setOfflineReadOnly(servedOffline);
-          if (!servedOffline) {
+          // N2: cached data served because Google throttled us is not a fresh sync.
+          if (!servedOffline && !ws.servedFromCacheDueToRateLimit) {
             setLastSyncedAt(new Date().toISOString());
           }
         });

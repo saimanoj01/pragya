@@ -20,12 +20,24 @@ export function computeNormalizedPos(
   return 0;
 }
 
+/**
+ * B2.4: the note's position normalized against the book's *current* scale. A stored
+ * `normalizedPos` goes stale when `totalPos` is edited later (e.g. 0 → 300), so it is
+ * recomputed whenever the book has a usable scale. Parity: `effective_note_norm` (CLI).
+ */
+export function effectiveNoteNorm(note: Note, book?: Book | null): number {
+  if (book && (book.totalPos > 0 || book.posUnit === 'percent')) {
+    return computeNormalizedPos(Number(note.pos) || 0, book.totalPos, book.posUnit);
+  }
+  return Number.isFinite(note.normalizedPos) ? note.normalizedPos : 0;
+}
+
 export function isNoteSpoiler(note: Note, book?: Book | null): boolean {
   if (!book || book.status === 'finished') {
     return false;
   }
   if (book.totalPos > 0 || book.posUnit === 'percent') {
-    return note.normalizedPos > book.normalizedPos;
+    return effectiveNoteNorm(note, book) > book.normalizedPos;
   }
   return Number(note.pos) > book.currentPos;
 }

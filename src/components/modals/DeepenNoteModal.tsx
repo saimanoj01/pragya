@@ -584,6 +584,7 @@ export const DeepenNoteModal: React.FC<DeepenNoteModalProps> = ({
             value={takeaway}
             cursorPos={takeawayCursor}
             notes={notes}
+            books={books}
             excludeNoteId={note.id}
             excludeSlug={note.slug}
             onSelect={(nextVal, nextCursor) => {
@@ -625,6 +626,7 @@ export const DeepenNoteModal: React.FC<DeepenNoteModalProps> = ({
             value={contextMechanism}
             cursorPos={contextCursor}
             notes={notes}
+            books={books}
             excludeNoteId={note.id}
             excludeSlug={note.slug}
             onSelect={(nextVal, nextCursor) => {
@@ -755,6 +757,7 @@ export const DeepenNoteModal: React.FC<DeepenNoteModalProps> = ({
             value={critique}
             cursorPos={critiqueCursor}
             notes={notes}
+            books={books}
             excludeNoteId={note.id}
             excludeSlug={note.slug}
             onSelect={(nextVal, nextCursor) => {

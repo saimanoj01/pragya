@@ -18,6 +18,7 @@ import { navigateTo } from '../../utils/navigation';
 import { getLocalDateString } from '../../utils/sessionCoalesce';
 import { buildSnapshot, validateSnapshotPayload } from '../../utils/snapshot';
 import { formatPosDisplay, isUnlockedPrediction } from '../../utils/spoilerMath';
+import { getPracticeDeltaLists, noteHref, shieldedNoteLabel } from '../../utils/noteVisibility';
 import { getShuffleEmptyReason, selectTakeawayShuffle } from '../../utils/takeawayShuffle';
 import { showToast } from '../../utils/toast';
 import { ImportConfirmModal } from '../modals/ImportConfirmModal';
@@ -49,15 +50,19 @@ export const PracticeView: React.FC = () => {
     return map;
   }, [books]);
 
-  const activeDeltas = useMemo(
-    () => notes.filter(n => n.deltaStatus === 'active'),
-    [notes]
+  // R1#1: a delta on a note ahead of the bookmark renders as "Shielded note · {pos}" with
+  // a Reveal action (local, per session) — never its WHEN/DO, title or slug.
+  const [revealedDeltaIds, setRevealedDeltaIds] = useState<Set<string>>(() => new Set());
+  const revealDelta = useCallback((id: string) => {
+    setRevealedDeltaIds(prev => new Set(prev).add(id));
+  }, []);
+  const deltaLists = useMemo(
+    () => getPracticeDeltaLists(notes, bookMap, revealedDeltaIds),
+    [bookMap, notes, revealedDeltaIds]
   );
-
-  const archivedDeltas = useMemo(
-    () => notes.filter(n => n.deltaStatus === 'paused' || n.deltaStatus === 'graduated'),
-    [notes]
-  );
+  const activeDeltas = deltaLists.active;
+  const archivedDeltas = deltaLists.archived;
+  const shieldedDeltaIds = deltaLists.shieldedIds;
 
   const shuffleCandidates = useMemo(
     () => selectTakeawayShuffle(notes, books, todayDate, 3),
@@ -142,19 +147,19 @@ export const PracticeView: React.FC = () => {
         setFocusedDeltaIdx(prev => Math.max(0, prev - 1));
       } else if (key === '1') {
         const active = activeDeltas[focusedDeltaIdx];
-        if (active) {
+        if (active && !shieldedDeltaIds.has(active.id)) {
           e.preventDefault();
           void handleCheckIn(active, 'applied');
         }
       } else if (key === '2') {
         const active = activeDeltas[focusedDeltaIdx];
-        if (active) {
+        if (active && !shieldedDeltaIds.has(active.id)) {
           e.preventDefault();
           void handleCheckIn(active, 'missed');
         }
       } else if (key === '3') {
         const active = activeDeltas[focusedDeltaIdx];
-        if (active) {
+        if (active && !shieldedDeltaIds.has(active.id)) {
           e.preventDefault();
           void handleCheckIn(active, 'no-trigger');
         }
@@ -164,14 +169,16 @@ export const PracticeView: React.FC = () => {
         const active = activeDeltas[focusedDeltaIdx];
         if (active) {
           e.preventDefault();
-          navigateTo(`#/note/${encodeURIComponent(active.slug)}`);
+          navigateTo(
+            noteHref(active, bookMap.get(active.bookId), !shieldedDeltaIds.has(active.id))
+          );
         }
       }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [activeDeltas, focusedDeltaIdx, handleCheckIn]);
+  }, [activeDeltas, bookMap, focusedDeltaIdx, handleCheckIn, shieldedDeltaIds]);
 
   const handleSaveRefinedTrigger = async (note: Note) => {
     const normalized = normalizeDeltaTrigger(triggerDraft);
@@ -397,6 +404,7 @@ export const PracticeView: React.FC = () => {
               };
               const isFocused = idx === focusedDeltaIdx;
               const isEditingTrigger = editingTriggerNoteId === note.id;
+              const deltaShielded = shieldedDeltaIds.has(note.id);
 
               return (
                 <article
@@ -411,10 +419,12 @@ export const PracticeView: React.FC = () => {
                     <div className="flex flex-wrap items-center gap-2 min-w-0">
                       <button
                         type="button"
-                        onClick={() => navigateTo(`#/note/${encodeURIComponent(note.slug)}`)}
+                        onClick={() => navigateTo(noteHref(note, book, !deltaShielded))}
                         className="font-mono text-label font-semibold text-foreground hover:underline truncate"
                       >
-                        [[{note.meta.title || note.slug}]]
+                        {deltaShielded
+                          ? shieldedNoteLabel(note, book)
+                          : `[[${note.meta.title || note.slug}]]`}
                       </button>
                       <span className="px-2 py-0.5 text-[11px] rounded bg-surface2 border border-border text-muted-foreground truncate max-w-[220px]">
                         {book?.title || 'Book'}
@@ -437,16 +447,32 @@ export const PracticeView: React.FC = () => {
                     </div>
                   </div>
 
-                  <div className="space-y-1">
-                    <p className="text-body text-foreground">
-                      <strong className="font-semibold">WHEN</strong> {display.triggerBody}
-                    </p>
-                    <p className="text-body text-foreground font-mono text-[13px]">
-                      <strong className="font-semibold">DO</strong> {display.actionBody}
-                    </p>
-                  </div>
+                  {deltaShielded ? (
+                    <div className="flex flex-wrap items-center justify-between gap-2 rounded-[10px] bg-surface2/70 border border-border px-3 py-2">
+                      <span className="text-label text-muted-foreground">
+                        Ahead of your bookmark — reveal to see this delta.
+                      </span>
+                      <button
+                        type="button"
+                        data-testid={`delta-reveal-btn-${note.id}`}
+                        onClick={() => revealDelta(note.id)}
+                        className="h-8 px-3 rounded-[8px] bg-primary text-primary-foreground text-label font-semibold whitespace-nowrap"
+                      >
+                        Reveal Note
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="space-y-1">
+                      <p className="text-body text-foreground">
+                        <strong className="font-semibold">WHEN</strong> {display.triggerBody}
+                      </p>
+                      <p className="text-body text-foreground font-mono text-[13px]">
+                        <strong className="font-semibold">DO</strong> {display.actionBody}
+                      </p>
+                    </div>
+                  )}
 
-                  {isEditingTrigger && (
+                  {isEditingTrigger && !deltaShielded && (
                     <div className="rounded-[10px] bg-surface2/70 border border-border p-3 space-y-2">
                       <div className="text-[11px] font-semibold uppercase text-warning">
                         Refine WHEN Trigger Condition
@@ -485,6 +511,8 @@ export const PracticeView: React.FC = () => {
                   {/* Check-in & Lifecycle Actions */}
                   <div className="pt-2 border-t border-border/60 flex flex-wrap items-center justify-between gap-2">
                     <div className="flex flex-wrap items-center gap-1.5">
+                      {!deltaShielded && (
+                      <>
                       <button
                         type="button"
                         data-testid={`delta-apply-btn-${note.id}`}
@@ -511,6 +539,8 @@ export const PracticeView: React.FC = () => {
                       >
                         Didn&apos;t Come Up (3)
                       </button>
+                      </>
+                      )}
                     </div>
 
                     <div className="flex flex-wrap items-center gap-1.5">
@@ -562,6 +592,8 @@ export const PracticeView: React.FC = () => {
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             {archivedDeltas.map(note => {
               const display = formatWhenDoDisplay(note.deltaTrigger, note.deltaAction);
+              const archivedBook = bookMap.get(note.bookId);
+              const deltaShielded = shieldedDeltaIds.has(note.id);
               return (
                 <article
                   key={note.id}
@@ -571,21 +603,33 @@ export const PracticeView: React.FC = () => {
                     <div className="flex items-center justify-between gap-2">
                       <button
                         type="button"
-                        onClick={() => navigateTo(`#/note/${encodeURIComponent(note.slug)}`)}
+                        onClick={() => navigateTo(noteHref(note, archivedBook, !deltaShielded))}
                         className="font-mono text-label font-semibold text-foreground hover:underline truncate"
                       >
-                        [[{note.meta.title || note.slug}]]
+                        {deltaShielded
+                          ? shieldedNoteLabel(note, archivedBook)
+                          : `[[${note.meta.title || note.slug}]]`}
                       </button>
                       <span className="px-2 py-0.5 text-[10px] font-semibold uppercase rounded bg-surface2 border border-border text-muted-foreground shrink-0">
                         {note.deltaStatus}
                       </span>
                     </div>
-                    {display.triggerBody && (
+                    {deltaShielded && (
+                      <button
+                        type="button"
+                        data-testid={`delta-reveal-btn-${note.id}`}
+                        onClick={() => revealDelta(note.id)}
+                        className="h-7 px-2.5 rounded-[8px] bg-surface2 hover:bg-secondary border border-border text-label font-semibold text-foreground"
+                      >
+                        Reveal Note
+                      </button>
+                    )}
+                    {!deltaShielded && display.triggerBody && (
                       <p className="text-label text-muted-foreground">
                         <strong className="text-foreground">WHEN</strong> {display.triggerBody}
                       </p>
                     )}
-                    {display.actionBody && (
+                    {!deltaShielded && display.actionBody && (
                       <p className="text-label text-muted-foreground font-mono">
                         <strong className="text-foreground">DO</strong> {display.actionBody}
                       </p>

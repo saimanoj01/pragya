@@ -1,7 +1,9 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  AlertTriangle,
   ArrowLeft,
   Edit3,
+  Eye,
   FileText,
   Layers,
   Link2,
@@ -15,13 +17,21 @@ import { usePragya } from '../../context/PragyaContext';
 import { isEditableElement } from '../../hooks/useKeyboardShortcuts';
 import { getRenderableAttachments } from '../../utils/metaCodecs';
 import { formatWhenDoDisplay } from '../../utils/deltaFormat';
-import { isSafeHttpUrl, navigateTo } from '../../utils/navigation';
+import { isSafeHttpUrl, navigateTo, replaceHash } from '../../utils/navigation';
 import {
   formatPosDisplay,
   isSealedPrediction,
   isUnlockedPrediction,
 } from '../../utils/spoilerMath';
 import { computeBacklinks, extractNoteWikilinks } from '../../utils/wikilinks';
+import {
+  NOTE_REVEALED_ANNOUNCEMENT,
+  getNoteDetailVisibility,
+  isShielded,
+  noteHref,
+  resolveNoteRef,
+  shieldedNoteLabel,
+} from '../../utils/noteVisibility';
 import { DriveImage } from '../common/DriveImage';
 import { ImageLightbox } from '../modals/ImageLightbox';
 
@@ -43,11 +53,42 @@ export const NoteDetailView: React.FC<NoteDetailViewProps> = ({
     Extract<Attachment, { type: 'image' }> | null
   >(null);
 
-  const note = useMemo(() => notes.find(n => n.slug === noteSlug) || null, [notes, noteSlug]);
+  // Batch 4 decision: the route segment is a slug or (for shielded notes) the note id.
+  const note = useMemo(() => resolveNoteRef(notes, noteSlug) || null, [notes, noteSlug]);
   const book = useMemo(
     () => (note ? books.find(b => b.id === note.bookId) || null : null),
     [books, note]
   );
+  const bookById = useMemo(() => new Map(books.map(b => [b.id, b] as const)), [books]);
+
+  // B2.1: local reveal state, keyed to the note id so it resets whenever the note changes
+  // (and survives the uuid → slug URL swap on reveal).
+  const [revealedId, setRevealedId] = useState<string | null>(null);
+  const [announcement, setAnnouncement] = useState('');
+  const headingRef = useRef<HTMLHeadingElement>(null);
+  // Reset during render (not in an effect) when another note is shown, so navigating
+  // A (revealed) → B → A re-shields A without a frame of revealed content.
+  const currentNoteId = note?.id ?? null;
+  const [revealScopeId, setRevealScopeId] = useState<string | null>(currentNoteId);
+  if (revealScopeId !== currentNoteId) {
+    setRevealScopeId(currentNoteId);
+    setRevealedId(null);
+  }
+  const revealed = revealScopeId === currentNoteId && Boolean(note) && revealedId === note?.id;
+  const shielded = note ? isShielded(note, book, revealed) : false;
+
+  const revealNote = useCallback(() => {
+    if (!note) return;
+    setRevealedId(note.id);
+    setAnnouncement(NOTE_REVEALED_ANNOUNCEMENT);
+    // Batch 4 decision: once revealed, show the canonical slug URL (no history entry).
+    if (noteSlug !== note.slug) replaceHash(`#/note/${encodeURIComponent(note.slug)}`);
+    requestAnimationFrame(() => headingRef.current?.focus());
+  }, [note, noteSlug]);
+
+  useEffect(() => {
+    setAnnouncement('');
+  }, [noteSlug]);
 
   const existingSlugSet = useMemo(() => new Set(notes.map(n => n.slug)), [notes]);
   const wikilinks = useMemo(() => (note ? extractNoteWikilinks(note) : []), [note]);
@@ -104,6 +145,15 @@ export const NoteDetailView: React.FC<NoteDetailViewProps> = ({
       const target = e.target as HTMLElement | null;
       if (e.key === ' ' && target && target.closest('button, a, [role="button"]')) return;
 
+      if (shielded) {
+        // B2.1: Space reveals (priority over the lightbox); E / D / O are no-ops.
+        if (e.key === ' ') {
+          e.preventDefault();
+          revealNote();
+        }
+        return;
+      }
+
       const key = e.key.toLowerCase();
       if (key === 'e') {
         e.preventDefault();
@@ -122,7 +172,7 @@ export const NoteDetailView: React.FC<NoteDetailViewProps> = ({
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [imageAttachments, note, onOpenDeepen, onOpenEdit, primarySafeExternalUrl]);
+  }, [imageAttachments, note, onOpenDeepen, onOpenEdit, primarySafeExternalUrl, shielded, revealNote]);
 
   if (!note) {
     return (
@@ -159,6 +209,7 @@ export const NoteDetailView: React.FC<NoteDetailViewProps> = ({
     );
   }
 
+  const visibility = getNoteDetailVisibility(note, book, revealed);
   const deltaDisplay = formatWhenDoDisplay(note.deltaTrigger, note.deltaAction);
   const sealedPrediction = isSealedPrediction(note, book || undefined);
   const unlockedPrediction = isUnlockedPrediction(note, book || undefined);
@@ -184,7 +235,10 @@ export const NoteDetailView: React.FC<NoteDetailViewProps> = ({
             type="button"
             data-testid="edit-note-btn"
             onClick={() => onOpenEdit(note)}
-            className="h-9 px-3 rounded-[10px] bg-surface2 hover:bg-secondary border border-border text-label font-medium text-foreground inline-flex items-center gap-1.5 whitespace-nowrap"
+            disabled={visibility.editDisabled}
+            title={visibility.editTooltip}
+            aria-describedby={visibility.shielded ? 'note-detail-shield-text' : undefined}
+            className="h-9 px-3 rounded-[10px] bg-surface2 hover:bg-secondary border border-border text-label font-medium text-foreground inline-flex items-center gap-1.5 whitespace-nowrap disabled:opacity-50 disabled:cursor-not-allowed"
           >
             <Edit3 className="w-3.5 h-3.5" />
             <span>Edit (E)</span>
@@ -194,7 +248,10 @@ export const NoteDetailView: React.FC<NoteDetailViewProps> = ({
             type="button"
             data-testid="deepen-note-btn"
             onClick={() => onOpenDeepen(note)}
-            className="h-9 px-3.5 rounded-[10px] bg-primary text-primary-foreground text-label font-semibold hover:opacity-90 inline-flex items-center gap-1.5 whitespace-nowrap"
+            disabled={visibility.editDisabled}
+            title={visibility.editTooltip}
+            aria-describedby={visibility.shielded ? 'note-detail-shield-text' : undefined}
+            className="h-9 px-3.5 rounded-[10px] bg-primary text-primary-foreground text-label font-semibold hover:opacity-90 inline-flex items-center gap-1.5 whitespace-nowrap disabled:opacity-50 disabled:cursor-not-allowed"
           >
             <Layers className="w-3.5 h-3.5" />
             <span>Deepen (D)</span>
@@ -237,11 +294,52 @@ export const NoteDetailView: React.FC<NoteDetailViewProps> = ({
             )}
           </div>
 
-          <h1 className="text-display-l text-foreground tracking-tight">
-            {note.meta.title || note.slug}
+          <h1
+            ref={headingRef}
+            tabIndex={-1}
+            data-testid="note-detail-title"
+            className={`text-display-l tracking-tight outline-none ${
+              visibility.shielded ? 'text-muted-foreground' : 'text-foreground'
+            }`}
+          >
+            {visibility.heading}
           </h1>
-          <div className="text-label font-mono text-muted-foreground">[[{note.slug}]]</div>
+          {visibility.showContent && (
+            <div className="text-label font-mono text-muted-foreground">[[{note.slug}]]</div>
+          )}
+          <span role="status" aria-live="polite" className="sr-only">
+            {announcement}
+          </span>
         </div>
+
+        {visibility.shielded && (
+          <div
+            data-testid={`spoiler-shield-${note.slug}`}
+            role="region"
+            aria-label="Spoiler shield"
+            className="rounded-[12px] bg-surface2/70 border border-border p-5 text-center space-y-2.5"
+          >
+            <div className="inline-flex items-center gap-1.5 text-body font-semibold text-foreground">
+              <AlertTriangle className="w-4 h-4 text-warning" aria-hidden="true" />
+              <span>Spoiler Shield</span>
+            </div>
+            <p id="note-detail-shield-text" className="text-label text-muted-foreground num">
+              Page/Pos {note.pos} &gt; Current {book?.currentPos ?? 0} — Click or press Space to reveal
+            </p>
+            <button
+              type="button"
+              data-testid={`spoiler-reveal-btn-${note.slug}`}
+              onClick={revealNote}
+              className="h-9 px-4 rounded-[10px] bg-primary text-primary-foreground text-label font-semibold hover:opacity-90 transition-opacity inline-flex items-center gap-1.5"
+            >
+              <Eye className="w-3.5 h-3.5" aria-hidden="true" />
+              <span>Reveal Note (or Space)</span>
+            </button>
+          </div>
+        )}
+
+        {visibility.showContent && (
+          <>
 
         {/* Socratic Recovery Banner */}
         {note.status === 'in-reflection' &&
@@ -394,7 +492,7 @@ export const NoteDetailView: React.FC<NoteDetailViewProps> = ({
           </div>
         )}
 
-        {note.tags.length > 0 && (
+        {Array.isArray(note.tags) && note.tags.length > 0 && (
           <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-border/60">
             {note.tags.map(tag => (
               <span key={tag} className="text-label text-muted-foreground">
@@ -403,8 +501,10 @@ export const NoteDetailView: React.FC<NoteDetailViewProps> = ({
             ))}
           </div>
         )}
+          </>
+        )}
 
-        {backlinks.length > 0 && (
+        {visibility.showBacklinks && backlinks.length > 0 && (
           <div
             data-testid="backlinks-section"
             className="space-y-2 pt-3 border-t border-border/60"
@@ -418,10 +518,12 @@ export const NoteDetailView: React.FC<NoteDetailViewProps> = ({
                   key={bl.id}
                   type="button"
                   data-testid={`backlink-item-${bl.slug}`}
-                  onClick={() => navigateTo(`#/note/${encodeURIComponent(bl.slug)}`)}
+                  onClick={() => navigateTo(noteHref(bl, bookById.get(bl.bookId)))}
                   className="px-3 py-1.5 rounded-[8px] bg-surface2 border border-border text-label text-foreground hover:bg-secondary"
                 >
-                  {bl.meta.title || bl.slug}
+                  {isShielded(bl, bookById.get(bl.bookId))
+                    ? shieldedNoteLabel(bl, bookById.get(bl.bookId))
+                    : bl.meta?.title || bl.slug}
                 </button>
               ))}
             </div>

@@ -880,7 +880,14 @@ export class GoogleSheetsAdapter implements StorageAdapter {
 
     // R1#2: re-verify the id immediately before the destructive deleteDimension, so a
     // row shifted by another device/CLI is never deleted by a stale index.
-    matchIndex = await this.verifyRowIndex(spreadsheetId, tab, id, matchIndex);
+    // R2-a: a delete is idempotent — if the re-resolve finds no row with this id (another
+    // device/CLI already deleted it) there is nothing to delete, so return false. An id
+    // that is still listed but cannot be verified keeps throwing RowMovedError.
+    if ((await this.readIdCell(spreadsheetId, tab, matchIndex + 1)) !== id) {
+      const relocated = await this.resolveRowIndex(spreadsheetId, tab, id);
+      if (relocated < 0) return false;
+      matchIndex = await this.verifyRowIndex(spreadsheetId, tab, id, relocated);
+    }
     if (matchIndex < 1) throw new RowMovedError();
 
     await this.fetchApi(

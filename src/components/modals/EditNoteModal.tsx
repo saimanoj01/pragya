@@ -791,6 +791,7 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
             value={takeaway}
             cursorPos={takeawayCursor}
             notes={notes}
+            books={books}
             excludeNoteId={note.id}
             excludeSlug={note.slug}
             onSelect={(nextVal, nextCursor) => {
@@ -827,6 +828,7 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
             value={contextMechanism}
             cursorPos={contextCursor}
             notes={notes}
+            books={books}
             excludeNoteId={note.id}
             excludeSlug={note.slug}
             onSelect={(nextVal, nextCursor) => {
@@ -932,6 +934,7 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
             value={critique}
             cursorPos={critiqueCursor}
             notes={notes}
+            books={books}
             excludeNoteId={note.id}
             excludeSlug={note.slug}
             onSelect={(nextVal, nextCursor) => {

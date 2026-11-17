@@ -120,3 +120,14 @@ export function isRestorableAppRoute(hash: string | null | undefined): hash is s
 export function resolvePostLoginHash(stored: string | null | undefined): string {
   return isRestorableAppRoute(stored) ? stored : DEFAULT_POST_LOGIN_HASH;
 }
+
+/**
+ * Swap the current hash without a new history entry or a `hashchange` event (Batch 4:
+ * a revealed shielded note moves from `#/note/<uuid>` to its canonical slug URL).
+ */
+export function replaceHash(hash: string): void {
+  if (typeof window === 'undefined') return;
+  const target = hash.startsWith('#') ? hash : `#${hash}`;
+  if (window.location.hash === target) return;
+  window.history.replaceState(window.history.state, '', `${window.location.pathname}${window.location.search}${target}`);
+}

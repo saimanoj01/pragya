@@ -49,7 +49,8 @@ export function applySignedInAccount(email: string): boolean {
   const next = (email || '').trim();
   if (!next) return false;
   const previous = getPreviousAccountEmail();
-  const switched = Boolean(previous) && previous !== next;
+  // R2-b: email addresses are compared case-insensitively.
+  const switched = Boolean(previous) && (previous || '').toLowerCase() !== next.toLowerCase();
   if (switched) clearPerAccountLocalData();
   localStorage.setItem(LAST_ACCOUNT_EMAIL_KEY, next);
   return switched;
