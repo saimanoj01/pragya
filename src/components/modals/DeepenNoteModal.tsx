@@ -30,6 +30,7 @@ import {
 import { isSafeHttpUrl } from '../../utils/navigation';
 import { normalizeSlugInput, resolveSlugEdit, takenSlugs } from '../../utils/wikilinks';
 import { showToast } from '../../utils/toast';
+import { isSubmitShortcut } from '../../utils/keyboard';
 import { DriveImage } from '../common/DriveImage';
 import { Modal } from '../common/Modal';
 import { WikilinkAutocomplete } from '../common/WikilinkAutocomplete';
@@ -480,7 +481,7 @@ export const DeepenNoteModal: React.FC<DeepenNoteModalProps> = ({
           type="button"
           onClick={onClose}
           aria-label="Close"
-          className="p-1.5 rounded-[8px] text-muted-foreground hover:text-foreground hover:bg-surface2 shrink-0"
+          className="min-w-11 min-h-11 sm:min-w-0 sm:min-h-0 p-1.5 rounded-[8px] inline-flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-surface2 shrink-0"
         >
           <X className="w-4 h-4" />
         </button>
@@ -496,7 +497,7 @@ export const DeepenNoteModal: React.FC<DeepenNoteModalProps> = ({
             type="button"
             data-testid="draft-discard-btn"
             onClick={handleDiscardDraft}
-            className="inline-flex items-center gap-1 font-semibold text-muted-foreground hover:text-foreground"
+            className="min-h-11 sm:min-h-0 px-2 sm:px-0 inline-flex items-center gap-1 font-semibold text-muted-foreground hover:text-foreground"
           >
             <RotateCcw className="w-3 h-3" />
             <span>Discard</span>
@@ -514,7 +515,7 @@ export const DeepenNoteModal: React.FC<DeepenNoteModalProps> = ({
             data-testid="deepen-source-toggle"
             aria-expanded={showSourceRef}
             onClick={() => setShowSourceRef(prev => !prev)}
-            className="w-full px-4 py-2.5 flex items-center justify-between gap-2 text-left text-eyebrow uppercase text-muted-foreground hover:text-foreground transition-colors"
+            className="w-full min-h-11 px-4 py-2.5 flex items-center justify-between gap-2 text-left text-eyebrow uppercase text-muted-foreground hover:text-foreground transition-colors"
           >
             <span>
               Source Passage{sourceAttachments.length > 0 ? ` & Attachments (${sourceAttachments.length})` : ''}
@@ -559,9 +560,10 @@ export const DeepenNoteModal: React.FC<DeepenNoteModalProps> = ({
                       <a
                         key={att.id}
                         href={att.url.trim()}
+                        data-print-href={att.url.trim()}
                         target="_blank"
                         rel="noopener noreferrer"
-                        className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-[8px] bg-background border border-border text-label text-foreground hover:bg-surface2"
+                        className="min-h-11 sm:min-h-0 inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-[8px] bg-background border border-border text-label text-foreground hover:bg-surface2"
                       >
                         {att.type === 'doc' ? (
                           <FileText className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
@@ -601,7 +603,16 @@ export const DeepenNoteModal: React.FC<DeepenNoteModalProps> = ({
         </div>
       )}
 
-      <form onSubmit={e => void handleSubmit(e)} className="space-y-4">
+      <form
+        onSubmit={e => void handleSubmit(e)}
+        onKeyDown={e => {
+          if (isSubmitShortcut(e.nativeEvent)) {
+            e.preventDefault();
+            if (!submitting) e.currentTarget.requestSubmit();
+          }
+        }}
+        className="space-y-4"
+      >
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <div className="space-y-1.5">
             <label
@@ -618,7 +629,7 @@ export const DeepenNoteModal: React.FC<DeepenNoteModalProps> = ({
               value={title}
               onChange={e => setTitle(e.target.value)}
               placeholder="Distilled concept title..."
-              className="w-full h-10 px-3 rounded-[10px] bg-background border border-input text-body text-foreground placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-ring/40"
+              className="w-full h-11 sm:h-10 px-3 rounded-[10px] bg-background border border-input text-base sm:text-body text-foreground placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-ring/40"
             />
           </div>
 
@@ -639,7 +650,7 @@ export const DeepenNoteModal: React.FC<DeepenNoteModalProps> = ({
               aria-invalid={Boolean(slugError)}
               aria-describedby={slugError ? `${slugId}-error` : undefined}
               placeholder="concept-slug"
-              className="w-full h-10 px-3 rounded-[10px] bg-background border border-input font-mono text-label text-foreground placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-ring/40"
+              className="w-full h-11 sm:h-10 px-3 rounded-[10px] bg-background border border-input font-mono text-base sm:text-label text-foreground placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-ring/40"
             />
             {slugError && (
               <p id={`${slugId}-error`} role="alert" data-testid="deepen-slug-error" className="text-label text-negative">
@@ -661,7 +672,7 @@ export const DeepenNoteModal: React.FC<DeepenNoteModalProps> = ({
             value={tagsRaw}
             onChange={e => setTagsRaw(e.target.value)}
             placeholder="#craft, #subtext"
-            className="w-full h-10 px-3 rounded-[10px] bg-background border border-input text-body text-foreground placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-ring/40"
+            className="w-full h-11 sm:h-10 px-3 rounded-[10px] bg-background border border-input text-base sm:text-body text-foreground placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-ring/40"
           />
         </div>
 
@@ -678,14 +689,14 @@ export const DeepenNoteModal: React.FC<DeepenNoteModalProps> = ({
             value={chapter}
             onChange={e => setChapter(e.target.value)}
             placeholder="e.g. Ch. 3: Run · or a story title"
-            className="w-full h-10 px-3 rounded-[10px] bg-background border border-input text-body text-foreground placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-ring/40"
+            className="w-full h-11 sm:h-10 px-3 rounded-[10px] bg-background border border-input text-base sm:text-body text-foreground placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-ring/40"
           />
           {chapterSuggestion && !chapter.trim() && (
             <button
               type="button"
               data-testid="deepen-chapter-suggestion-btn"
               onClick={() => setChapter(chapterSuggestion)}
-              className="px-2.5 py-1 rounded-[8px] bg-surface2 border border-border text-label text-foreground hover:bg-secondary"
+              className="min-h-11 sm:min-h-0 px-3 sm:px-2.5 py-1 rounded-[8px] bg-surface2 border border-border text-label text-foreground hover:bg-secondary inline-flex items-center"
             >
               Use &quot;{chapterSuggestion}&quot;
             </button>
@@ -713,7 +724,7 @@ export const DeepenNoteModal: React.FC<DeepenNoteModalProps> = ({
             onKeyUp={e => setTakeawayCursor(e.currentTarget.selectionStart)}
             onBlur={() => setTakeawayCursor(null)}
             placeholder="Distill the core idea in your own words. Type [[ to link concepts..."
-            className="w-full p-3 rounded-[10px] bg-background border border-input text-body text-foreground placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-ring/40 resize-y"
+            className="w-full p-3 rounded-[10px] bg-background border border-input text-base sm:text-body text-foreground placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-ring/40 resize-y"
           />
           <WikilinkAutocomplete
             textareaRef={takeawayRef}
@@ -755,7 +766,7 @@ export const DeepenNoteModal: React.FC<DeepenNoteModalProps> = ({
                 ? 'Scene craft, subtext, character tension, or thematic echo...'
                 : 'How the mechanism works in the author’s model...'
             }
-            className="w-full p-3 rounded-[10px] bg-background border border-input text-body text-foreground placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-ring/40 resize-y"
+            className="w-full p-3 rounded-[10px] bg-background border border-input text-base sm:text-body text-foreground placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-ring/40 resize-y"
           />
           <WikilinkAutocomplete
             textareaRef={contextRef}
@@ -781,7 +792,7 @@ export const DeepenNoteModal: React.FC<DeepenNoteModalProps> = ({
             open={deltaOpen || undefined}
             className="group rounded-[12px] bg-surface2/50 border border-border p-4 space-y-3"
           >
-            <summary className="flex flex-wrap items-center justify-between gap-2 cursor-pointer list-none [&::-webkit-details-marker]:hidden">
+            <summary className="min-h-11 sm:min-h-0 flex flex-wrap items-center justify-between gap-2 cursor-pointer list-none [&::-webkit-details-marker]:hidden">
               <span className="inline-flex items-center gap-1.5 text-eyebrow uppercase text-muted-foreground">
                 <ChevronRight
                   className="w-4 h-4 transition-transform group-open:rotate-90"
@@ -809,7 +820,7 @@ export const DeepenNoteModal: React.FC<DeepenNoteModalProps> = ({
                 value={deltaTrigger}
                 onChange={e => setDeltaTrigger(e.target.value)}
                 placeholder="e.g. a dashboard metric spikes unexpectedly"
-                className="w-full h-10 px-3 rounded-[10px] bg-background border border-input text-body text-foreground placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-ring/40"
+                className="w-full h-11 sm:h-10 px-3 rounded-[10px] bg-background border border-input text-base sm:text-body text-foreground placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-ring/40"
               />
             </div>
 
@@ -827,7 +838,7 @@ export const DeepenNoteModal: React.FC<DeepenNoteModalProps> = ({
                 value={deltaAction}
                 onChange={e => setDeltaAction(e.target.value)}
                 placeholder="e.g. observe the delay window before changing knobs"
-                className="w-full h-10 px-3 rounded-[10px] bg-background border border-input text-body text-foreground placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-ring/40"
+                className="w-full h-11 sm:h-10 px-3 rounded-[10px] bg-background border border-input text-base sm:text-body text-foreground placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-ring/40"
               />
             </div>
           </div>
@@ -845,7 +856,7 @@ export const DeepenNoteModal: React.FC<DeepenNoteModalProps> = ({
                 data-testid="deepen-delta-status-select"
                 value={deltaStatus}
                 onChange={e => setDeltaStatus(e.target.value as DeltaStatus)}
-                className="w-full h-10 px-2.5 rounded-[10px] bg-background border border-input text-body text-foreground focus:outline-none focus:ring-2 focus:ring-ring/40"
+                className="w-full h-11 sm:h-10 px-2.5 rounded-[10px] bg-background border border-input text-base sm:text-body text-foreground focus:outline-none focus:ring-2 focus:ring-ring/40"
               >
                 <option value="none">None</option>
                 <option value="active">Active (Practice)</option>
@@ -901,7 +912,7 @@ export const DeepenNoteModal: React.FC<DeepenNoteModalProps> = ({
                 value={deltaTrigger}
                 onChange={e => setDeltaTrigger(e.target.value)}
                 placeholder="e.g. a dashboard metric spikes unexpectedly"
-                className="w-full h-10 px-3 rounded-[10px] bg-background border border-input text-body text-foreground placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-ring/40"
+                className="w-full h-11 sm:h-10 px-3 rounded-[10px] bg-background border border-input text-base sm:text-body text-foreground placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-ring/40"
               />
             </div>
 
@@ -919,7 +930,7 @@ export const DeepenNoteModal: React.FC<DeepenNoteModalProps> = ({
                 value={deltaAction}
                 onChange={e => setDeltaAction(e.target.value)}
                 placeholder="e.g. observe the delay window before changing knobs"
-                className="w-full h-10 px-3 rounded-[10px] bg-background border border-input text-body text-foreground placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-ring/40"
+                className="w-full h-11 sm:h-10 px-3 rounded-[10px] bg-background border border-input text-base sm:text-body text-foreground placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-ring/40"
               />
             </div>
           </div>
@@ -937,7 +948,7 @@ export const DeepenNoteModal: React.FC<DeepenNoteModalProps> = ({
                 data-testid="deepen-delta-status-select"
                 value={deltaStatus}
                 onChange={e => setDeltaStatus(e.target.value as DeltaStatus)}
-                className="w-full h-10 px-2.5 rounded-[10px] bg-background border border-input text-body text-foreground focus:outline-none focus:ring-2 focus:ring-ring/40"
+                className="w-full h-11 sm:h-10 px-2.5 rounded-[10px] bg-background border border-input text-base sm:text-body text-foreground focus:outline-none focus:ring-2 focus:ring-ring/40"
               >
                 <option value="none">None</option>
                 <option value="active">Active (Practice)</option>
@@ -990,7 +1001,7 @@ export const DeepenNoteModal: React.FC<DeepenNoteModalProps> = ({
             onKeyUp={e => setCritiqueCursor(e.currentTarget.selectionStart)}
             onBlur={() => setCritiqueCursor(null)}
             placeholder="Where does this model fail or break down?"
-            className="w-full p-3 rounded-[10px] bg-background border border-input text-body text-foreground placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-ring/40 resize-y"
+            className="w-full p-3 rounded-[10px] bg-background border border-input text-base sm:text-body text-foreground placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-ring/40 resize-y"
           />
           <WikilinkAutocomplete
             textareaRef={critiqueRef}
@@ -1011,7 +1022,7 @@ export const DeepenNoteModal: React.FC<DeepenNoteModalProps> = ({
           <button
             type="button"
             onClick={onClose}
-            className="h-10 px-4 rounded-[10px] text-body font-medium text-muted-foreground hover:text-foreground hover:bg-surface2"
+            className="h-11 sm:h-10 px-4 rounded-[10px] text-body font-medium text-muted-foreground hover:text-foreground hover:bg-surface2"
           >
             Cancel
           </button>
@@ -1020,7 +1031,7 @@ export const DeepenNoteModal: React.FC<DeepenNoteModalProps> = ({
             disabled={submitting}
             data-testid="deepen-save-draft-btn"
             onClick={() => void persistDeepen('draft')}
-            className="h-10 px-4 rounded-[10px] bg-surface2 hover:bg-secondary border border-border text-body font-semibold text-foreground disabled:opacity-50"
+            className="h-11 sm:h-10 px-4 rounded-[10px] bg-surface2 hover:bg-secondary border border-border text-body font-semibold text-foreground disabled:opacity-50"
           >
             Save Draft
           </button>
@@ -1030,7 +1041,7 @@ export const DeepenNoteModal: React.FC<DeepenNoteModalProps> = ({
               disabled={submitting}
               data-testid="deepen-save-next-btn"
               onClick={() => void persistDeepen('atomic', { next: true })}
-              className="h-10 px-4 rounded-[10px] bg-surface2 hover:bg-secondary border border-border text-body font-semibold text-foreground disabled:opacity-50"
+              className="h-11 sm:h-10 px-4 rounded-[10px] bg-surface2 hover:bg-secondary border border-border text-body font-semibold text-foreground disabled:opacity-50"
             >
               Save &amp; Next
             </button>
@@ -1039,7 +1050,7 @@ export const DeepenNoteModal: React.FC<DeepenNoteModalProps> = ({
             type="submit"
             disabled={submitting}
             data-testid="deepen-submit-btn"
-            className="h-10 px-5 rounded-[10px] bg-primary text-primary-foreground font-semibold text-body hover:opacity-90 disabled:opacity-50"
+            className="h-11 sm:h-10 px-5 rounded-[10px] bg-primary text-primary-foreground font-semibold text-body hover:opacity-90 disabled:opacity-50"
           >
             {submitting ? 'Saving…' : 'Save Atomic Note'}
           </button>

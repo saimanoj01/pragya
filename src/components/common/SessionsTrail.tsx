@@ -53,6 +53,7 @@ export function SessionNoteEditor({
       <input
         ref={inputRef}
         type="text"
+        enterKeyHint="done"
         data-testid={`session-note-input-${session.id}`}
         aria-label={`Session note for ${dateLabel}`}
         placeholder="What stood out? (optional)"
@@ -70,7 +71,7 @@ export function SessionNoteEditor({
             onDone();
           }
         }}
-        className={`${INPUT} h-9 text-label flex-1 min-w-[180px]`}
+        className={`${INPUT} h-11 sm:h-9 flex-1 min-w-[180px]`}
       />
       <button
         type="button"
@@ -97,15 +98,19 @@ export function SessionsTrail({ book }: { book: Book }) {
   const today = getLocalDateString();
   const shown = all.slice(0, SESSIONS_TRAIL_LIMIT);
   return (
-    <details data-testid="sessions-trail" className="group bg-card border border-border rounded-[14px] p-4">
-      <summary className="flex items-center justify-between gap-2 cursor-pointer list-none [&::-webkit-details-marker]:hidden">
+    <details
+      data-testid="sessions-trail"
+      data-print-expand="true"
+      className="group bg-card border border-border rounded-[14px] p-4"
+    >
+      <summary className="min-h-11 sm:min-h-0 flex items-center justify-between gap-2 cursor-pointer list-none [&::-webkit-details-marker]:hidden">
         <span className={EYEBROW}>Recent Reading Sessions ({all.length})</span>
         <ChevronRight
-          className="w-4 h-4 text-muted-foreground transition-transform group-open:rotate-90"
+          className="w-4 h-4 text-muted-foreground transition-transform group-open:rotate-90 print:hidden"
           aria-hidden="true"
         />
       </summary>
-      <ol className="mt-2 divide-y divide-border/60">
+      <ol data-testid="sessions-trail-list" className="mt-2 divide-y divide-border/60">
         {shown.map(s => {
           const dateLabel = sessionDateLabel(s.date, today);
           const delta = Math.max(0, (Number(s.endPos) || 0) - (Number(s.startPos) || 0));

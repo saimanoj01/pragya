@@ -16,7 +16,7 @@ import type { Book, Note } from '../../types/pragya';
 import { usePragya } from '../../context/PragyaContext';
 import { getRenderableAttachments } from '../../utils/metaCodecs';
 import { isSafeHttpUrl, navigateTo, replaceHash } from '../../utils/navigation';
-import { isNoteSpoiler, isSealedPrediction } from '../../utils/spoilerMath';
+import { formatPosDisplay, isNoteSpoiler, isSealedPrediction } from '../../utils/spoilerMath';
 import {
   SPOILER_SEARCH_FOOTNOTE,
   isShielded,
@@ -40,7 +40,8 @@ import {
 import { linkChipLabel, standaloneNoteLinks } from '../../utils/bookSurfaces';
 import { WikiText } from '../common/WikiText';
 import { BTN_TERTIARY, FIELD_LABEL } from '../common/uiClasses';
-import { DriveImage } from '../common/DriveImage';
+import { StreamThumbnail } from '../common/StreamThumbnail';
+import { focusCard, noteCardAriaLabel } from '../../utils/cardFocus';
 import { ArchivedBanner } from '../common/ArchivedBanner';
 import { useArchiveActions } from '../../hooks/useArchiveActions';
 import { useDeleteForever } from '../../hooks/useDeleteForever';
@@ -88,6 +89,8 @@ export const NotesView: React.FC<NotesViewProps> = ({
   const clearAll = () => setQs({ q: '', tags: [], book: '', filter: 'all', sort: 'recent' });
   const [revealedSlugs, setRevealedSlugs] = useState<Set<string>>(new Set());
   const [focusedIndex, setFocusedIndex] = useState<number>(0);
+  const jkMovedRef = useRef(false);
+  const [jkTick, setJkTick] = useState(0);
 
   const bookMap = useMemo(() => {
     const map = new Map<string, Book>();
@@ -265,6 +268,12 @@ export const NotesView: React.FC<NotesViewProps> = ({
     });
   }, [filteredNotes, qs]);
 
+  useEffect(() => {
+    if (focusedIndex >= filteredNotes.length && filteredNotes.length > 0) {
+      setFocusedIndex(filteredNotes.length - 1);
+    }
+  }, [filteredNotes.length, focusedIndex]);
+
   React.useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.metaKey || e.ctrlKey || e.altKey) return;
@@ -277,8 +286,7 @@ export const NotesView: React.FC<NotesViewProps> = ({
           target.tagName === 'TEXTAREA' ||
           target.tagName === 'SELECT' ||
           target.isContentEditable ||
-          Boolean(target.closest('[contenteditable="true"]')) ||
-          Boolean(target.closest('button, a, [role="button"]')))
+          Boolean(target.closest('[contenteditable="true"]')))
       ) {
         return;
       }
@@ -287,11 +295,16 @@ export const NotesView: React.FC<NotesViewProps> = ({
       const key = e.key.toLowerCase();
       if (key === 'j') {
         e.preventDefault();
+        jkMovedRef.current = true;
         setFocusedIndex(prev => Math.min(filteredNotes.length - 1, prev + 1));
+        setJkTick(t => t + 1);
       } else if (key === 'k') {
         e.preventDefault();
+        jkMovedRef.current = true;
         setFocusedIndex(prev => Math.max(0, prev - 1));
+        setJkTick(t => t + 1);
       } else if (e.key === ' ') {
+        if (target?.closest('button, a, summary, [role="button"]')) return;
         const active = filteredNotes[focusedIndex];
         if (
           active &&
@@ -302,6 +315,7 @@ export const NotesView: React.FC<NotesViewProps> = ({
           revealNote(active.slug);
         }
       } else if (e.key === 'Enter') {
+        if (target?.closest('button, a, summary, [role="button"]')) return;
         const active = filteredNotes[focusedIndex];
         if (active) {
           e.preventDefault();
@@ -339,6 +353,13 @@ export const NotesView: React.FC<NotesViewProps> = ({
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [bookMap, filteredNotes, focusedIndex, onDeepenNote, onEditNote, rememberPosition, revealedSlugs]);
+
+  // CD D2.1: after J/K the focused card gets real DOM focus and is scrolled into view.
+  useEffect(() => {
+    if (!jkMovedRef.current) return;
+    jkMovedRef.current = false;
+    focusCard(document.querySelector<HTMLElement>(`[data-testid="notes-view"] [data-jk-card="${focusedIndex}"]`));
+  }, [focusedIndex, jkTick]);
 
   const renderStatusBadge = (note: Note, book?: Book) => {
     if (isSealedPrediction(note, book)) {
@@ -389,7 +410,7 @@ export const NotesView: React.FC<NotesViewProps> = ({
           type="button"
           data-testid="notes-quick-capture-btn"
           onClick={onOpenCapture}
-          className="h-10 px-4 rounded-full bg-primary text-primary-foreground text-body font-semibold hover:opacity-90 transition-opacity whitespace-nowrap shrink-0 inline-flex items-center gap-1.5"
+          className="h-11 sm:h-10 px-4 rounded-full bg-primary text-primary-foreground text-body font-semibold hover:opacity-90 transition-opacity whitespace-nowrap shrink-0 inline-flex items-center gap-1.5"
         >
           <Plus className="w-4 h-4" />
           <span>Quick Capture</span>
@@ -397,17 +418,18 @@ export const NotesView: React.FC<NotesViewProps> = ({
       </div>
 
       {/* Search & Filters */}
-      <div className="space-y-3">
+      <div data-print-hide="true" className="space-y-3">
         <div className="relative">
           <Search className="w-4 h-4 text-muted-foreground absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
           <input
             type="text"
+            enterKeyHint="search"
             aria-label="Search notes"
             data-testid="notes-search-input"
             value={query}
             onChange={e => setQuery(e.target.value)}
             placeholder="Search quotes, takeaways, #tags, or authors..."
-            className="w-full h-11 pl-10 pr-4 rounded-full bg-card border border-border text-body text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring/40"
+            className="w-full h-11 pl-10 pr-4 rounded-full bg-card border border-border text-base sm:text-body text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring/40"
           />
         </div>
 
@@ -416,7 +438,7 @@ export const NotesView: React.FC<NotesViewProps> = ({
             type="button"
             data-testid="notes-filter-all"
             onClick={() => setFilter('all')}
-            className={`h-8 px-3 rounded-full text-label font-medium transition-colors num whitespace-nowrap ${
+            className={`h-11 sm:h-8 min-w-11 sm:min-w-0 px-3 rounded-full text-label font-medium transition-colors num whitespace-nowrap ${
               filter === 'all'
                 ? 'bg-primary text-primary-foreground'
                 : 'bg-surface2 border border-border text-muted-foreground hover:text-foreground'
@@ -429,7 +451,7 @@ export const NotesView: React.FC<NotesViewProps> = ({
             type="button"
             data-testid="notes-filter-to-spar"
             onClick={() => setFilter('to-spar')}
-            className={`h-8 px-3 rounded-full text-label font-medium transition-colors num inline-flex items-center gap-1.5 whitespace-nowrap ${
+            className={`h-11 sm:h-8 min-w-11 sm:min-w-0 px-3 rounded-full text-label font-medium transition-colors num inline-flex items-center gap-1.5 whitespace-nowrap ${
               filter === 'to-spar'
                 ? 'bg-primary text-primary-foreground'
                 : 'bg-surface2 border border-border text-muted-foreground hover:text-foreground'
@@ -443,7 +465,7 @@ export const NotesView: React.FC<NotesViewProps> = ({
             type="button"
             data-testid="notes-filter-atomic"
             onClick={() => setFilter('atomic')}
-            className={`h-8 px-3 rounded-full text-label font-medium transition-colors num whitespace-nowrap ${
+            className={`h-11 sm:h-8 min-w-11 sm:min-w-0 px-3 rounded-full text-label font-medium transition-colors num whitespace-nowrap ${
               filter === 'atomic'
                 ? 'bg-primary text-primary-foreground'
                 : 'bg-surface2 border border-border text-muted-foreground hover:text-foreground'
@@ -456,7 +478,7 @@ export const NotesView: React.FC<NotesViewProps> = ({
             type="button"
             data-testid="notes-filter-media"
             onClick={() => setFilter('media')}
-            className={`h-8 px-3 rounded-full text-label font-medium transition-colors num whitespace-nowrap ${
+            className={`h-11 sm:h-8 min-w-11 sm:min-w-0 px-3 rounded-full text-label font-medium transition-colors num whitespace-nowrap ${
               filter === 'media'
                 ? 'bg-primary text-primary-foreground'
                 : 'bg-surface2 border border-border text-muted-foreground hover:text-foreground'
@@ -469,7 +491,7 @@ export const NotesView: React.FC<NotesViewProps> = ({
             type="button"
             data-testid="notes-filter-concepts"
             onClick={() => setFilter('concepts')}
-            className={`h-8 px-3 rounded-full text-label font-medium transition-colors num whitespace-nowrap ${
+            className={`h-11 sm:h-8 min-w-11 sm:min-w-0 px-3 rounded-full text-label font-medium transition-colors num whitespace-nowrap ${
               filter === 'concepts'
                 ? 'bg-primary text-primary-foreground'
                 : 'bg-surface2 border border-border text-muted-foreground hover:text-foreground'
@@ -483,7 +505,7 @@ export const NotesView: React.FC<NotesViewProps> = ({
               type="button"
               data-testid="notes-filter-archived"
               onClick={() => setFilter('archived')}
-              className={`h-8 px-3 rounded-full text-label font-medium transition-colors num inline-flex items-center gap-1.5 whitespace-nowrap ${
+              className={`h-11 sm:h-8 min-w-11 sm:min-w-0 px-3 rounded-full text-label font-medium transition-colors num inline-flex items-center gap-1.5 whitespace-nowrap ${
                 filter === 'archived'
                   ? 'bg-primary text-primary-foreground'
                   : 'bg-surface2 border border-border text-muted-foreground hover:text-foreground'
@@ -496,14 +518,14 @@ export const NotesView: React.FC<NotesViewProps> = ({
         </div>
 
         {/* C3.4: book filter, sort, result count */}
-        <div className="flex flex-wrap items-end gap-3">
+        <div className="flex flex-wrap items-center gap-3">
           <label className="flex items-center gap-2">
             <span className={FIELD_LABEL}>Book</span>
             <select
               data-testid="notes-book-filter"
               value={qs.book}
               onChange={e => setQs(prev => ({ ...prev, book: e.target.value }))}
-              className="h-9 px-2.5 rounded-[10px] bg-background border border-input text-label text-foreground focus:outline-none focus:ring-2 focus:ring-ring/40 max-w-[220px]"
+              className="h-11 sm:h-9 px-2.5 rounded-[10px] bg-background border border-input text-base sm:text-label text-foreground focus:outline-none focus:ring-2 focus:ring-ring/40 max-w-[220px]"
             >
               <option value="">All books</option>
               {bookOptions.map(b => (
@@ -519,7 +541,7 @@ export const NotesView: React.FC<NotesViewProps> = ({
               data-testid="notes-sort-select"
               value={qs.sort}
               onChange={e => setQs(prev => ({ ...prev, sort: e.target.value as NotesSort }))}
-              className="h-9 px-2.5 rounded-[10px] bg-background border border-input text-label text-foreground focus:outline-none focus:ring-2 focus:ring-ring/40"
+              className="h-11 sm:h-9 px-2.5 rounded-[10px] bg-background border border-input text-base sm:text-label text-foreground focus:outline-none focus:ring-2 focus:ring-ring/40"
             >
               {NOTES_SORTS.map(sv => (
                 <option key={sv} value={sv}>
@@ -544,27 +566,27 @@ export const NotesView: React.FC<NotesViewProps> = ({
             {qs.tags.map(tag => (
               <span
                 key={tag}
-                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-surface2 border border-border text-label text-foreground"
+                className="inline-flex items-center gap-1 pl-2.5 pr-1 sm:pr-2.5 py-1 rounded-full bg-surface2 border border-border text-label text-foreground"
               >
                 {tag}
                 <button
                   type="button"
                   aria-label={`Remove filter ${tag}`}
                   onClick={() => toggleTag(tag)}
-                  className="text-muted-foreground hover:text-foreground"
+                  className="min-w-11 min-h-11 sm:min-w-0 sm:min-h-0 -my-2 -mr-1 sm:m-0 inline-flex items-center justify-center rounded-full text-muted-foreground hover:text-foreground"
                 >
                   <X className="w-3 h-3" aria-hidden="true" />
                 </button>
               </span>
             ))}
             {qs.book && (
-              <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-surface2 border border-border text-label text-foreground">
+              <span className="inline-flex items-center gap-1 pl-2.5 pr-1 sm:pr-2.5 py-1 rounded-full bg-surface2 border border-border text-label text-foreground">
                 {bookMap.get(qs.book)?.title || 'Book'}
                 <button
                   type="button"
                   aria-label={`Remove filter ${bookMap.get(qs.book)?.title || 'Book'}`}
                   onClick={() => setQs(prev => ({ ...prev, book: '' }))}
-                  className="text-muted-foreground hover:text-foreground"
+                  className="min-w-11 min-h-11 sm:min-w-0 sm:min-h-0 -my-2 -mr-1 sm:m-0 inline-flex items-center justify-center rounded-full text-muted-foreground hover:text-foreground"
                 >
                   <X className="w-3 h-3" aria-hidden="true" />
                 </button>
@@ -602,7 +624,17 @@ export const NotesView: React.FC<NotesViewProps> = ({
                 key={note.id}
                 data-testid={`note-card-${note.slug}`}
                 data-focused={isFocused ? 'true' : undefined}
-                className={`bg-card border rounded-[14px] p-5 space-y-3 transition-colors ${
+                data-jk-focused={isFocused ? 'true' : undefined}
+                data-jk-card={idx}
+                tabIndex={-1}
+                aria-label={noteCardAriaLabel({
+                  bookTitle: book?.title,
+                  posLabel: formatPosDisplay(note.pos, book?.posUnit || 'page'),
+                  title: note.meta?.title,
+                  shielded: showShield,
+                })}
+                onFocus={() => setFocusedIndex(idx)}
+                className={`bg-card border rounded-[14px] p-5 space-y-3 transition-colors focus:outline-none focus-visible:border-foreground/40 focus-visible:ring-1 focus-visible:ring-ring/40 ${
                   isFocused ? 'border-foreground/40 ring-1 ring-ring/40' : 'border-border'
                 }`}
               >
@@ -657,7 +689,7 @@ export const NotesView: React.FC<NotesViewProps> = ({
                       type="button"
                       data-testid={`spoiler-reveal-btn-${note.slug}`}
                       onClick={() => revealNote(note.slug)}
-                      className="h-9 px-4 rounded-[10px] bg-primary text-primary-foreground text-label font-semibold hover:opacity-90 transition-opacity inline-flex items-center gap-1.5"
+                      className="h-11 sm:h-9 px-4 rounded-[10px] bg-primary text-primary-foreground text-label font-semibold hover:opacity-90 transition-opacity inline-flex items-center gap-1.5"
                     >
                       <Eye className="w-3.5 h-3.5" />
                       <span>Reveal Quote (or Space)</span>
@@ -685,7 +717,7 @@ export const NotesView: React.FC<NotesViewProps> = ({
                       <div className="flex flex-wrap items-center gap-2 pt-1">
                         {attachments.map(att =>
                           att.type === 'image' ? (
-                            <DriveImage
+                            <StreamThumbnail
                               key={att.id}
                               attachment={att}
                               className="w-16 h-16 rounded-[8px] object-cover border border-border"
@@ -694,9 +726,10 @@ export const NotesView: React.FC<NotesViewProps> = ({
                             <a
                               key={att.id}
                               href={att.url.trim()}
+                              data-print-href={att.url.trim()}
                               target="_blank"
                               rel="noopener noreferrer"
-                              className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-[8px] bg-surface2 border border-border text-label text-foreground hover:bg-secondary transition-colors"
+                              className="min-h-11 sm:min-h-0 inline-flex items-center gap-1.5 px-2.5 py-1 rounded-[8px] bg-surface2 border border-border text-label text-foreground hover:bg-secondary transition-colors"
                             >
                               {att.type === 'doc' ? (
                                 <FileText className="w-3.5 h-3.5 text-muted-foreground" />
@@ -730,11 +763,12 @@ export const NotesView: React.FC<NotesViewProps> = ({
                             <a
                               key={url}
                               href={url}
+                              data-print-href={url}
                               target="_blank"
                               rel="noopener noreferrer"
                               data-testid={`note-link-chip-${linkIdx}`}
                               aria-label={`Open link ${url}`}
-                              className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-[8px] bg-surface2 border border-border text-label text-foreground hover:bg-secondary transition-colors"
+                              className="min-h-11 sm:min-h-0 inline-flex items-center gap-1.5 px-2.5 py-1 rounded-[8px] bg-surface2 border border-border text-label text-foreground hover:bg-secondary transition-colors"
                             >
                               <Link2 className="w-3.5 h-3.5 text-muted-foreground" aria-hidden="true" />
                               <span className="truncate max-w-[220px]">{linkChipLabel(url)}</span>
@@ -757,17 +791,18 @@ export const NotesView: React.FC<NotesViewProps> = ({
 
                 {/* Bottom Row: Tags & View Note */}
                 <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-border/50">
-                  <div className="flex flex-wrap items-center gap-1.5">
+                  <div className="flex flex-wrap items-center gap-2 sm:gap-1.5">
                     {note.tags.map(tag => {
                       const t = normalizeTagToken(tag);
                       return (
                         <button
                           key={tag}
                           type="button"
+                          data-print-keep="true"
                           data-testid={`tag-pill-${t.slice(1)}`}
                           aria-pressed={qs.tags.includes(t)}
                           onClick={() => toggleTag(tag)}
-                          className="text-label text-muted-foreground hover:text-foreground hover:underline"
+                          className="min-h-11 min-w-11 sm:min-h-0 sm:min-w-0 px-1.5 sm:px-0 inline-flex items-center justify-center text-label text-muted-foreground hover:text-foreground hover:underline"
                         >
                           {tag}
                         </button>
@@ -782,7 +817,7 @@ export const NotesView: React.FC<NotesViewProps> = ({
                       rememberPosition();
                       navigateTo(noteHref(note, book, isRevealed));
                     }}
-                    className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground hover:text-foreground inline-flex items-center gap-1 whitespace-nowrap"
+                    className="min-h-11 min-w-11 sm:min-h-0 sm:min-w-0 px-1 sm:px-0 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground hover:text-foreground inline-flex items-center justify-center gap-1 whitespace-nowrap"
                   >
                     <span>VIEW NOTE</span>
                     <ArrowUpRight className="w-3.5 h-3.5" />

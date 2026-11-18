@@ -158,7 +158,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onLogout }) => {
             data-testid="sync-now-btn"
             disabled={isSyncing}
             onClick={() => void syncNow(true)}
-            className="h-9 px-3.5 rounded-[10px] bg-primary text-primary-foreground text-label font-semibold hover:opacity-90 disabled:opacity-50 inline-flex items-center gap-1.5 whitespace-nowrap"
+            className="h-11 sm:h-9 px-3.5 rounded-[10px] bg-primary text-primary-foreground text-label font-semibold hover:opacity-90 disabled:opacity-50 inline-flex items-center gap-1.5 whitespace-nowrap"
           >
             <RefreshCw className={`w-3.5 h-3.5 ${isSyncing ? 'animate-spin' : ''}`} />
             <span>{isSyncing ? 'Syncing…' : 'Sync Now (R)'}</span>
@@ -180,7 +180,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onLogout }) => {
                   href={`https://docs.google.com/spreadsheets/d/${encodeURIComponent(spreadsheetId)}`}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="text-muted-foreground hover:text-foreground shrink-0"
+                  aria-label="Open Pragya Commonplace Sheet"
+                  className="min-w-11 min-h-11 sm:min-w-0 sm:min-h-0 -my-2 -mr-2 sm:m-0 inline-flex items-center justify-center text-muted-foreground hover:text-foreground shrink-0"
                   title="Open Pragya Commonplace Sheet"
                 >
                   <ExternalLink className="w-3.5 h-3.5" />
@@ -225,15 +226,16 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onLogout }) => {
           <input
             id={clientIdInputId}
             type="text"
+            enterKeyHint="done"
             data-testid="settings-client-id-input"
             value={clientIdDraft}
             onChange={e => setClientIdDraft(e.target.value)}
             placeholder="your-client-id.apps.googleusercontent.com"
-            className="flex-1 h-10 px-3 rounded-[10px] bg-background border border-input text-body text-foreground placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-ring/40"
+            className="flex-1 h-11 sm:h-10 px-3 rounded-[10px] bg-background border border-input text-base sm:text-body text-foreground placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-ring/40"
           />
           <button
             type="submit"
-            className="h-10 px-4 rounded-[10px] bg-surface2 hover:bg-secondary border border-border text-body font-medium text-foreground whitespace-nowrap"
+            className="h-11 sm:h-10 px-4 rounded-[10px] bg-surface2 hover:bg-secondary border border-border text-body font-medium text-foreground whitespace-nowrap"
           >
             Save Client ID
           </button>
@@ -245,7 +247,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onLogout }) => {
             data-testid="settings-oauth-guide-toggle"
             onClick={() => setShowSetupGuide(prev => !prev)}
             aria-expanded={showSetupGuide}
-            className="inline-flex items-center gap-1.5 text-label font-medium text-muted-foreground hover:text-foreground transition-colors"
+            className="min-h-11 sm:min-h-0 inline-flex items-center gap-1.5 text-label font-medium text-muted-foreground hover:text-foreground transition-colors"
           >
             <span>Google OAuth Setup Guide &amp; Scope Details</span>
             {showSetupGuide ? (
@@ -270,7 +272,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onLogout }) => {
           <button
             type="button"
             onClick={toggleTheme}
-            className="h-10 px-4 rounded-[10px] bg-surface2 hover:bg-secondary border border-border text-body font-medium text-foreground inline-flex items-center gap-2"
+            className="h-11 sm:h-10 px-4 rounded-[10px] bg-surface2 hover:bg-secondary border border-border text-body font-medium text-foreground inline-flex items-center gap-2"
           >
             {theme === 'dark' ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
             <span>Switch to {theme === 'dark' ? 'Light' : 'Dark'} Mode</span>
@@ -279,7 +281,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onLogout }) => {
           <button
             type="button"
             onClick={handleExportSnapshot}
-            className="h-10 px-4 rounded-[10px] bg-surface2 hover:bg-secondary border border-border text-body font-medium text-foreground inline-flex items-center gap-2"
+            className="h-11 sm:h-10 px-4 rounded-[10px] bg-surface2 hover:bg-secondary border border-border text-body font-medium text-foreground inline-flex items-center gap-2"
           >
             <Download className="w-4 h-4" />
             <span>Export JSON Snapshot</span>
@@ -295,7 +297,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onLogout }) => {
           <button
             type="button"
             onClick={() => importInputRef.current?.click()}
-            className="h-10 px-4 rounded-[10px] bg-surface2 hover:bg-secondary border border-border text-body font-medium text-foreground inline-flex items-center gap-2"
+            className="h-11 sm:h-10 px-4 rounded-[10px] bg-surface2 hover:bg-secondary border border-border text-body font-medium text-foreground inline-flex items-center gap-2"
           >
             <Upload className="w-4 h-4" />
             <span>Import JSON Snapshot</span>
@@ -307,7 +309,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onLogout }) => {
               data-testid="restore-pre-import-backup-btn"
               disabled={restoringBackup}
               onClick={() => setConfirmAction('restore-backup')}
-              className="h-10 px-4 rounded-[10px] bg-surface2 hover:bg-secondary border border-border text-body font-medium text-foreground inline-flex items-center gap-2 disabled:opacity-50"
+              className="h-11 sm:h-10 px-4 rounded-[10px] bg-surface2 hover:bg-secondary border border-border text-body font-medium text-foreground inline-flex items-center gap-2 disabled:opacity-50"
               title={`Saved ${new Date(preImportBackup.savedAt).toLocaleString()}`}
             >
               <History className="w-4 h-4" />
@@ -322,7 +324,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onLogout }) => {
               type="button"
               data-testid="reset-demo-btn"
               onClick={() => setConfirmAction('reset-demo')}
-              className="h-10 px-4 rounded-[10px] bg-surface2 hover:bg-secondary border border-border text-body font-medium text-foreground inline-flex items-center gap-2"
+              className="h-11 sm:h-10 px-4 rounded-[10px] bg-surface2 hover:bg-secondary border border-border text-body font-medium text-foreground inline-flex items-center gap-2"
             >
               <RotateCcw className="w-4 h-4" />
               <span>Reset Demo Data</span>
@@ -332,7 +334,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onLogout }) => {
           <button
             type="button"
             onClick={() => (onLogout ? onLogout() : void logout())}
-            className="h-10 px-4 rounded-[10px] bg-negative/10 hover:bg-negative/20 border border-negative/30 text-body font-medium text-negative inline-flex items-center gap-2 ml-auto"
+            className="h-11 sm:h-10 px-4 rounded-[10px] bg-negative/10 hover:bg-negative/20 border border-negative/30 text-body font-medium text-negative inline-flex items-center gap-2 ml-auto"
           >
             <LogOut className="w-4 h-4" />
             <span>Log out</span>

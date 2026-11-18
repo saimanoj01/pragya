@@ -101,7 +101,7 @@ export function PredictionOutcomeModal({ note, book, isOpen, onClose }: Predicti
             type="button"
             onClick={onClose}
             aria-label="Close"
-            className="p-1.5 rounded-[8px] text-muted-foreground hover:text-foreground hover:bg-surface2 shrink-0"
+            className="min-w-11 min-h-11 sm:min-w-0 sm:min-h-0 p-1.5 rounded-[8px] inline-flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-surface2 shrink-0"
           >
             <X className="w-4 h-4" />
           </button>

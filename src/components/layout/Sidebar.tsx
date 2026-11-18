@@ -13,10 +13,13 @@ import {
   Moon,
   LogOut,
   WifiOff,
+  Keyboard,
 } from 'lucide-react';
 import type { User } from '../../context/AuthContext';
 import type { PragyaView } from '../../utils/navigation';
 import { navigateTo } from '../../utils/navigation';
+import { handleNavLinkClick, navAriaCurrent } from '../../utils/navLinks';
+import { modKeyLabel } from '../../utils/keyboardShortcuts';
 
 export const SIDEBAR_COLLAPSED_KEY = 'pragya_sidebar_collapsed';
 
@@ -29,6 +32,8 @@ export interface SidebarProps {
   toggleTheme: () => void;
   onOpenCapture: () => void;
   onOpenCommandPalette: () => void;
+  /** CD D2.1: Sidebar footer `Keyboard` button. */
+  onOpenKeyboardHelp?: () => void;
   logout: () => Promise<void> | void;
 }
 
@@ -41,6 +46,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   toggleTheme,
   onOpenCapture,
   onOpenCommandPalette,
+  onOpenKeyboardHelp,
   logout,
 }) => {
   const [collapsed, setCollapsed] = useState<boolean>(() => {
@@ -168,7 +174,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           className={`w-full h-9 flex items-center justify-between px-2.5 rounded-[10px] bg-surface2/50 border border-border text-body text-muted-foreground hover:text-foreground hover:bg-surface2 transition-colors focus-visible:ring-2 ring-ring/40 ${
             collapsed ? 'justify-center px-0' : ''
           }`}
-          title="Search or jump to (⌘K)"
+          title={`Search or jump to (${modKeyLabel(typeof navigator === 'undefined' ? '' : navigator.platform || navigator.userAgent)}K)`}
         >
           <span className="flex items-center gap-2.5 truncate">
             <Search className="w-3.5 h-3.5 shrink-0" />
@@ -176,7 +182,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           </span>
           {!collapsed && (
             <kbd className="px-1.5 py-0.5 text-[10px] font-medium rounded bg-background text-muted-foreground border border-border">
-              ⌘K
+              {modKeyLabel(typeof navigator === 'undefined' ? '' : navigator.platform || navigator.userAgent)}K
             </kbd>
           )}
         </button>
@@ -195,17 +201,19 @@ export const Sidebar: React.FC<SidebarProps> = ({
         )}
       </div>
 
-      {/* Primary Nav */}
-      <nav className="flex-1 px-2.5 py-2 space-y-1 overflow-y-auto custom-scrollbar">
+      {/* Primary Nav — CD D2.2: real links with aria-current (still routed via navigateTo). */}
+      <nav aria-label="Primary" className="flex-1 px-2.5 py-2 space-y-1 overflow-y-auto custom-scrollbar">
         {navItems.map(item => {
           const Icon = item.icon;
           return (
-            <button
+            <a
               key={item.id}
-              type="button"
+              href={item.route}
               data-testid={`nav-item-${item.id}`}
-              onClick={() => navigateTo(item.route)}
-              className={`w-full h-9 flex items-center gap-3 px-2.5 rounded-[10px] text-body font-medium transition-colors focus-visible:ring-2 ring-ring/40 ${
+              aria-current={navAriaCurrent(item.id, currentView)}
+              aria-label={collapsed ? item.label : undefined}
+              onClick={e => handleNavLinkClick(e, item.route)}
+              className={`w-full h-9 flex items-center gap-3 px-2.5 rounded-[10px] text-body font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40 ${
                 item.isActive
                   ? 'bg-surface2 text-foreground'
                   : 'text-muted-foreground hover:text-foreground hover:bg-surface2/60'
@@ -214,7 +222,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
             >
               <Icon className="w-4 h-4 shrink-0" />
               {!collapsed && <span className="truncate">{item.label}</span>}
-            </button>
+            </a>
           );
         })}
       </nav>
@@ -223,6 +231,18 @@ export const Sidebar: React.FC<SidebarProps> = ({
       <div className="px-2.5 py-2.5 border-t border-border/60 space-y-2">
         {collapsed ? (
           <div className="flex flex-col items-center gap-1.5">
+            {onOpenKeyboardHelp && (
+              <button
+                type="button"
+                data-testid="keyboard-help-btn"
+                onClick={onOpenKeyboardHelp}
+                className="hidden [@media(any-pointer:fine)]:flex w-8 h-8 rounded-[8px] items-center justify-center text-muted-foreground hover:text-foreground hover:bg-surface2 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
+                title="Keyboard shortcuts (?)"
+                aria-label="Keyboard shortcuts"
+              >
+                <Keyboard className="w-4 h-4" aria-hidden="true" />
+              </button>
+            )}
             <button
               type="button"
               data-testid="theme-toggle-btn"
@@ -271,6 +291,18 @@ export const Sidebar: React.FC<SidebarProps> = ({
             </div>
 
             <div className="flex items-center gap-0.5 shrink-0">
+              {onOpenKeyboardHelp && (
+                <button
+                  type="button"
+                  data-testid="keyboard-help-btn"
+                  onClick={onOpenKeyboardHelp}
+                  className="hidden [@media(any-pointer:fine)]:flex w-7 h-7 rounded-[8px] items-center justify-center text-muted-foreground hover:text-foreground hover:bg-surface2 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
+                  title="Keyboard shortcuts (?)"
+                  aria-label="Keyboard shortcuts"
+                >
+                  <Keyboard className="w-4 h-4" aria-hidden="true" />
+                </button>
+              )}
               <button
                 type="button"
                 data-testid="theme-toggle-btn"

@@ -50,7 +50,7 @@ export const LoginView: React.FC = () => {
           type="button"
           onClick={toggleTheme}
           data-testid="login-theme-toggle"
-          className="w-9 h-9 rounded-[10px] border border-border bg-card hover:bg-surface2 flex items-center justify-center text-muted-foreground hover:text-foreground transition-colors"
+          className="w-11 h-11 sm:w-9 sm:h-9 rounded-[10px] border border-border bg-card hover:bg-surface2 flex items-center justify-center text-muted-foreground hover:text-foreground transition-colors"
           title="Toggle Theme"
           aria-label="Toggle Theme"
         >
@@ -96,7 +96,7 @@ export const LoginView: React.FC = () => {
             type="button"
             onClick={() => setShowClientConfig(prev => !prev)}
             aria-expanded={showClientConfig}
-            className="w-full flex items-center justify-between text-label text-muted-foreground hover:text-foreground py-1 transition-colors"
+            className="w-full min-h-11 sm:min-h-0 flex items-center justify-between text-label text-muted-foreground hover:text-foreground py-1 transition-colors"
           >
             <span className="inline-flex items-center gap-1.5">
               <KeyRound className="w-3.5 h-3.5" />
@@ -131,11 +131,12 @@ export const LoginView: React.FC = () => {
                   id={clientIdFieldId}
                   ref={clientIdInputRef}
                   type="text"
+                  enterKeyHint="done"
                   data-testid="client-id-input"
                   value={clientIdDraft}
                   onChange={e => setClientIdDraft(e.target.value)}
                   placeholder="xxx.apps.googleusercontent.com"
-                  className="w-full h-9 px-3 rounded-[8px] bg-background border border-input text-label text-foreground placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-ring/40"
+                  className="w-full h-11 sm:h-9 px-3 rounded-[8px] bg-background border border-input text-base sm:text-label text-foreground placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-ring/40"
                 />
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-[11px] text-muted-foreground">
@@ -144,7 +145,7 @@ export const LoginView: React.FC = () => {
                   <button
                     type="submit"
                     data-testid="client-id-save-btn"
-                    className="h-8 px-3 rounded-[8px] bg-surface2 border border-border hover:bg-secondary text-label font-medium text-foreground transition-colors whitespace-nowrap"
+                    className="h-11 sm:h-8 px-3 rounded-[8px] bg-surface2 border border-border hover:bg-secondary text-label font-medium text-foreground transition-colors whitespace-nowrap"
                   >
                     Save Client ID
                   </button>

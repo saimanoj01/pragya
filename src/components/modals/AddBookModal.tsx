@@ -6,6 +6,7 @@ import { showToast } from '../../utils/toast';
 import { coverUrlError } from '../../utils/bookSurfaces';
 import { Modal } from '../common/Modal';
 import { describeSyncError } from '../../utils/apiErrors';
+import { isSubmitShortcut } from '../../utils/keyboard';
 
 export interface AddBookModalProps {
   isOpen: boolean;
@@ -105,13 +106,22 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({ isOpen, onClose }) =
           type="button"
           onClick={onClose}
           aria-label="Close"
-          className="p-1.5 rounded-[8px] text-muted-foreground hover:text-foreground hover:bg-surface2 transition-colors"
+          className="min-w-11 min-h-11 sm:min-w-0 sm:min-h-0 p-1.5 rounded-[8px] inline-flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-surface2 transition-colors"
         >
           <X className="w-4 h-4" />
         </button>
       </div>
 
-      <form onSubmit={handleSubmit} className="space-y-4">
+      <form
+        onSubmit={handleSubmit}
+        onKeyDown={e => {
+          if (isSubmitShortcut(e.nativeEvent)) {
+            e.preventDefault();
+            if (!submitting) e.currentTarget.requestSubmit();
+          }
+        }}
+        className="space-y-4"
+      >
         <div className="space-y-1.5">
           <label htmlFor={fid('title')} className="block text-eyebrow uppercase text-muted-foreground">Title *</label>
           <input
@@ -121,7 +131,7 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({ isOpen, onClose }) =
             value={title}
             onChange={e => setTitle(e.target.value)}
             placeholder="e.g. Designing Data-Intensive Applications"
-            className="w-full h-10 px-3 rounded-[10px] bg-background border border-input text-body text-foreground placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-ring/40"
+            className="w-full h-11 sm:h-10 px-3 rounded-[10px] bg-background border border-input text-base sm:text-body text-foreground placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-ring/40"
             required
           />
         </div>
@@ -135,7 +145,7 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({ isOpen, onClose }) =
             value={author}
             onChange={e => setAuthor(e.target.value)}
             placeholder="e.g. Martin Kleppmann"
-            className="w-full h-10 px-3 rounded-[10px] bg-background border border-input text-body text-foreground placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-ring/40"
+            className="w-full h-11 sm:h-10 px-3 rounded-[10px] bg-background border border-input text-base sm:text-body text-foreground placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-ring/40"
           />
         </div>
 
@@ -147,7 +157,7 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({ isOpen, onClose }) =
               data-testid="book-format-select"
               value={format}
               onChange={e => setFormat(e.target.value as BookFormat)}
-              className="w-full h-10 px-2.5 rounded-[10px] bg-background border border-input text-body text-foreground focus:outline-none focus:ring-2 focus:ring-ring/40"
+              className="w-full h-11 sm:h-10 px-2.5 rounded-[10px] bg-background border border-input text-base sm:text-body text-foreground focus:outline-none focus:ring-2 focus:ring-ring/40"
             >
               <option value="physical">Physical</option>
               <option value="kindle">Kindle</option>
@@ -161,7 +171,7 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({ isOpen, onClose }) =
               data-testid="book-kind-select"
               value={kind}
               onChange={e => setKind(e.target.value as BookKind)}
-              className="w-full h-10 px-2.5 rounded-[10px] bg-background border border-input text-body text-foreground focus:outline-none focus:ring-2 focus:ring-ring/40"
+              className="w-full h-11 sm:h-10 px-2.5 rounded-[10px] bg-background border border-input text-base sm:text-body text-foreground focus:outline-none focus:ring-2 focus:ring-ring/40"
             >
               <option value="nonfiction">Non-Fiction</option>
               <option value="fiction">Fiction</option>
@@ -175,7 +185,7 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({ isOpen, onClose }) =
               data-testid="book-status-select"
               value={status}
               onChange={e => setStatus(e.target.value as BookStatus)}
-              className="w-full h-10 px-2.5 rounded-[10px] bg-background border border-input text-body text-foreground focus:outline-none focus:ring-2 focus:ring-ring/40"
+              className="w-full h-11 sm:h-10 px-2.5 rounded-[10px] bg-background border border-input text-base sm:text-body text-foreground focus:outline-none focus:ring-2 focus:ring-ring/40"
             >
               <option value="reading">Reading</option>
               <option value="queued">Queued</option>
@@ -191,11 +201,12 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({ isOpen, onClose }) =
             <input
               id={fid('pos')}
               type="number"
+              inputMode="numeric"
               min="0"
               data-testid="book-pos-input"
               value={currentPos}
               onChange={e => setCurrentPos(e.target.value)}
-              className="w-full h-10 px-3 rounded-[10px] bg-background border border-input text-body text-foreground num focus:outline-none focus:ring-2 focus:ring-ring/40"
+              className="w-full h-11 sm:h-10 px-3 rounded-[10px] bg-background border border-input text-base sm:text-body text-foreground num focus:outline-none focus:ring-2 focus:ring-ring/40"
             />
           </div>
 
@@ -204,12 +215,13 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({ isOpen, onClose }) =
             <input
               id={fid('total')}
               type="number"
+              inputMode="numeric"
               min="0"
               data-testid="book-total-input"
               value={totalPos}
               onChange={e => setTotalPos(e.target.value)}
               placeholder="e.g. 320"
-              className="w-full h-10 px-3 rounded-[10px] bg-background border border-input text-body text-foreground num placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-ring/40"
+              className="w-full h-11 sm:h-10 px-3 rounded-[10px] bg-background border border-input text-base sm:text-body text-foreground num placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-ring/40"
             />
           </div>
 
@@ -220,7 +232,7 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({ isOpen, onClose }) =
               data-testid="book-unit-select"
               value={posUnit}
               onChange={e => handleUnitChange(e.target.value as PosUnit)}
-              className="w-full h-10 px-2.5 rounded-[10px] bg-background border border-input text-body text-foreground focus:outline-none focus:ring-2 focus:ring-ring/40"
+              className="w-full h-11 sm:h-10 px-2.5 rounded-[10px] bg-background border border-input text-base sm:text-body text-foreground focus:outline-none focus:ring-2 focus:ring-ring/40"
             >
               <option value="page">Page</option>
               <option value="percent">Percent (%)</option>
@@ -240,7 +252,7 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({ isOpen, onClose }) =
             value={docUrl}
             onChange={e => setDocUrl(e.target.value)}
             placeholder="https://docs.google.com/document/d/..."
-            className="w-full h-10 px-3 rounded-[10px] bg-background border border-input text-body text-foreground placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-ring/40"
+            className="w-full h-11 sm:h-10 px-3 rounded-[10px] bg-background border border-input text-base sm:text-body text-foreground placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-ring/40"
           />
         </div>
 
@@ -258,7 +270,7 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({ isOpen, onClose }) =
             placeholder="https://…"
             aria-describedby={fid('cover-help')}
             aria-invalid={Boolean(coverUrlError(coverUrl))}
-            className="w-full h-10 px-3 rounded-[10px] bg-background border border-input text-body text-foreground placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-ring/40"
+            className="w-full h-11 sm:h-10 px-3 rounded-[10px] bg-background border border-input text-base sm:text-body text-foreground placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-ring/40"
           />
           {coverUrlError(coverUrl) ? (
             <p id={fid('cover-help')} role="alert" className="text-label text-negative">
@@ -275,7 +287,7 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({ isOpen, onClose }) =
           <button
             type="button"
             onClick={onClose}
-            className="h-10 px-4 rounded-[10px] text-body font-medium text-muted-foreground hover:text-foreground hover:bg-surface2 transition-colors"
+            className="h-11 sm:h-10 px-4 rounded-[10px] text-body font-medium text-muted-foreground hover:text-foreground hover:bg-surface2 transition-colors"
           >
             Cancel
           </button>
@@ -283,7 +295,7 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({ isOpen, onClose }) =
             type="submit"
             disabled={submitting}
             data-testid="book-submit-btn"
-            className="h-10 px-5 rounded-[10px] bg-primary text-primary-foreground font-semibold text-body hover:opacity-90 disabled:opacity-50 transition-opacity"
+            className="h-11 sm:h-10 px-5 rounded-[10px] bg-primary text-primary-foreground font-semibold text-body hover:opacity-90 disabled:opacity-50 transition-opacity"
           >
             {submitting ? 'Adding…' : 'Add Book'}
           </button>

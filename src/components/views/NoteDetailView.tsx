@@ -224,7 +224,7 @@ export const NoteDetailView: React.FC<NoteDetailViewProps> = ({
       }
       if (dialogs.length > 0) return;
       const target = e.target as HTMLElement | null;
-      if (e.key === ' ' && target && target.closest('button, a, [role="button"]')) return;
+      if (e.key === ' ' && target && target.closest('button, a, summary, [role="button"]')) return;
 
       if (shielded) {
         // B2.1: Space reveals (priority over the lightbox); E / D / O are no-ops.
@@ -262,7 +262,7 @@ export const NoteDetailView: React.FC<NoteDetailViewProps> = ({
           type="button"
           data-testid="back-to-notes-btn"
           onClick={() => navigateTo('#/notes')}
-          className="inline-flex items-center gap-1.5 text-label text-muted-foreground hover:text-foreground"
+          className="min-h-11 min-w-11 sm:min-h-0 sm:min-w-0 inline-flex items-center gap-1.5 text-label text-muted-foreground hover:text-foreground print:hidden"
         >
           <ArrowLeft className="w-4 h-4" />
           <span>Back to Notes</span>
@@ -283,7 +283,7 @@ export const NoteDetailView: React.FC<NoteDetailViewProps> = ({
             onClick={() =>
               onOpenCapture({ initialTitle: deslugify(slugify(noteSlug)), initialSlug: slugify(noteSlug) })
             }
-            className="h-9 px-4 rounded-[10px] bg-primary text-primary-foreground text-label font-semibold hover:opacity-90 inline-flex items-center gap-1.5"
+            className="h-11 sm:h-9 px-4 rounded-[10px] bg-primary text-primary-foreground text-label font-semibold hover:opacity-90 inline-flex items-center gap-1.5"
           >
             <Plus className="w-3.5 h-3.5" />
             <span>Capture Note for [[{noteSlug}]]</span>
@@ -304,12 +304,12 @@ export const NoteDetailView: React.FC<NoteDetailViewProps> = ({
 
   return (
     <div data-testid="note-detail-view" className="py-6 space-y-6">
-      <div className="flex flex-wrap items-center justify-between gap-3">
+      <div className="print:hidden flex flex-wrap items-center justify-between gap-3">
         <button
           type="button"
           data-testid="back-to-notes-btn"
           onClick={() => navigateTo('#/notes')}
-          className="inline-flex items-center gap-1.5 text-label text-muted-foreground hover:text-foreground"
+          className="min-h-11 min-w-11 sm:min-h-0 sm:min-w-0 inline-flex items-center gap-1.5 text-label text-muted-foreground hover:text-foreground"
         >
           <ArrowLeft className="w-4 h-4" />
           <span>Back to Notes</span>
@@ -323,7 +323,7 @@ export const NoteDetailView: React.FC<NoteDetailViewProps> = ({
             disabled={visibility.editDisabled}
             title={visibility.editTooltip}
             aria-describedby={visibility.shielded ? 'note-detail-shield-text' : undefined}
-            className="h-9 px-3 rounded-[10px] bg-surface2 hover:bg-secondary border border-border text-label font-medium text-foreground inline-flex items-center gap-1.5 whitespace-nowrap disabled:opacity-50 disabled:cursor-not-allowed"
+            className="h-11 sm:h-9 px-3 rounded-[10px] bg-surface2 hover:bg-secondary border border-border text-label font-medium text-foreground inline-flex items-center gap-1.5 whitespace-nowrap disabled:opacity-50 disabled:cursor-not-allowed"
           >
             <Edit3 className="w-3.5 h-3.5" />
             <span>Edit (E)</span>
@@ -336,7 +336,7 @@ export const NoteDetailView: React.FC<NoteDetailViewProps> = ({
             disabled={visibility.editDisabled}
             title={visibility.editTooltip}
             aria-describedby={visibility.shielded ? 'note-detail-shield-text' : undefined}
-            className="h-9 px-3.5 rounded-[10px] bg-primary text-primary-foreground text-label font-semibold hover:opacity-90 inline-flex items-center gap-1.5 whitespace-nowrap disabled:opacity-50 disabled:cursor-not-allowed"
+            className="h-11 sm:h-9 px-3.5 rounded-[10px] bg-primary text-primary-foreground text-label font-semibold hover:opacity-90 inline-flex items-center gap-1.5 whitespace-nowrap disabled:opacity-50 disabled:cursor-not-allowed"
           >
             <Layers className="w-3.5 h-3.5" />
             <span>Deepen (D)</span>
@@ -376,7 +376,7 @@ export const NoteDetailView: React.FC<NoteDetailViewProps> = ({
               disabled={visibility.editDisabled || archiveBusy}
               title={visibility.editTooltip}
               aria-describedby={visibility.shielded ? 'note-detail-shield-text' : undefined}
-              className={`${BTN_TERTIARY} h-9 px-1`}
+              className={`${BTN_TERTIARY} h-11 sm:h-9 px-2 sm:px-1`}
             >
               <Archive className="w-3.5 h-3.5" aria-hidden="true" />
               <span>Archive</span>
@@ -422,8 +422,9 @@ export const NoteDetailView: React.FC<NoteDetailViewProps> = ({
             {book ? (
               <button
                 type="button"
+                data-print-keep="true"
                 onClick={() => navigateTo(`#/book/${encodeURIComponent(book.id)}`)}
-                className="font-semibold text-foreground hover:underline"
+                className="min-h-11 sm:min-h-0 inline-flex items-center font-semibold text-foreground hover:underline"
               >
                 {book.title}
               </button>
@@ -493,7 +494,7 @@ export const NoteDetailView: React.FC<NoteDetailViewProps> = ({
               type="button"
               data-testid={`spoiler-reveal-btn-${note.id}`}
               onClick={revealNote}
-              className="h-9 px-4 rounded-[10px] bg-primary text-primary-foreground text-label font-semibold hover:opacity-90 transition-opacity inline-flex items-center gap-1.5"
+              className="h-11 sm:h-9 px-4 rounded-[10px] bg-primary text-primary-foreground text-label font-semibold hover:opacity-90 transition-opacity inline-flex items-center gap-1.5"
             >
               <Eye className="w-3.5 h-3.5" aria-hidden="true" />
               <span>Reveal Note (or Space)</span>
@@ -520,7 +521,7 @@ export const NoteDetailView: React.FC<NoteDetailViewProps> = ({
                 <button
                   type="button"
                   onClick={() => onOpenDeepen(note)}
-                  className="h-8 px-3 rounded-[8px] bg-primary text-primary-foreground text-label font-semibold hover:opacity-90 whitespace-nowrap"
+                  className="h-11 sm:h-8 px-3 rounded-[8px] bg-primary text-primary-foreground text-label font-semibold hover:opacity-90 whitespace-nowrap"
                 >
                   Continue Deepening →
                 </button>
@@ -580,9 +581,16 @@ export const NoteDetailView: React.FC<NoteDetailViewProps> = ({
                 <button
                   key={slug}
                   type="button"
+                  data-print-keep="true"
                   data-testid={`wikilink-chip-${slug}`}
-                  onClick={() => navigateTo(`#/note/${encodeURIComponent(target ? target.slug : slug)}`)}
-                  className={`px-2.5 py-1 rounded-[8px] border text-label font-mono transition-colors ${
+                  onClick={() =>
+                    navigateTo(
+                      target
+                        ? noteHref(target, bookById.get(target.bookId))
+                        : `#/note/${encodeURIComponent(slug)}`
+                    )
+                  }
+                  className={`min-h-11 sm:min-h-0 inline-flex items-center px-2.5 py-1 rounded-[8px] border text-label font-mono transition-colors ${
                     exists
                       ? 'bg-surface2 border-border text-foreground hover:bg-secondary'
                       : 'bg-background border-dashed border-border text-muted-foreground hover:text-foreground'
@@ -642,11 +650,15 @@ export const NoteDetailView: React.FC<NoteDetailViewProps> = ({
         {note.status === 'atomic' &&
           Array.isArray(note.meta.socraticQuestions) &&
           note.meta.socraticQuestions.length > 0 && (
-            <details data-testid="socratic-prompts-details" className="group pt-2 border-t border-border/60">
-              <summary className="flex items-center justify-between gap-2 cursor-pointer list-none [&::-webkit-details-marker]:hidden">
+            <details
+              data-testid="socratic-prompts-details"
+              data-print-expand="true"
+              className="group pt-2 border-t border-border/60"
+            >
+              <summary className="min-h-11 sm:min-h-0 flex items-center justify-between gap-2 cursor-pointer list-none [&::-webkit-details-marker]:hidden">
                 <span className={EYEBROW}>Socratic prompts ({note.meta.socraticQuestions.length})</span>
                 <ChevronRight
-                  className="w-4 h-4 text-muted-foreground transition-transform group-open:rotate-90"
+                  className="w-4 h-4 text-muted-foreground transition-transform group-open:rotate-90 print:hidden"
                   aria-hidden="true"
                 />
               </summary>
@@ -666,20 +678,29 @@ export const NoteDetailView: React.FC<NoteDetailViewProps> = ({
             <div className="flex flex-wrap gap-3">
               {getRenderableAttachments(note.meta).map(att =>
                 att.type === 'image' ? (
-                  <DriveImage
+                  <button
                     key={att.id}
-                    attachment={att}
-                    testId={`attachment-image-${att.id}`}
+                    type="button"
+                    data-print-keep="true"
+                    aria-label={`View image ${att.fileName || 'attachment'}`}
                     onClick={() => setLightboxAttachment(att)}
-                    className="w-32 h-32 rounded-[10px] object-cover border border-border hover:opacity-90 transition-opacity"
-                  />
+                    className="rounded-[10px] cursor-zoom-in focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
+                  >
+                    <DriveImage
+                      attachment={att}
+                      alt=""
+                      testId={`attachment-image-${att.id}`}
+                      className="w-32 h-32 rounded-[10px] object-cover border border-border hover:opacity-90 transition-opacity"
+                    />
+                  </button>
                 ) : isSafeHttpUrl(att.url) ? (
                   <a
                     key={att.id}
                     href={att.url.trim()}
+                    data-print-href={att.url.trim()}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="inline-flex items-center gap-2 px-3 py-2 rounded-[10px] bg-surface2 border border-border text-label text-foreground hover:bg-secondary"
+                    className="min-h-11 sm:min-h-0 inline-flex items-center gap-2 px-3 py-2 rounded-[10px] bg-surface2 border border-border text-label text-foreground hover:bg-secondary"
                   >
                     {att.type === 'doc' ? (
                       <FileText className="w-4 h-4 text-muted-foreground" />
@@ -704,11 +725,12 @@ export const NoteDetailView: React.FC<NoteDetailViewProps> = ({
                   <a
                     key={url}
                     href={url}
+                    data-print-href={url}
                     target="_blank"
                     rel="noopener noreferrer"
                     data-testid={`note-link-chip-${idx}`}
                     aria-label={`Open link ${url}`}
-                    className="inline-flex items-center gap-2 px-3 py-2 rounded-[10px] bg-surface2 border border-border text-label text-foreground hover:bg-secondary"
+                    className="min-h-11 sm:min-h-0 inline-flex items-center gap-2 px-3 py-2 rounded-[10px] bg-surface2 border border-border text-label text-foreground hover:bg-secondary"
                   >
                     <Link2 className="w-4 h-4 text-muted-foreground" aria-hidden="true" />
                     <span>{linkChipLabel(url)}</span>
@@ -753,9 +775,10 @@ export const NoteDetailView: React.FC<NoteDetailViewProps> = ({
                 <button
                   key={bl.id}
                   type="button"
+                  data-print-keep="true"
                   data-testid={`backlink-item-${bl.slug}`}
                   onClick={() => navigateTo(noteHref(bl, bookById.get(bl.bookId)))}
-                  className="px-3 py-1.5 rounded-[8px] bg-surface2 border border-border text-label text-foreground hover:bg-secondary"
+                  className="min-h-11 sm:min-h-0 inline-flex items-center px-3 py-1.5 rounded-[8px] bg-surface2 border border-border text-label text-foreground hover:bg-secondary"
                 >
                   {isShielded(bl, bookById.get(bl.bookId))
                     ? shieldedNoteLabel(bl, bookById.get(bl.bookId))

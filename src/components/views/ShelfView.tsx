@@ -203,7 +203,7 @@ export const ShelfView: React.FC<ShelfViewProps> = ({
           type="button"
           data-testid="add-book-btn"
           onClick={onOpenAddBook}
-          className="h-10 px-4 rounded-full bg-primary text-primary-foreground text-body font-semibold hover:opacity-90 transition-opacity whitespace-nowrap shrink-0 inline-flex items-center gap-1.5"
+          className="h-11 sm:h-10 px-4 rounded-full bg-primary text-primary-foreground text-body font-semibold hover:opacity-90 transition-opacity whitespace-nowrap shrink-0 inline-flex items-center gap-1.5"
         >
           <span>Add Book</span>
         </button>
@@ -262,7 +262,7 @@ export const ShelfView: React.FC<ShelfViewProps> = ({
                 type="button"
                 data-testid="empty-shelf-add-book-btn"
                 onClick={onOpenAddBook}
-                className="h-10 px-4 rounded-full bg-primary text-primary-foreground text-label font-semibold hover:opacity-90 transition-opacity inline-flex items-center gap-1.5"
+                className="h-11 sm:h-10 px-4 rounded-full bg-primary text-primary-foreground text-label font-semibold hover:opacity-90 transition-opacity inline-flex items-center gap-1.5"
               >
                 <Plus className="w-4 h-4" />
                 <span>Add Book</span>
@@ -273,7 +273,7 @@ export const ShelfView: React.FC<ShelfViewProps> = ({
                   type="button"
                   data-testid={`empty-shelf-start-${b.id}`}
                   onClick={() => void handleStartReading(b.id)}
-                  className="h-10 px-3.5 rounded-full bg-surface2 hover:bg-secondary border border-border text-label font-medium text-foreground inline-flex items-center gap-1.5"
+                  className="h-11 sm:h-10 px-3.5 rounded-full bg-surface2 hover:bg-secondary border border-border text-label font-medium text-foreground inline-flex items-center gap-1.5"
                 >
                   <Play className="w-3.5 h-3.5" />
                   <span className="truncate max-w-[180px]">Start {b.title}</span>
@@ -324,8 +324,9 @@ export const ShelfView: React.FC<ShelfViewProps> = ({
                       <div className="min-w-0">
                         <button
                           type="button"
+                          data-print-keep="true"
                           onClick={() => navigateTo(`#/book/${encodeURIComponent(book.id)}`)}
-                          className="text-left text-title text-foreground hover:underline decoration-border underline-offset-4"
+                          className="min-h-11 sm:min-h-0 inline-flex items-center text-left text-title text-foreground hover:underline decoration-border underline-offset-4"
                         >
                           {book.title}
                         </button>
@@ -401,6 +402,8 @@ export const ShelfView: React.FC<ShelfViewProps> = ({
                       <input
                         type="number"
                         min="0"
+                        inputMode="numeric"
+                        enterKeyHint="done"
                         data-testid={`advance-exact-input-${book.id}`}
                         value={inputValue}
                         onFocus={e => e.currentTarget.select()}
@@ -408,7 +411,7 @@ export const ShelfView: React.FC<ShelfViewProps> = ({
                           setExactInputs(prev => ({ ...prev, [book.id]: e.target.value }))
                         }
                         aria-label={`Current position for ${book.title}`}
-                        className="w-16 h-11 sm:h-8 px-2 rounded-[8px] bg-background border border-input text-label text-foreground num focus:outline-none focus:ring-2 focus:ring-ring/40"
+                        className="w-16 h-11 sm:h-8 px-2 rounded-[8px] bg-background border border-input text-base sm:text-label text-foreground num focus:outline-none focus:ring-2 focus:ring-ring/40"
                       />
                       <button
                         type="submit"
@@ -467,8 +470,9 @@ export const ShelfView: React.FC<ShelfViewProps> = ({
                   <div>
                     <button
                       type="button"
+                      data-print-keep="true"
                       onClick={() => navigateTo(`#/book/${encodeURIComponent(book.id)}`)}
-                      className="text-left text-heading text-foreground hover:underline"
+                      className="min-h-11 sm:min-h-0 inline-flex items-center text-left text-heading text-foreground hover:underline"
                     >
                       {book.title}
                     </button>
@@ -492,7 +496,7 @@ export const ShelfView: React.FC<ShelfViewProps> = ({
                     type="button"
                     data-testid={`book-start-btn-${book.id}`}
                     onClick={() => void handleStartReading(book.id)}
-                    className="font-semibold text-foreground hover:underline inline-flex items-center gap-1 whitespace-nowrap"
+                    className="min-h-11 sm:min-h-0 font-semibold text-foreground hover:underline inline-flex items-center gap-1 whitespace-nowrap"
                   >
                     <span>Start Reading →</span>
                   </button>
@@ -519,8 +523,9 @@ export const ShelfView: React.FC<ShelfViewProps> = ({
                 <div>
                   <button
                     type="button"
+                    data-print-keep="true"
                     onClick={() => navigateTo(`#/book/${encodeURIComponent(book.id)}`)}
-                    className="text-left text-heading text-foreground hover:underline"
+                    className="min-h-11 sm:min-h-0 inline-flex items-center text-left text-heading text-foreground hover:underline"
                   >
                     {book.title}
                   </button>
@@ -534,7 +539,7 @@ export const ShelfView: React.FC<ShelfViewProps> = ({
                     type="button"
                     data-testid={`book-start-btn-${book.id}`}
                     onClick={() => void handleStartReading(book.id)}
-                    className="font-semibold text-foreground hover:underline inline-flex items-center gap-1 whitespace-nowrap"
+                    className="min-h-11 sm:min-h-0 font-semibold text-foreground hover:underline inline-flex items-center gap-1 whitespace-nowrap"
                   >
                     <Play className="w-3 h-3" />
                     <span>Resume</span>
@@ -563,8 +568,9 @@ export const ShelfView: React.FC<ShelfViewProps> = ({
                   <div>
                     <button
                       type="button"
+                      data-print-keep="true"
                       onClick={() => navigateTo(`#/book/${encodeURIComponent(book.id)}`)}
-                      className="text-left text-heading text-foreground hover:underline"
+                      className="min-h-11 sm:min-h-0 inline-flex items-center text-left text-heading text-foreground hover:underline"
                     >
                       {book.title}
                     </button>
@@ -580,7 +586,7 @@ export const ShelfView: React.FC<ShelfViewProps> = ({
                       href={book.docUrl.trim()}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="text-muted-foreground hover:text-foreground inline-flex items-center gap-1"
+                      className="min-h-11 min-w-11 sm:min-h-0 sm:min-w-0 text-muted-foreground hover:text-foreground inline-flex items-center justify-end gap-1"
                     >
                       <span>Doc ↗</span>
                     </a>
@@ -595,7 +601,7 @@ export const ShelfView: React.FC<ShelfViewProps> = ({
       {/* C1.1 Archived (collapsed, only when there are any) */}
       {archivedBooks.length > 0 && (
         <details data-testid="archived-books-section" className="group space-y-3">
-          <summary className="flex items-center justify-between gap-2 cursor-pointer list-none">
+          <summary className="min-h-11 sm:min-h-0 flex items-center justify-between gap-2 cursor-pointer list-none">
             <span className={`${EYEBROW} tracking-wider num`}>Archived ({archivedBooks.length})</span>
             <ChevronRight
               className="w-4 h-4 text-muted-foreground transition-transform group-open:rotate-90"
@@ -612,8 +618,9 @@ export const ShelfView: React.FC<ShelfViewProps> = ({
                 <div className="min-w-0 flex-1">
                   <button
                     type="button"
+                    data-print-keep="true"
                     onClick={() => navigateTo(`#/book/${encodeURIComponent(book.id)}`)}
-                    className="text-left text-body font-medium text-foreground hover:underline truncate max-w-full"
+                    className="min-h-11 sm:min-h-0 inline-flex items-center text-left text-body font-medium text-foreground hover:underline truncate max-w-full"
                   >
                     {book.title}
                   </button>

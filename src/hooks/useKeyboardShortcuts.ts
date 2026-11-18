@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { navigateTo, type PragyaRoute } from '../utils/navigation';
+import { isHelpShortcut } from '../utils/keyboardShortcuts';
 
 export function isEditableElement(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false;
@@ -17,6 +18,8 @@ export interface UseKeyboardShortcutsOptions {
   onToggleCommandPalette: () => void;
   onOpenCapture: (bookId: string | null) => void;
   onSyncNow: () => void;
+  /** CD D2.1: `?` opens the Keyboard Help modal. */
+  onOpenKeyboardHelp?: () => void;
 }
 
 export function useKeyboardShortcuts({
@@ -27,6 +30,7 @@ export function useKeyboardShortcuts({
   onToggleCommandPalette,
   onOpenCapture,
   onSyncNow,
+  onOpenKeyboardHelp,
 }: UseKeyboardShortcutsOptions): void {
   const gChordTimerRef = useRef<number | null>(null);
   const awaitingGTargetRef = useRef(false);
@@ -35,11 +39,13 @@ export function useKeyboardShortcuts({
     onToggleCommandPalette,
     onOpenCapture,
     onSyncNow,
+    onOpenKeyboardHelp,
   });
   callbacksRef.current = {
     onToggleCommandPalette,
     onOpenCapture,
     onSyncNow,
+    onOpenKeyboardHelp,
   };
 
   useEffect(() => {
@@ -69,6 +75,15 @@ export function useKeyboardShortcuts({
       if (isEditableElement(e.target)) return;
       if (hasOpenOverlay || isSessionExpiredOpen) return;
       if (document.querySelector('[role="dialog"]')) return;
+      if (document.querySelector('[data-popover="true"]')) return;
+
+      if (isHelpShortcut(e)) {
+        if (callbacksRef.current.onOpenKeyboardHelp) {
+          e.preventDefault();
+          callbacksRef.current.onOpenKeyboardHelp();
+        }
+        return;
+      }
 
       const key = e.key.toLowerCase();
 

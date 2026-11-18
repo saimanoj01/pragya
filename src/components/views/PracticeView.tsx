@@ -38,7 +38,10 @@ import { BTN_SECONDARY, BTN_TERTIARY, EYEBROW, HELPER, INPUT } from '../common/u
 import { navigateTo } from '../../utils/navigation';
 import { getLocalDateString } from '../../utils/sessionCoalesce';
 import { buildSnapshot, validateSnapshotPayload } from '../../utils/snapshot';
-import { isNoteSpoiler, isUnlockedPrediction } from '../../utils/spoilerMath';
+import { formatPosDisplay, isNoteSpoiler, isUnlockedPrediction } from '../../utils/spoilerMath';
+import { getRenderableAttachments } from '../../utils/metaCodecs';
+import { StreamThumbnail } from '../common/StreamThumbnail';
+import { focusCard, noteCardAriaLabel } from '../../utils/cardFocus';
 import { ChapterPosChip } from '../common/ChapterPosChip';
 import { isArchived } from '../../utils/archive';
 import { getPracticeDeltaLists, noteHref, shieldedNoteLabel } from '../../utils/noteVisibility';
@@ -65,6 +68,8 @@ export const PracticeView: React.FC = () => {
   } = usePragya();
 
   const [focusedDeltaIdx, setFocusedDeltaIdx] = useState<number>(0);
+  const jkMovedRef = useRef(false);
+  const [jkTick, setJkTick] = useState(0);
   const [editingTriggerNoteId, setEditingTriggerNoteId] = useState<string | null>(null);
   const [triggerDraft, setTriggerDraft] = useState<string>('');
   const [actionDraft, setActionDraft] = useState<string>('');
@@ -233,10 +238,14 @@ export const PracticeView: React.FC = () => {
       const key = e.key.toLowerCase();
       if (key === 'j') {
         e.preventDefault();
+        jkMovedRef.current = true;
         setFocusedDeltaIdx(prev => Math.min(activeDeltas.length - 1, prev + 1));
+        setJkTick(t => t + 1);
       } else if (key === 'k') {
         e.preventDefault();
+        jkMovedRef.current = true;
         setFocusedDeltaIdx(prev => Math.max(0, prev - 1));
+        setJkTick(t => t + 1);
       } else if (key === '1') {
         const active = activeDeltas[focusedDeltaIdx];
         if (active && !shieldedDeltaIds.has(active.id)) {
@@ -257,7 +266,7 @@ export const PracticeView: React.FC = () => {
         }
       } else if (e.key === 'Enter') {
         const target = e.target as HTMLElement | null;
-        if (target && target.closest('button, a, [role="button"]')) return;
+        if (target && target.closest('button, a, summary, [role="button"]')) return;
         const active = activeDeltas[focusedDeltaIdx];
         if (active) {
           e.preventDefault();
@@ -271,6 +280,17 @@ export const PracticeView: React.FC = () => {
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [activeDeltas, bookMap, focusedDeltaIdx, handleCheckIn, shieldedDeltaIds]);
+
+  // CD D2.1: after J/K the focused delta card gets real DOM focus and is scrolled into view.
+  useEffect(() => {
+    if (!jkMovedRef.current) return;
+    jkMovedRef.current = false;
+    focusCard(
+      document.querySelector<HTMLElement>(
+        `[data-testid="active-deltas-section"] [data-jk-card="${focusedDeltaIdx}"]`
+      )
+    );
+  }, [focusedDeltaIdx, jkTick]);
 
   const handleSaveRefinedDelta = async (note: Note) => {
     const normalized = normalizeDeltaTrigger(triggerDraft);
@@ -446,7 +466,7 @@ export const PracticeView: React.FC = () => {
             type="button"
             data-testid="export-json-btn"
             onClick={handleExportJson}
-            className="h-9 px-3.5 rounded-[10px] bg-surface2 hover:bg-secondary border border-border text-label font-medium text-foreground inline-flex items-center gap-1.5 whitespace-nowrap"
+            className="h-11 sm:h-9 px-3.5 rounded-[10px] bg-surface2 hover:bg-secondary border border-border text-label font-medium text-foreground inline-flex items-center gap-1.5 whitespace-nowrap"
           >
             <Download className="w-3.5 h-3.5" />
             <span>Export JSON</span>
@@ -464,7 +484,7 @@ export const PracticeView: React.FC = () => {
             type="button"
             data-testid="import-json-btn"
             onClick={() => importInputRef.current?.click()}
-            className="h-9 px-3.5 rounded-[10px] bg-surface2 hover:bg-secondary border border-border text-label font-medium text-foreground inline-flex items-center gap-1.5 whitespace-nowrap"
+            className="h-11 sm:h-9 px-3.5 rounded-[10px] bg-surface2 hover:bg-secondary border border-border text-label font-medium text-foreground inline-flex items-center gap-1.5 whitespace-nowrap"
           >
             <Upload className="w-3.5 h-3.5" />
             <span>Import JSON</span>
@@ -510,7 +530,19 @@ export const PracticeView: React.FC = () => {
                   key={note.id}
                   data-testid={`delta-card-${note.id}`}
                   data-focused={isFocused ? 'true' : undefined}
-                  className={`bg-card border rounded-[14px] p-5 space-y-3 transition-colors ${
+                  data-jk-focused={isFocused ? 'true' : undefined}
+                  data-jk-card={idx}
+                  tabIndex={-1}
+                  aria-label={noteCardAriaLabel({
+                    bookTitle: book?.title,
+                    posLabel: formatPosDisplay(note.pos, book?.posUnit || 'page'),
+                    title: note.meta?.title || note.slug,
+                    shielded: deltaShielded,
+                  })}
+                  onFocus={e => {
+                    if (e.target === e.currentTarget) setFocusedDeltaIdx(idx);
+                  }}
+                  className={`bg-card border rounded-[14px] p-5 space-y-3 transition-colors focus:outline-none focus-visible:border-foreground/40 focus-visible:ring-1 focus-visible:ring-ring/40 ${
                     isFocused ? 'border-foreground/40 ring-1 ring-ring/40' : 'border-border'
                   }`}
                 >
@@ -518,8 +550,9 @@ export const PracticeView: React.FC = () => {
                     <div className="flex flex-wrap items-center gap-2 min-w-0">
                       <button
                         type="button"
+                        data-print-keep="true"
                         onClick={() => navigateTo(noteHref(note, book, !deltaShielded))}
-                        className="font-mono text-label font-semibold text-foreground hover:underline truncate"
+                        className="min-h-11 sm:min-h-0 inline-flex items-center font-mono text-label font-semibold text-foreground hover:underline truncate"
                       >
                         {deltaShielded
                           ? shieldedNoteLabel(note, book)
@@ -552,7 +585,7 @@ export const PracticeView: React.FC = () => {
                         type="button"
                         data-testid={`delta-reveal-btn-${note.id}`}
                         onClick={() => revealDelta(note.id)}
-                        className="h-8 px-3 rounded-[8px] bg-primary text-primary-foreground text-label font-semibold whitespace-nowrap"
+                        className="h-11 sm:h-8 px-3 rounded-[8px] bg-primary text-primary-foreground text-label font-semibold whitespace-nowrap"
                       >
                         Reveal Note
                       </button>
@@ -582,11 +615,12 @@ export const PracticeView: React.FC = () => {
                           <input
                             id={`refine-when-${note.id}`}
                             type="text"
+                            enterKeyHint="done"
                             data-testid={`delta-trigger-edit-input-${note.id}`}
                             value={triggerDraft}
                             onChange={e => setTriggerDraft(e.target.value)}
                             placeholder="When this situation happens..."
-                            className={`${INPUT} h-9 text-label`}
+                            className={`${INPUT} h-11 sm:h-9`}
                           />
                         </div>
                         <div className="space-y-1">
@@ -599,11 +633,12 @@ export const PracticeView: React.FC = () => {
                           <input
                             id={`refine-do-${note.id}`}
                             type="text"
+                            enterKeyHint="done"
                             data-testid={`delta-action-edit-input-${note.id}`}
                             value={actionDraft}
                             onChange={e => setActionDraft(e.target.value)}
                             placeholder="Do this concrete thing..."
-                            className={`${INPUT} h-9 text-label`}
+                            className={`${INPUT} h-11 sm:h-9`}
                           />
                         </div>
                       </div>
@@ -611,7 +646,7 @@ export const PracticeView: React.FC = () => {
                         <button
                           type="button"
                           onClick={() => setEditingTriggerNoteId(null)}
-                          className="h-9 px-2.5 rounded-[8px] text-label text-muted-foreground hover:text-foreground"
+                          className="h-11 sm:h-9 min-w-11 sm:min-w-0 px-2.5 rounded-[8px] text-label text-muted-foreground hover:text-foreground"
                         >
                           Dismiss
                         </button>
@@ -619,7 +654,7 @@ export const PracticeView: React.FC = () => {
                           type="button"
                           data-testid={`delta-trigger-save-btn-${note.id}`}
                           onClick={() => void handleSaveRefinedDelta(note)}
-                          className="h-9 px-3 rounded-[8px] bg-primary text-primary-foreground text-label font-semibold whitespace-nowrap"
+                          className="h-11 sm:h-9 px-3 rounded-[8px] bg-primary text-primary-foreground text-label font-semibold whitespace-nowrap"
                         >
                           Save Changes
                         </button>
@@ -631,6 +666,7 @@ export const PracticeView: React.FC = () => {
                     <div className="flex flex-col sm:flex-row sm:items-center gap-2">
                       <input
                         type="text"
+                        enterKeyHint="done"
                         aria-label="Check-in reflection"
                         data-testid={`delta-reflection-input-${note.id}`}
                         value={reflectionDrafts[note.id] ?? ''}
@@ -649,7 +685,7 @@ export const PracticeView: React.FC = () => {
                             closeReflection(note.id);
                           }
                         }}
-                        className={`${INPUT} h-9 text-label flex-1`}
+                        className={`${INPUT} h-11 sm:h-9 flex-1`}
                       />
                       <div className="flex items-center gap-2">
                         <button
@@ -701,7 +737,7 @@ export const PracticeView: React.FC = () => {
                       <div
                         role="group"
                         aria-label="Today's check-in"
-                        className="flex flex-wrap items-center gap-1.5"
+                        className="flex flex-wrap items-center gap-2 sm:gap-1.5"
                       >
                         {(
                           [
@@ -736,7 +772,7 @@ export const PracticeView: React.FC = () => {
                               data-testid={btn.testId}
                               aria-pressed={isPressed}
                               onClick={() => void handleCheckIn(note, btn.outcome)}
-                              className={`h-8 px-2.5 rounded-[8px] text-label whitespace-nowrap inline-flex items-center gap-1 ${
+                              className={`h-11 sm:h-8 min-w-11 sm:min-w-0 px-3 sm:px-2.5 rounded-[8px] text-label whitespace-nowrap inline-flex items-center justify-center gap-1 ${
                                 isPressed ? btn.pressed : btn.base
                               }`}
                             >
@@ -750,12 +786,12 @@ export const PracticeView: React.FC = () => {
                       <div />
                     )}
 
-                    <div className="flex flex-wrap items-center gap-1.5">
+                    <div className="flex flex-wrap items-center gap-2 sm:gap-1.5">
                       <button
                         type="button"
                         data-testid={`delta-graduate-btn-${note.id}`}
                         onClick={() => void handleTransitionDeltaStatus(note, 'graduated')}
-                        className="h-8 px-2.5 rounded-[8px] bg-surface2 hover:bg-secondary border border-border text-label font-medium text-foreground whitespace-nowrap"
+                        className="h-11 sm:h-8 min-w-11 sm:min-w-0 px-3 sm:px-2.5 rounded-[8px] bg-surface2 hover:bg-secondary border border-border text-label font-medium text-foreground inline-flex items-center justify-center whitespace-nowrap"
                       >
                         Graduate
                       </button>
@@ -763,7 +799,7 @@ export const PracticeView: React.FC = () => {
                         type="button"
                         data-testid={`delta-pause-btn-${note.id}`}
                         onClick={() => void handleTransitionDeltaStatus(note, 'paused')}
-                        className="h-8 px-2.5 rounded-[8px] bg-surface2 hover:bg-secondary border border-border text-label font-medium text-muted-foreground hover:text-foreground whitespace-nowrap"
+                        className="h-11 sm:h-8 min-w-11 sm:min-w-0 px-3 sm:px-2.5 rounded-[8px] bg-surface2 hover:bg-secondary border border-border text-label font-medium text-muted-foreground hover:text-foreground inline-flex items-center justify-center whitespace-nowrap"
                       >
                         Pause
                       </button>
@@ -772,7 +808,7 @@ export const PracticeView: React.FC = () => {
 
                   {!deltaShielded && historyCount > 0 && (
                     <details data-testid={`delta-history-${note.id}`} className="group">
-                      <summary className="flex items-center justify-between gap-2 cursor-pointer list-none [&::-webkit-details-marker]:hidden">
+                      <summary className="min-h-11 sm:min-h-0 flex items-center justify-between gap-2 cursor-pointer list-none [&::-webkit-details-marker]:hidden">
                         <span className={HELPER}>{deltaHistorySummary(deltaLogs, note.id)}</span>
                         <ChevronRight
                           className="w-4 h-4 text-muted-foreground transition-transform group-open:rotate-90"
@@ -847,8 +883,9 @@ export const PracticeView: React.FC = () => {
                     <div className="flex items-center justify-between gap-2">
                       <button
                         type="button"
+                        data-print-keep="true"
                         onClick={() => navigateTo(noteHref(note, archivedBook, !deltaShielded))}
-                        className="font-mono text-label font-semibold text-foreground hover:underline truncate"
+                        className="min-h-11 sm:min-h-0 inline-flex items-center font-mono text-label font-semibold text-foreground hover:underline truncate"
                       >
                         {deltaShielded
                           ? shieldedNoteLabel(note, archivedBook)
@@ -863,7 +900,7 @@ export const PracticeView: React.FC = () => {
                         type="button"
                         data-testid={`delta-reveal-btn-${note.id}`}
                         onClick={() => revealDelta(note.id)}
-                        className="h-7 px-2.5 rounded-[8px] bg-surface2 hover:bg-secondary border border-border text-label font-semibold text-foreground"
+                        className="h-11 sm:h-7 px-3 sm:px-2.5 rounded-[8px] bg-surface2 hover:bg-secondary border border-border text-label font-semibold text-foreground"
                       >
                         Reveal Note
                       </button>
@@ -885,7 +922,7 @@ export const PracticeView: React.FC = () => {
                       type="button"
                       data-testid={`delta-reactivate-btn-${note.id}`}
                       onClick={() => void handleTransitionDeltaStatus(note, 'active')}
-                      className="h-8 px-3 rounded-[8px] bg-surface2 hover:bg-secondary border border-border text-label font-semibold text-foreground inline-flex items-center gap-1.5 whitespace-nowrap"
+                      className="h-11 sm:h-8 min-w-11 sm:min-w-0 px-3 rounded-[8px] bg-surface2 hover:bg-secondary border border-border text-label font-semibold text-foreground inline-flex items-center justify-center gap-1.5 whitespace-nowrap"
                     >
                       <RefreshCw className="w-3 h-3" />
                       <span>Reactivate</span>
@@ -918,6 +955,9 @@ export const PracticeView: React.FC = () => {
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             {shuffleCandidates.map(note => {
               const book = bookMap.get(note.bookId);
+              const shuffleImages = getRenderableAttachments(note.meta).filter(
+                (a): a is Extract<typeof a, { type: 'image' }> => a.type === 'image'
+              );
               return (
                 <article
                   key={note.id}
@@ -952,13 +992,25 @@ export const PracticeView: React.FC = () => {
                     {note.takeaway && (
                       <p className="text-body text-foreground line-clamp-4">{note.takeaway}</p>
                     )}
+
+                    {shuffleImages.length > 0 && (
+                      <div className="flex flex-wrap items-center gap-2 pt-1">
+                        {shuffleImages.map(att => (
+                          <StreamThumbnail
+                            key={att.id}
+                            attachment={att}
+                            className="w-12 h-12 rounded-[8px] object-cover border border-border"
+                          />
+                        ))}
+                      </div>
+                    )}
                   </div>
 
                   <div className="pt-2 border-t border-border/50 flex items-center justify-between gap-2">
                     <button
                       type="button"
                       onClick={() => navigateTo(`#/note/${encodeURIComponent(note.slug)}`)}
-                      className="text-label text-muted-foreground hover:text-foreground whitespace-nowrap"
+                      className="min-h-11 min-w-11 sm:min-h-0 sm:min-w-0 px-1 sm:px-0 inline-flex items-center text-label text-muted-foreground hover:text-foreground whitespace-nowrap"
                     >
                       Open ↗
                     </button>
@@ -974,7 +1026,7 @@ export const PracticeView: React.FC = () => {
                       type="button"
                       data-testid={`shuffle-review-btn-${note.slug}`}
                       onClick={() => void handleMarkReviewed(note)}
-                      className="h-8 px-3 rounded-[8px] bg-surface2 hover:bg-secondary border border-border text-label font-semibold text-foreground inline-flex items-center gap-1.5 whitespace-nowrap"
+                      className="h-11 sm:h-8 px-3 rounded-[8px] bg-surface2 hover:bg-secondary border border-border text-label font-semibold text-foreground inline-flex items-center gap-1.5 whitespace-nowrap"
                     >
                       <CheckCircle2 className="w-3.5 h-3.5 text-positive" />
                       <span>Mark Reviewed</span>
@@ -1011,7 +1063,7 @@ export const PracticeView: React.FC = () => {
                     <button
                       type="button"
                       onClick={() => navigateTo(`#/note/${encodeURIComponent(note.slug)}`)}
-                      className="text-foreground hover:underline font-medium"
+                      className="min-h-11 sm:min-h-0 inline-flex items-center text-foreground hover:underline font-medium"
                     >
                       View Note →
                     </button>

@@ -70,7 +70,7 @@ export const ImportConfirmModal: React.FC<ImportConfirmModalProps> = ({
           type="button"
           onClick={onClose}
           aria-label="Close"
-          className="p-1.5 rounded-[8px] text-muted-foreground hover:text-foreground hover:bg-surface2"
+          className="min-w-11 min-h-11 sm:min-w-0 sm:min-h-0 p-1.5 rounded-[8px] inline-flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-surface2"
         >
           <X className="w-4 h-4" />
         </button>
@@ -115,7 +115,7 @@ export const ImportConfirmModal: React.FC<ImportConfirmModalProps> = ({
               type="button"
               data-testid="import-download-backup-btn"
               onClick={handleDownloadCurrentBackup}
-              className="inline-flex items-center gap-1 text-foreground font-medium hover:underline"
+              className="min-h-11 sm:min-h-0 inline-flex items-center gap-1 text-foreground font-medium hover:underline"
             >
               <Download className="w-3 h-3" />
               <span>Download current workspace backup first</span>
@@ -126,7 +126,7 @@ export const ImportConfirmModal: React.FC<ImportConfirmModalProps> = ({
             <button
               type="button"
               onClick={onClose}
-              className="h-10 px-4 rounded-[10px] text-body font-medium text-muted-foreground hover:text-foreground hover:bg-surface2"
+              className="h-11 sm:h-10 px-4 rounded-[10px] text-body font-medium text-muted-foreground hover:text-foreground hover:bg-surface2"
             >
               Cancel
             </button>
@@ -135,7 +135,7 @@ export const ImportConfirmModal: React.FC<ImportConfirmModalProps> = ({
               disabled={submitting}
               data-testid="import-confirm-btn"
               onClick={() => void handleConfirm()}
-              className="h-10 px-5 rounded-[10px] bg-primary text-primary-foreground font-semibold text-body hover:opacity-90 disabled:opacity-50"
+              className="h-11 sm:h-10 px-5 rounded-[10px] bg-primary text-primary-foreground font-semibold text-body hover:opacity-90 disabled:opacity-50"
             >
               {submitting ? 'Importing…' : 'Confirm Import'}
             </button>

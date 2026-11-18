@@ -192,9 +192,9 @@ export function Modal({
         transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1] }}
         className={
           isSheet
-            ? `w-full sm:w-[440px] sm:h-full max-h-[90vh] sm:max-h-screen rounded-t-[18px] sm:rounded-none sm:border-l border-t sm:border-t-0 border-border bg-popover p-6 shadow-2xl relative overflow-y-auto custom-scrollbar ${className}`
+            ? `w-full sm:w-[440px] sm:h-full max-h-[90vh] sm:max-h-screen rounded-t-[18px] sm:rounded-none sm:border-l border-t sm:border-t-0 border-border bg-popover p-6 pb-[max(env(safe-area-inset-bottom),1.5rem)] sm:pb-6 shadow-2xl relative overflow-y-auto custom-scrollbar ${className}`
             : mobileSheet
-              ? `bg-popover text-popover-foreground w-full ${maxWidth} max-h-[92dvh] sm:max-h-[90vh] rounded-t-[18px] sm:rounded-[14px] p-4 sm:p-6 shadow-2xl border-t sm:border border-border relative overflow-y-auto custom-scrollbar ${className}`
+              ? `bg-popover text-popover-foreground w-full ${maxWidth} max-h-[92dvh] sm:max-h-[90vh] rounded-t-[18px] sm:rounded-[14px] p-4 pb-[max(env(safe-area-inset-bottom),1rem)] sm:p-6 shadow-2xl border-t sm:border border-border relative overflow-y-auto custom-scrollbar ${className}`
               : `bg-popover text-popover-foreground w-full ${maxWidth} max-h-[90vh] rounded-[14px] p-6 shadow-2xl border border-border relative overflow-y-auto custom-scrollbar ${className}`
         }
         onClick={e => e.stopPropagation()}

@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import type { Book, Note } from '../../types/pragya';
 import { filterWikilinkCandidates } from '../../utils/noteVisibility';
 
@@ -7,31 +7,39 @@ export interface WikilinkAutocompleteProps {
   value: string;
   cursorPos: number | null;
   notes: Note[];
-  /**
-   * B2.3: notes ahead of their book's bookmark are never offered. Required (R2#3) so a
-   * new caller cannot silently skip the spoiler filter.
-   */
   books: Book[];
   excludeNoteId?: string;
   excludeSlug?: string;
   onSelect: (nextValue: string, nextCursorPos: number) => void;
 }
 
-interface ActiveWikilinkMatch {
+export interface ActiveWikilinkMatch {
+  query: string;
   startIndex: number;
   endIndex: number;
-  query: string;
 }
 
-function getActiveWikilinkMatch(value: string, cursorPos: number | null): ActiveWikilinkMatch | null {
-  if (cursorPos === null || cursorPos < 0) return null;
+export function getActiveWikilinkMatch(
+  value: string,
+  cursorPos: number | null
+): ActiveWikilinkMatch | null {
+  if (cursorPos === null || cursorPos < 2 || cursorPos > value.length) {
+    return null;
+  }
+
   const beforeCursor = value.slice(0, cursorPos);
-  const match = /\[\[([^[\]\n]*)$/.exec(beforeCursor);
-  if (!match) return null;
+  const openIdx = beforeCursor.lastIndexOf('[[');
+  if (openIdx === -1) return null;
+
+  const between = beforeCursor.slice(openIdx + 2);
+  if (between.includes(']]') || between.includes('\n')) {
+    return null;
+  }
+
   return {
-    startIndex: match.index,
+    query: between,
+    startIndex: openIdx,
     endIndex: cursorPos,
-    query: match[1] || '',
   };
 }
 
@@ -47,25 +55,31 @@ export const WikilinkAutocomplete: React.FC<WikilinkAutocompleteProps> = ({
 }) => {
   const [dismissedAtStart, setDismissedAtStart] = useState<number | null>(null);
   const [selectedIdx, setSelectedIdx] = useState(0);
+  // CD D2.2: listbox ids + debounced polite announcement on open.
+  const baseId = useId();
+  const listId = `${baseId}-list`;
+  const optionId = (idx: number) => `${baseId}-opt-${idx}`;
+  const [announcement, setAnnouncement] = useState('');
+  const wasOpenRef = useRef(false);
 
   const match = useMemo(() => getActiveWikilinkMatch(value, cursorPos), [value, cursorPos]);
 
   useEffect(() => {
     if (!match) {
       setDismissedAtStart(null);
-      return;
     }
-    if (dismissedAtStart !== null && dismissedAtStart !== match.startIndex) {
-      setDismissedAtStart(null);
-    }
-  }, [dismissedAtStart, match]);
+  }, [match]);
 
+  // B2.3 / decisions.md #2: shielded notes are dropped before prefix matching.
   const options = useMemo(() => {
     if (!match) return [];
-    return filterWikilinkCandidates(notes, books, match.query, {
-      noteId: excludeNoteId,
-      slug: excludeSlug,
-    });
+    return filterWikilinkCandidates(
+      notes,
+      books,
+      match.query,
+      { noteId: excludeNoteId, slug: excludeSlug },
+      6
+    );
   }, [books, excludeNoteId, excludeSlug, match, notes]);
 
   const isOpen = Boolean(
@@ -75,6 +89,60 @@ export const WikilinkAutocomplete: React.FC<WikilinkAutocompleteProps> = ({
   useEffect(() => {
     setSelectedIdx(0);
   }, [match?.query, match?.startIndex]);
+
+  // CD D2.2: multiline combobox ARIA on the textarea (aria-expanded requires role="combobox"
+  // in ARIA 1.2) + aria-controls / aria-activedescendant while the listbox popup is open.
+  const activeId = isOpen && options[selectedIdx] ? optionId(selectedIdx) : null;
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.setAttribute('role', 'combobox');
+    el.setAttribute('aria-multiline', 'true');
+    el.setAttribute('aria-autocomplete', 'list');
+    el.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+    if (isOpen) {
+      el.setAttribute('aria-controls', listId);
+    } else {
+      el.removeAttribute('aria-controls');
+    }
+    if (activeId) el.setAttribute('aria-activedescendant', activeId);
+    else el.removeAttribute('aria-activedescendant');
+  }, [activeId, isOpen, listId, textareaRef]);
+
+  useEffect(() => {
+    const el = textareaRef.current;
+    return () => {
+      if (!el) return;
+      el.removeAttribute('role');
+      el.removeAttribute('aria-multiline');
+      el.removeAttribute('aria-autocomplete');
+      el.removeAttribute('aria-expanded');
+      el.removeAttribute('aria-controls');
+      el.removeAttribute('aria-activedescendant');
+    };
+  }, [textareaRef]);
+
+  const optionCount = options.length;
+  useEffect(() => {
+    if (!isOpen) {
+      wasOpenRef.current = false;
+      setAnnouncement('');
+      return;
+    }
+    const firstOpen = !wasOpenRef.current;
+    wasOpenRef.current = true;
+    const timer = window.setTimeout(() => {
+      const countText = `${optionCount} note ${optionCount === 1 ? 'suggestion' : 'suggestions'}`;
+      setAnnouncement(firstOpen ? `${countText}. Up and down to choose, Enter to insert.` : countText);
+    }, 400);
+    return () => window.clearTimeout(timer);
+  }, [isOpen, optionCount]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const activeEl = document.getElementById(`${baseId}-opt-${selectedIdx}`);
+    activeEl?.scrollIntoView?.({ block: 'nearest' });
+  }, [baseId, isOpen, selectedIdx]);
 
   const applySelection = useCallback(
     (targetSlug: string) => {
@@ -136,53 +204,88 @@ export const WikilinkAutocomplete: React.FC<WikilinkAutocompleteProps> = ({
     return () => window.removeEventListener('keydown', handleKeyDown, true);
   }, [applySelection, isOpen, match, options, selectedIdx, textareaRef]);
 
-  if (!isOpen) return null;
+  const announcer = (
+    <span role="status" aria-live="polite" className="sr-only" data-testid="wikilink-autocomplete-announcer">
+      {announcement}
+    </span>
+  );
+
+  if (!isOpen) return announcer;
 
   return (
-    <div
-      data-testid="wikilink-autocomplete"
-      data-popover="true"
-      onMouseDown={e => e.preventDefault()}
-      className="absolute left-0 right-0 z-30 mt-1 rounded-[10px] bg-popover border border-border shadow-2xl p-1.5 space-y-0.5 max-h-52 overflow-y-auto custom-scrollbar"
-    >
-      <div className="px-2 py-1 text-[10px] uppercase tracking-wider text-muted-foreground font-semibold">
-        Link Note Concept
+    <>
+      {announcer}
+      <div
+        id={listId}
+        role="listbox"
+        aria-label="Link a note"
+        data-testid="wikilink-autocomplete"
+        data-popover="true"
+        onMouseDown={e => e.preventDefault()}
+        className="absolute left-0 right-0 z-30 mt-1 rounded-[10px] bg-popover border border-border shadow-2xl p-1.5 space-y-0.5 max-h-80 sm:max-h-52 overflow-y-auto custom-scrollbar"
+      >
+        <div
+          aria-hidden="true"
+          className="px-2 py-1 text-[10px] uppercase tracking-wider text-muted-foreground font-semibold"
+        >
+          Link Note Concept
+        </div>
+        {options.map((n, idx) => {
+          const active = idx === selectedIdx;
+          return (
+            <button
+              key={n.id}
+              type="button"
+              id={optionId(idx)}
+              role="option"
+              aria-selected={active}
+              tabIndex={-1}
+              data-testid={`wikilink-option-${n.slug}`}
+              // CD C3.5: select on pointerdown (touch + primary mouse) before the textarea can blur;
+              // on touch, swallow the trailing synthesized click at the tap point so unmounting
+              // the popup cannot activate an overlapping control (e.g. sticky Cancel/Save) below.
+              onPointerDown={e => {
+                if (e.pointerType !== 'touch' && e.button !== 0) return;
+                e.preventDefault();
+                if (e.pointerType === 'touch') {
+                  const { clientX, clientY } = e;
+                  const swallowGhostClick = (ev: MouseEvent) => {
+                    window.removeEventListener('click', swallowGhostClick, true);
+                    if (Math.hypot(ev.clientX - clientX, ev.clientY - clientY) < 12) {
+                      ev.preventDefault();
+                      ev.stopPropagation();
+                    }
+                  };
+                  window.addEventListener('click', swallowGhostClick, true);
+                  window.setTimeout(() => {
+                    window.removeEventListener('click', swallowGhostClick, true);
+                  }, 350);
+                }
+                applySelection(n.slug);
+              }}
+              onMouseDown={e => {
+                if (e.button === 0) e.preventDefault();
+              }}
+              onClick={e => {
+                if (e.detail === 0) applySelection(n.slug);
+              }}
+              onMouseEnter={() => setSelectedIdx(idx)}
+              className={`w-full min-h-11 sm:min-h-0 text-left px-2.5 py-1.5 rounded-[8px] flex items-center justify-between gap-2 text-label transition-colors ${
+                active
+                  ? 'bg-surface2 text-foreground'
+                  : 'text-muted-foreground hover:bg-surface2/60 hover:text-foreground'
+              }`}
+            >
+              <span className="font-medium text-foreground truncate">
+                {n.meta?.title || n.slug}
+              </span>
+              <span className="font-mono text-[11px] text-muted-foreground shrink-0">
+                [[{n.slug}]]
+              </span>
+            </button>
+          );
+        })}
       </div>
-      {options.map((n, idx) => {
-        const active = idx === selectedIdx;
-        return (
-          <button
-            key={n.id}
-            type="button"
-            data-testid={`wikilink-option-${n.slug}`}
-            // CD C3.5: select on pointerdown (touch + mouse) before the textarea can blur;
-            // onClick then only handles keyboard activation (detail === 0) to avoid a double pick.
-            onPointerDown={e => {
-              e.preventDefault();
-              applySelection(n.slug);
-            }}
-            onMouseDown={e => {
-              e.preventDefault();
-            }}
-            onClick={e => {
-              if (e.detail === 0) applySelection(n.slug);
-            }}
-            onMouseEnter={() => setSelectedIdx(idx)}
-            className={`w-full text-left px-2.5 py-1.5 rounded-[8px] flex items-center justify-between gap-2 text-label transition-colors ${
-              active
-                ? 'bg-surface2 text-foreground'
-                : 'text-muted-foreground hover:bg-surface2/60 hover:text-foreground'
-            }`}
-          >
-            <span className="font-medium text-foreground truncate">
-              {n.meta?.title || n.slug}
-            </span>
-            <span className="font-mono text-[11px] text-muted-foreground shrink-0">
-              [[{n.slug}]]
-            </span>
-          </button>
-        );
-      })}
-    </div>
+    </>
   );
 };

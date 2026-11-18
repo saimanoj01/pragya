@@ -2,19 +2,43 @@
 <html lang="en" class="dark">
   <head>
     <meta charset="UTF-8" />
+    <meta name="color-scheme" content="dark light" />
+    <meta name="theme-color" content="#0B0C0F" />
+    <!--
+      CD D2.3 zero-FOUC theme: classic inline script (not module/defer) that runs before the
+      stylesheet. Reproduces ThemeContext's default exactly (decision Q7 override): a saved
+      'light' / 'dark' wins, anything else is dark. `class="dark"` above is the no-JS fallback.
+    -->
+    <script>
+      (function () {
+        var theme = 'dark';
+        try {
+          var saved = localStorage.getItem('pragya_theme');
+          if (saved === 'light' || saved === 'dark') theme = saved;
+        } catch (e) {
+          /* private mode: keep the default */
+        }
+        var root = document.documentElement;
+        root.classList.remove('dark', 'light');
+        root.classList.add(theme);
+        var scheme = document.querySelector('meta[name="color-scheme"]');
+        if (scheme) scheme.setAttribute('content', theme);
+        var themeColor = document.querySelector('meta[name="theme-color"]');
+        if (themeColor) themeColor.setAttribute('content', theme === 'light' ? '#FAFAF9' : '#0B0C0F');
+      })();
+    </script>
     <link rel="icon" type="image/svg+xml" href="./lotus.svg" />
     <link rel="manifest" href="./manifest.webmanifest" />
     <link rel="apple-touch-icon" href="./apple-touch-icon.png" />
-    <meta name="theme-color" content="#0B0C0F" />
+    <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="apple-mobile-web-app-title" content="Pragya" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="description" content="Pragya — A calm, zero-AI commonplace book, reading tracker, and behavioral delta PWA connected to your Google Workspace." />
     <title>Pragya — Commonplace Book & Reading Tracker</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,400..700&display=swap" rel="stylesheet">
+    <!-- CD D2.3: self-hosted Inter (OQ-9) — no third-party font origin. Roman only is preloaded. -->
+    <link rel="preload" href="%BASE_URL%fonts/InterVariable.woff2" as="font" type="font/woff2" crossorigin />
   </head>
   <body class="bg-background text-foreground min-h-screen font-sans selection:bg-primary selection:text-primary-foreground custom-scrollbar overflow-x-hidden">
     <div id="root"></div>

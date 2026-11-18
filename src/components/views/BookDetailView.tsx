@@ -33,7 +33,8 @@ import {
   isUnlockedPrediction,
 } from '../../utils/spoilerMath';
 import { showToast } from '../../utils/toast';
-import { DriveImage } from '../common/DriveImage';
+import { StreamThumbnail } from '../common/StreamThumbnail';
+import { focusCard, focusedCardIndex, noteCardAriaLabel } from '../../utils/cardFocus';
 import { describeSyncError } from '../../utils/apiErrors';
 import { noteHref } from '../../utils/noteVisibility';
 import {
@@ -58,7 +59,12 @@ import { ArchivedBanner } from '../common/ArchivedBanner';
 import { useArchiveActions } from '../../hooks/useArchiveActions';
 import { useDeleteForever } from '../../hooks/useDeleteForever';
 import { ConfirmDialog } from '../common/ConfirmDialog';
-import { BTN_TERTIARY_NEGATIVE } from '../common/uiClasses';
+import {
+  BTN_SECONDARY,
+  BTN_TERTIARY,
+  BTN_TERTIARY_NEGATIVE,
+  EYEBROW,
+} from '../common/uiClasses';
 import { archivedDateLabel, isArchived } from '../../utils/archive';
 import { CapstoneModal, CapstonePromptFallbackModal } from '../modals/CapstoneModal';
 import { BookCover, REREADING_BADGE } from '../common/BookCover';
@@ -67,22 +73,21 @@ import { WikiText } from '../common/WikiText';
 import { sessionDateLabel } from '../../utils/bookSurfaces';
 import { getLocalDateString } from '../../utils/sessionCoalesce';
 
-const BTN_SECONDARY =
-  'h-9 px-3 rounded-[10px] bg-surface2 border border-border text-label font-medium text-foreground hover:bg-secondary inline-flex items-center gap-1.5 whitespace-nowrap disabled:opacity-50';
-const BTN_TERTIARY =
-  'inline-flex items-center gap-1 text-label font-medium text-muted-foreground hover:text-foreground';
-const EYEBROW = 'text-eyebrow uppercase text-muted-foreground';
-
 export interface BookDetailViewProps {
   bookId: string;
   onEditBook: (book: Book) => void;
   onOpenCaptureForBook: (bookId: string) => void;
+  /** CD D2.1 (Q6): `E` edits the focused note card; `D` deepens the J/K-focused note. */
+  onEditNote?: (note: Note) => void;
+  onDeepenNote?: (note: Note) => void;
 }
 
 export const BookDetailView: React.FC<BookDetailViewProps> = ({
   bookId,
   onEditBook,
   onOpenCaptureForBook,
+  onEditNote,
+  onDeepenNote,
 }) => {
   const {
     books,
@@ -110,6 +115,8 @@ export const BookDetailView: React.FC<BookDetailViewProps> = ({
   const [manualOverride, setManualOverride] = useState<boolean>(false);
   const [revealedSlugs, setRevealedSlugs] = useState<Set<string>>(new Set());
   const [focusedIndex, setFocusedIndex] = useState<number>(0);
+  const jkMovedRef = useRef(false);
+  const [jkTick, setJkTick] = useState(0);
   const [editingChapter, setEditingChapter] = useState<boolean>(false);
   const [chapterDraft, setChapterDraft] = useState<string>('');
   const [savingChapter, setSavingChapter] = useState<boolean>(false);
@@ -141,6 +148,12 @@ export const BookDetailView: React.FC<BookDetailViewProps> = ({
   }, [bookId]);
 
   useEffect(() => {
+    if (focusedIndex >= bookNotes.length && bookNotes.length > 0) {
+      setFocusedIndex(bookNotes.length - 1);
+    }
+  }, [bookNotes.length, focusedIndex]);
+
+  useEffect(() => {
     if (editingChapter) {
       chapterInputRef.current?.focus();
     } else if (restoreChapterFocusRef.current) {
@@ -169,12 +182,28 @@ export const BookDetailView: React.FC<BookDetailViewProps> = ({
       }
       if (isEditableElement(e.target)) return;
       const target = e.target as HTMLElement | null;
-      if (target && target.closest('button, a, [role="button"]')) return;
 
       const key = e.key.toLowerCase();
       if (key === 'e') {
+        // CD D2.1 / ux_spec_cd Q6: the book by default; the note card that has focus (after
+        // J/K or a click) when there is one; Shift+E always the book.
+        const cardIdx = e.shiftKey ? null : focusedCardIndex(document.activeElement);
+        const cardNote = cardIdx === null ? undefined : bookNotes[cardIdx];
+        if (cardNote && onEditNote) {
+          e.preventDefault();
+          if (!(isNoteSpoiler(cardNote, book) && !revealedSlugs.has(cardNote.slug))) onEditNote(cardNote);
+          return;
+        }
         e.preventDefault();
         onEditBook(book);
+        return;
+      }
+      if (key === 'd' && onDeepenNote) {
+        const active = bookNotes[focusedIndex];
+        if (active && !(isNoteSpoiler(active, book) && !revealedSlugs.has(active.slug))) {
+          e.preventDefault();
+          onDeepenNote(active);
+        }
         return;
       }
       if (key === 'o' && isSafeHttpUrl(book.docUrl)) {
@@ -192,17 +221,23 @@ export const BookDetailView: React.FC<BookDetailViewProps> = ({
 
       if (key === 'j') {
         e.preventDefault();
+        jkMovedRef.current = true;
         setFocusedIndex(prev => Math.min(bookNotes.length - 1, prev + 1));
+        setJkTick(t => t + 1);
       } else if (key === 'k') {
         e.preventDefault();
+        jkMovedRef.current = true;
         setFocusedIndex(prev => Math.max(0, prev - 1));
+        setJkTick(t => t + 1);
       } else if (e.key === ' ') {
+        if (target?.closest('button, a, summary, [role="button"]')) return;
         const active = bookNotes[focusedIndex];
         if (active && isNoteSpoiler(active, book) && !revealedSlugs.has(active.slug)) {
           e.preventDefault();
           revealSlug(active.slug);
         }
       } else if (e.key === 'Enter') {
+        if (target?.closest('button, a, summary, [role="button"]')) return;
         const active = bookNotes[focusedIndex];
         if (active) {
           e.preventDefault();
@@ -213,7 +248,14 @@ export const BookDetailView: React.FC<BookDetailViewProps> = ({
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [book, bookNotes, canOpenCapstone, focusedIndex, onEditBook, revealedSlugs]);
+  }, [book, bookNotes, canOpenCapstone, focusedIndex, onDeepenNote, onEditBook, onEditNote, revealedSlugs]);
+
+  // CD D2.1: after J/K the focused card gets real DOM focus and is scrolled into view.
+  useEffect(() => {
+    if (!jkMovedRef.current) return;
+    jkMovedRef.current = false;
+    focusCard(document.querySelector<HTMLElement>(`[data-testid="book-detail-view"] [data-jk-card="${focusedIndex}"]`));
+  }, [focusedIndex, jkTick]);
 
   // ux_spec B.4: chapter dividers over contiguous runs; shielded runs never name a chapter.
   const chapterDividers = useMemo(
@@ -234,7 +276,7 @@ export const BookDetailView: React.FC<BookDetailViewProps> = ({
           type="button"
           data-testid="back-to-shelf-btn"
           onClick={() => navigateTo('#/shelf')}
-          className="inline-flex items-center gap-1.5 text-label text-muted-foreground hover:text-foreground"
+          className="min-h-11 min-w-11 sm:min-h-0 sm:min-w-0 inline-flex items-center gap-1.5 text-label text-muted-foreground hover:text-foreground print:hidden"
         >
           <ArrowLeft className="w-4 h-4" />
           <span>Back to Shelf</span>
@@ -493,7 +535,7 @@ export const BookDetailView: React.FC<BookDetailViewProps> = ({
         type="button"
         data-testid="back-to-shelf-btn"
         onClick={() => navigateTo('#/shelf')}
-        className="inline-flex items-center gap-1.5 text-label text-muted-foreground hover:text-foreground"
+        className="min-h-11 min-w-11 sm:min-h-0 sm:min-w-0 inline-flex items-center gap-1.5 text-label text-muted-foreground hover:text-foreground print:hidden"
       >
         <ArrowLeft className="w-4 h-4" />
         <span>Back to Shelf</span>
@@ -546,13 +588,13 @@ export const BookDetailView: React.FC<BookDetailViewProps> = ({
           </div>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2 shrink-0">
+          <div className="print:hidden flex flex-wrap items-center gap-2 shrink-0">
             {isSafeHttpUrl(book.docUrl) && (
               <a
                 href={book.docUrl.trim()}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="h-9 px-3 rounded-[10px] bg-surface2 border border-border text-label font-medium text-foreground hover:bg-secondary inline-flex items-center gap-1.5 whitespace-nowrap"
+                className="h-11 sm:h-9 px-3 rounded-[10px] bg-surface2 border border-border text-label font-medium text-foreground hover:bg-secondary inline-flex items-center gap-1.5 whitespace-nowrap"
               >
                 <span>Book Doc</span>
                 <ExternalLink className="w-3.5 h-3.5" />
@@ -561,16 +603,16 @@ export const BookDetailView: React.FC<BookDetailViewProps> = ({
             <button
               type="button"
               onClick={() => onEditBook(book)}
-              className="h-9 px-3 rounded-[10px] bg-surface2 border border-border text-label font-medium text-foreground hover:bg-secondary inline-flex items-center gap-1.5 whitespace-nowrap"
+              className="h-11 sm:h-9 px-3 rounded-[10px] bg-surface2 border border-border text-label font-medium text-foreground hover:bg-secondary inline-flex items-center gap-1.5 whitespace-nowrap"
             >
               <Edit3 className="w-3.5 h-3.5" />
-              <span>Edit</span>
+              <span>Edit (E)</span>
             </button>
             {!isArchived(book) && (
             <button
               type="button"
               onClick={() => onOpenCaptureForBook(book.id)}
-              className="h-9 px-3.5 rounded-[10px] bg-primary text-primary-foreground text-label font-semibold hover:opacity-90 inline-flex items-center gap-1.5 whitespace-nowrap"
+              className="h-11 sm:h-9 px-3.5 rounded-[10px] bg-primary text-primary-foreground text-label font-semibold hover:opacity-90 inline-flex items-center gap-1.5 whitespace-nowrap"
             >
               <Plus className="w-3.5 h-3.5" />
               <span>New Note</span>
@@ -600,12 +642,13 @@ export const BookDetailView: React.FC<BookDetailViewProps> = ({
         {editingChapter ? (
           <form
             onSubmit={e => void handleSaveChapter(e)}
-            className="flex flex-wrap items-center gap-2"
+            className="print:hidden flex flex-wrap items-center gap-2"
             data-testid="book-detail-chapter-form"
           >
             <input
               ref={chapterInputRef}
               type="text"
+              enterKeyHint="done"
               data-testid="book-detail-chapter-input"
               aria-label="Current chapter or story"
               maxLength={CHAPTER_MAX_LENGTH}
@@ -620,7 +663,7 @@ export const BookDetailView: React.FC<BookDetailViewProps> = ({
                 }
               }}
               placeholder="e.g. Ch. 3: Run · or a story title"
-              className="h-11 sm:h-9 w-full sm:w-64 px-3 rounded-[8px] bg-background border border-input text-label text-foreground placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-ring/40"
+              className="h-11 sm:h-9 w-full sm:w-64 px-3 rounded-[8px] bg-background border border-input text-base sm:text-label text-foreground placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-ring/40"
             />
             <button
               type="submit"
@@ -655,7 +698,7 @@ export const BookDetailView: React.FC<BookDetailViewProps> = ({
             </button>
           </div>
         ) : book.status !== 'finished' ? (
-          <div className="flex items-center gap-2 text-label text-muted-foreground min-w-0">
+          <div className="print:hidden flex items-center gap-2 text-label text-muted-foreground min-w-0">
             <button
               ref={chapterTriggerRef}
               type="button"
@@ -670,8 +713,8 @@ export const BookDetailView: React.FC<BookDetailViewProps> = ({
         ) : null}
 
         {/* Monotonic / Override Bookmark Controls & Mark Finished */}
-        <div className="pt-3 border-t border-border/60 flex flex-col lg:flex-row lg:items-center justify-between gap-3">
-          <div className="space-y-2">
+        <div className="pt-3 border-t border-border/60 flex flex-col lg:flex-row lg:items-center justify-between gap-3 print:pt-2">
+          <div className="print:hidden space-y-2">
             <form
               onSubmit={e => void handleAdvanceExact(e)}
               className="flex flex-wrap items-center gap-2"
@@ -688,12 +731,14 @@ export const BookDetailView: React.FC<BookDetailViewProps> = ({
               <input
                 type="number"
                 min="0"
+                inputMode="numeric"
+                enterKeyHint="done"
                 data-testid="book-detail-advance-input"
                 value={exactInput}
                 onFocus={e => e.currentTarget.select()}
                 onChange={e => setExactInput(e.target.value)}
                 aria-label="Exact reading position"
-                className="w-24 h-11 sm:h-9 px-3 rounded-[8px] bg-background border border-input text-label text-foreground num focus:outline-none focus:ring-2 focus:ring-ring/40"
+                className="w-24 h-11 sm:h-9 px-3 rounded-[8px] bg-background border border-input text-base sm:text-label text-foreground num focus:outline-none focus:ring-2 focus:ring-ring/40"
               />
 
               <button
@@ -706,7 +751,7 @@ export const BookDetailView: React.FC<BookDetailViewProps> = ({
               </button>
             </form>
 
-            <label className="inline-flex items-center gap-2 text-label text-muted-foreground cursor-pointer select-none">
+            <label className="min-h-11 sm:min-h-0 inline-flex items-center gap-2 text-label text-muted-foreground cursor-pointer select-none">
               <input
                 type="checkbox"
                 data-testid="manual-pos-override-checkbox"
@@ -746,7 +791,7 @@ export const BookDetailView: React.FC<BookDetailViewProps> = ({
               type="button"
               data-testid="mark-finished-btn"
               onClick={() => void handleMarkFinished()}
-              className="h-9 px-4 rounded-[10px] bg-positive/15 hover:bg-positive/25 border border-positive/30 text-label font-semibold text-positive inline-flex items-center gap-1.5 whitespace-nowrap self-start lg:self-center"
+              className="print:hidden h-11 sm:h-9 px-4 rounded-[10px] bg-positive/15 hover:bg-positive/25 border border-positive/30 text-label font-semibold text-positive inline-flex items-center gap-1.5 whitespace-nowrap self-start lg:self-center"
             >
               <CheckCircle2 className="w-4 h-4" />
               <span>Mark as Finished</span>
@@ -837,7 +882,7 @@ export const BookDetailView: React.FC<BookDetailViewProps> = ({
         <section
           aria-labelledby={capstoneHeadingId}
           data-testid="capstone-empty-state"
-          className="bg-card border border-dashed border-border rounded-[14px] p-5 space-y-3"
+          className="print:hidden bg-card border border-dashed border-border rounded-[14px] p-5 space-y-3"
         >
           <h2 id={capstoneHeadingId} className={`flex items-center gap-1.5 ${EYEBROW}`}>
             <Compass className="w-4 h-4" aria-hidden="true" />
@@ -918,7 +963,17 @@ export const BookDetailView: React.FC<BookDetailViewProps> = ({
                 <article
                   data-testid={`note-card-${note.slug}`}
                   data-focused={isFocused ? 'true' : undefined}
-                  className={`bg-card border rounded-[14px] p-4 space-y-2.5 transition-colors ${
+                  data-jk-focused={isFocused ? 'true' : undefined}
+                  data-jk-card={idx}
+                  tabIndex={-1}
+                  aria-label={noteCardAriaLabel({
+                    bookTitle: book.title,
+                    posLabel: formatPosDisplay(note.pos, book.posUnit),
+                    title: note.meta?.title,
+                    shielded: spoiler,
+                  })}
+                  onFocus={() => setFocusedIndex(idx)}
+                  className={`bg-card border rounded-[14px] p-4 space-y-2.5 transition-colors focus:outline-none focus-visible:border-foreground/40 focus-visible:ring-1 focus-visible:ring-ring/40 ${
                     isFocused ? 'border-foreground/40 ring-1 ring-ring/40' : 'border-border'
                   }`}
                 >
@@ -936,7 +991,7 @@ export const BookDetailView: React.FC<BookDetailViewProps> = ({
                     <button
                       type="button"
                       onClick={() => navigateTo(noteHref(note, book, revealedSlugs.has(note.slug)))}
-                      className="font-semibold text-foreground hover:underline whitespace-nowrap"
+                      className="min-h-11 sm:min-h-0 font-semibold text-foreground hover:underline whitespace-nowrap"
                     >
                       View Note ↗
                     </button>
@@ -956,7 +1011,7 @@ export const BookDetailView: React.FC<BookDetailViewProps> = ({
                           type="button"
                           data-testid={`spoiler-reveal-btn-${note.slug}`}
                           onClick={() => revealSlug(note.slug)}
-                          className="h-8 px-3 rounded-[8px] bg-primary text-primary-foreground text-label font-semibold inline-flex items-center gap-1.5"
+                          className="h-11 sm:h-8 px-3 rounded-[8px] bg-primary text-primary-foreground text-label font-semibold inline-flex items-center gap-1.5"
                         >
                           <Eye className="w-3.5 h-3.5" />
                           <span>Reveal (or Space)</span>
@@ -982,7 +1037,7 @@ export const BookDetailView: React.FC<BookDetailViewProps> = ({
                         <div className="flex flex-wrap items-center gap-2 pt-1">
                           {attachments.map(att =>
                             att.type === 'image' ? (
-                              <DriveImage
+                              <StreamThumbnail
                                 key={att.id}
                                 attachment={att}
                                 className="w-14 h-14 rounded-[8px] object-cover border border-border"
@@ -991,9 +1046,10 @@ export const BookDetailView: React.FC<BookDetailViewProps> = ({
                               <a
                                 key={att.id}
                                 href={att.url.trim()}
+                                data-print-href={att.url.trim()}
                                 target="_blank"
                                 rel="noopener noreferrer"
-                                className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-[8px] bg-surface2 border border-border text-label text-foreground hover:bg-secondary"
+                                className="min-h-11 sm:min-h-0 inline-flex items-center gap-1.5 px-2.5 py-1 rounded-[8px] bg-surface2 border border-border text-label text-foreground hover:bg-secondary"
                               >
                                 {att.type === 'doc' ? (
                                   <FileText className="w-3.5 h-3.5 text-muted-foreground" />

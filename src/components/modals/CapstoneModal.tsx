@@ -5,6 +5,7 @@ import { usePragya } from '../../context/PragyaContext';
 import { Modal } from '../common/Modal';
 import { showToast } from '../../utils/toast';
 import { describeSyncError } from '../../utils/apiErrors';
+import { isSubmitShortcut } from '../../utils/keyboard';
 import { CAPSTONE_OWNED_META_KEYS, getBookCapstone } from '../../utils/metaCodecs';
 import {
   CAPSTONE_COPY_SUCCESS_MESSAGE,
@@ -28,9 +29,9 @@ import {
 
 const FIELD_LABEL = 'block text-eyebrow uppercase text-muted-foreground';
 const TEXTAREA =
-  'w-full p-3 rounded-[10px] bg-background border border-input text-body text-foreground placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-ring/40 resize-y';
+  'w-full p-3 rounded-[10px] bg-background border border-input text-base sm:text-body text-foreground placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-ring/40 resize-y';
 const BTN_SECONDARY =
-  'h-9 px-3 rounded-[10px] bg-surface2 border border-border text-label font-medium text-foreground hover:bg-secondary inline-flex items-center gap-1.5 whitespace-nowrap disabled:opacity-50';
+  'h-11 sm:h-9 px-3 rounded-[10px] bg-surface2 border border-border text-label font-medium text-foreground hover:bg-secondary inline-flex items-center gap-1.5 whitespace-nowrap disabled:opacity-50';
 const BTN_TERTIARY =
   'inline-flex items-center gap-1 text-label font-medium text-muted-foreground hover:text-foreground';
 const HELPER = 'text-label text-muted-foreground';
@@ -104,7 +105,7 @@ export function CapstonePromptFallbackModal({
           aria-label={promptLabel}
           aria-describedby={helperId}
           onFocus={e => e.currentTarget.select()}
-          className="w-full p-3 rounded-[10px] bg-background border border-input font-mono text-label text-foreground focus:outline-none focus:ring-2 focus:ring-ring/40 resize-y"
+          className="w-full p-3 rounded-[10px] bg-background border border-input font-mono text-base sm:text-label text-foreground focus:outline-none focus:ring-2 focus:ring-ring/40 resize-y"
         />
         <p id={helperId} className={HELPER}>
           Select all and copy (⌘C / Ctrl+C).
@@ -113,7 +114,7 @@ export function CapstonePromptFallbackModal({
           <button
             type="button"
             onClick={onClose}
-            className="h-10 px-5 rounded-[10px] bg-primary text-primary-foreground font-semibold text-body hover:opacity-90"
+            className="h-11 sm:h-10 px-5 rounded-[10px] bg-primary text-primary-foreground font-semibold text-body hover:opacity-90"
           >
             Done
           </button>
@@ -293,7 +294,7 @@ export function CapstoneModal({ isOpen, onClose, book }: CapstoneModalProps) {
   };
 
   const handleFormKeyDown = (e: React.KeyboardEvent<HTMLFormElement>) => {
-    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+    if (isSubmitShortcut(e.nativeEvent)) {
       e.preventDefault();
       void handleSubmit();
     }
@@ -322,7 +323,7 @@ export function CapstoneModal({ isOpen, onClose, book }: CapstoneModalProps) {
             type="button"
             onClick={onClose}
             aria-label="Close"
-            className="p-1.5 rounded-[8px] text-muted-foreground hover:text-foreground hover:bg-surface2 shrink-0"
+            className="min-w-11 min-h-11 sm:min-w-0 sm:min-h-0 p-1.5 rounded-[8px] inline-flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-surface2 shrink-0"
           >
             <X className="w-4 h-4" />
           </button>
@@ -338,7 +339,7 @@ export function CapstoneModal({ isOpen, onClose, book }: CapstoneModalProps) {
               type="button"
               data-testid="draft-discard-btn"
               onClick={handleDiscardDraft}
-              className="inline-flex items-center gap-1 font-semibold text-muted-foreground hover:text-foreground"
+              className="min-h-11 sm:min-h-0 px-2 sm:px-0 inline-flex items-center gap-1 font-semibold text-muted-foreground hover:text-foreground"
             >
               <RotateCcw className="w-3 h-3" />
               <span>Discard</span>
@@ -353,7 +354,7 @@ export function CapstoneModal({ isOpen, onClose, book }: CapstoneModalProps) {
               onToggle={e => setPasteOpen((e.currentTarget as HTMLDetailsElement).open)}
               className="flex-1 min-w-0 space-y-2"
             >
-              <summary className={`${BTN_TERTIARY} cursor-pointer list-none h-9`}>
+              <summary className={`${BTN_TERTIARY} cursor-pointer list-none h-11 sm:h-9 [&::-webkit-details-marker]:hidden`}>
                 <ChevronRight
                   className={`w-3.5 h-3.5 transition-transform ${pasteOpen ? 'rotate-90' : ''}`}
                   aria-hidden="true"
@@ -467,7 +468,7 @@ export function CapstoneModal({ isOpen, onClose, book }: CapstoneModalProps) {
             <button
               type="button"
               onClick={onClose}
-              className="h-10 px-4 rounded-[10px] text-body font-medium text-muted-foreground hover:text-foreground hover:bg-surface2"
+              className="h-11 sm:h-10 px-4 rounded-[10px] text-body font-medium text-muted-foreground hover:text-foreground hover:bg-surface2"
             >
               Cancel
             </button>
@@ -475,7 +476,7 @@ export function CapstoneModal({ isOpen, onClose, book }: CapstoneModalProps) {
               type="submit"
               disabled={!hasAnyText || submitting}
               data-testid="capstone-save-btn"
-              className="h-10 px-5 rounded-[10px] bg-primary text-primary-foreground font-semibold text-body hover:opacity-90 disabled:opacity-50"
+              className="h-11 sm:h-10 px-5 rounded-[10px] bg-primary text-primary-foreground font-semibold text-body hover:opacity-90 disabled:opacity-50"
             >
               {submitting ? 'Saving…' : isEdit ? 'Save Changes' : 'Save Picture'}
             </button>

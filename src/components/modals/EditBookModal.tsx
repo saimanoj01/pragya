@@ -12,6 +12,7 @@ import { isArchived } from '../../utils/archive';
 import { navigateTo } from '../../utils/navigation';
 import { useArchiveActions } from '../../hooks/useArchiveActions';
 import { BTN_TERTIARY } from '../common/uiClasses';
+import { isSubmitShortcut } from '../../utils/keyboard';
 
 export interface EditBookModalProps {
   book: Book | null;
@@ -138,13 +139,22 @@ export const EditBookModal: React.FC<EditBookModalProps> = ({ book, onClose }) =
           type="button"
           onClick={onClose}
           aria-label="Close"
-          className="p-1.5 rounded-[8px] text-muted-foreground hover:text-foreground hover:bg-surface2 transition-colors"
+          className="min-w-11 min-h-11 sm:min-w-0 sm:min-h-0 p-1.5 rounded-[8px] inline-flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-surface2 transition-colors"
         >
           <X className="w-4 h-4" />
         </button>
       </div>
 
-      <form onSubmit={handleSubmit} className="space-y-4">
+      <form
+        onSubmit={handleSubmit}
+        onKeyDown={e => {
+          if (isSubmitShortcut(e.nativeEvent)) {
+            e.preventDefault();
+            if (!submitting && !archiving) e.currentTarget.requestSubmit();
+          }
+        }}
+        className="space-y-4"
+      >
         <div className="space-y-1.5">
           <label htmlFor={fid('title')} className="block text-eyebrow uppercase text-muted-foreground">Title *</label>
           <input
@@ -153,7 +163,7 @@ export const EditBookModal: React.FC<EditBookModalProps> = ({ book, onClose }) =
             data-testid="edit-book-title-input"
             value={title}
             onChange={e => setTitle(e.target.value)}
-            className="w-full h-10 px-3 rounded-[10px] bg-background border border-input text-body text-foreground focus:outline-none focus:ring-2 focus:ring-ring/40"
+            className="w-full h-11 sm:h-10 px-3 rounded-[10px] bg-background border border-input text-base sm:text-body text-foreground focus:outline-none focus:ring-2 focus:ring-ring/40"
             required
           />
         </div>
@@ -166,7 +176,7 @@ export const EditBookModal: React.FC<EditBookModalProps> = ({ book, onClose }) =
             data-testid="edit-book-author-input"
             value={author}
             onChange={e => setAuthor(e.target.value)}
-            className="w-full h-10 px-3 rounded-[10px] bg-background border border-input text-body text-foreground focus:outline-none focus:ring-2 focus:ring-ring/40"
+            className="w-full h-11 sm:h-10 px-3 rounded-[10px] bg-background border border-input text-base sm:text-body text-foreground focus:outline-none focus:ring-2 focus:ring-ring/40"
           />
         </div>
 
@@ -177,7 +187,7 @@ export const EditBookModal: React.FC<EditBookModalProps> = ({ book, onClose }) =
               id={fid('format')}
               value={format}
               onChange={e => setFormat(e.target.value as BookFormat)}
-              className="w-full h-10 px-2.5 rounded-[10px] bg-background border border-input text-body text-foreground focus:outline-none focus:ring-2 focus:ring-ring/40"
+              className="w-full h-11 sm:h-10 px-2.5 rounded-[10px] bg-background border border-input text-base sm:text-body text-foreground focus:outline-none focus:ring-2 focus:ring-ring/40"
             >
               <option value="physical">Physical</option>
               <option value="kindle">Kindle</option>
@@ -190,7 +200,7 @@ export const EditBookModal: React.FC<EditBookModalProps> = ({ book, onClose }) =
               id={fid('kind')}
               value={kind}
               onChange={e => setKind(e.target.value as BookKind)}
-              className="w-full h-10 px-2.5 rounded-[10px] bg-background border border-input text-body text-foreground focus:outline-none focus:ring-2 focus:ring-ring/40"
+              className="w-full h-11 sm:h-10 px-2.5 rounded-[10px] bg-background border border-input text-base sm:text-body text-foreground focus:outline-none focus:ring-2 focus:ring-ring/40"
             >
               <option value="nonfiction">Non-Fiction</option>
               <option value="fiction">Fiction</option>
@@ -203,7 +213,7 @@ export const EditBookModal: React.FC<EditBookModalProps> = ({ book, onClose }) =
               id={fid('status')}
               value={status}
               onChange={e => setStatus(e.target.value as BookStatus)}
-              className="w-full h-10 px-2.5 rounded-[10px] bg-background border border-input text-body text-foreground focus:outline-none focus:ring-2 focus:ring-ring/40"
+              className="w-full h-11 sm:h-10 px-2.5 rounded-[10px] bg-background border border-input text-base sm:text-body text-foreground focus:outline-none focus:ring-2 focus:ring-ring/40"
             >
               <option value="reading">Reading</option>
               <option value="queued">Queued</option>
@@ -219,10 +229,11 @@ export const EditBookModal: React.FC<EditBookModalProps> = ({ book, onClose }) =
             <input
               id={fid('pos')}
               type="number"
+              inputMode="numeric"
               min="0"
               value={currentPos}
               onChange={e => setCurrentPos(e.target.value)}
-              className="w-full h-10 px-3 rounded-[10px] bg-background border border-input text-body text-foreground num focus:outline-none focus:ring-2 focus:ring-ring/40"
+              className="w-full h-11 sm:h-10 px-3 rounded-[10px] bg-background border border-input text-base sm:text-body text-foreground num focus:outline-none focus:ring-2 focus:ring-ring/40"
             />
           </div>
 
@@ -231,10 +242,11 @@ export const EditBookModal: React.FC<EditBookModalProps> = ({ book, onClose }) =
             <input
               id={fid('total')}
               type="number"
+              inputMode="numeric"
               min="0"
               value={totalPos}
               onChange={e => setTotalPos(e.target.value)}
-              className="w-full h-10 px-3 rounded-[10px] bg-background border border-input text-body text-foreground num focus:outline-none focus:ring-2 focus:ring-ring/40"
+              className="w-full h-11 sm:h-10 px-3 rounded-[10px] bg-background border border-input text-base sm:text-body text-foreground num focus:outline-none focus:ring-2 focus:ring-ring/40"
             />
           </div>
 
@@ -244,7 +256,7 @@ export const EditBookModal: React.FC<EditBookModalProps> = ({ book, onClose }) =
               id={fid('unit')}
               value={posUnit}
               onChange={e => setPosUnit(e.target.value as PosUnit)}
-              className="w-full h-10 px-2.5 rounded-[10px] bg-background border border-input text-body text-foreground focus:outline-none focus:ring-2 focus:ring-ring/40"
+              className="w-full h-11 sm:h-10 px-2.5 rounded-[10px] bg-background border border-input text-base sm:text-body text-foreground focus:outline-none focus:ring-2 focus:ring-ring/40"
             >
               <option value="page">Page</option>
               <option value="percent">Percent (%)</option>
@@ -267,7 +279,7 @@ export const EditBookModal: React.FC<EditBookModalProps> = ({ book, onClose }) =
             onChange={e => setCurrentChapter(e.target.value)}
             placeholder="e.g. Ch. 3: Run · or a story title"
             aria-describedby={fid('chapter-help')}
-            className="w-full h-10 px-3 rounded-[10px] bg-background border border-input text-body text-foreground placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-ring/40"
+            className="w-full h-11 sm:h-10 px-3 rounded-[10px] bg-background border border-input text-base sm:text-body text-foreground placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-ring/40"
           />
           <p id={fid('chapter-help')} className="text-label text-faint">
             Shown on your Shelf and suggested for new notes at your bookmark.
@@ -284,7 +296,7 @@ export const EditBookModal: React.FC<EditBookModalProps> = ({ book, onClose }) =
             value={docUrl}
             onChange={e => setDocUrl(e.target.value)}
             placeholder="https://docs.google.com/document/d/..."
-            className="w-full h-10 px-3 rounded-[10px] bg-background border border-input text-body text-foreground focus:outline-none focus:ring-2 focus:ring-ring/40"
+            className="w-full h-11 sm:h-10 px-3 rounded-[10px] bg-background border border-input text-base sm:text-body text-foreground focus:outline-none focus:ring-2 focus:ring-ring/40"
           />
         </div>
 
@@ -302,7 +314,7 @@ export const EditBookModal: React.FC<EditBookModalProps> = ({ book, onClose }) =
             placeholder="https://…"
             aria-describedby={fid('cover-help')}
             aria-invalid={Boolean(coverUrlError(coverUrl))}
-            className="w-full h-10 px-3 rounded-[10px] bg-background border border-input text-body text-foreground placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-ring/40"
+            className="w-full h-11 sm:h-10 px-3 rounded-[10px] bg-background border border-input text-base sm:text-body text-foreground placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-ring/40"
           />
           {coverUrlError(coverUrl) ? (
             <p id={fid('cover-help')} role="alert" className="text-label text-negative">
@@ -315,7 +327,7 @@ export const EditBookModal: React.FC<EditBookModalProps> = ({ book, onClose }) =
           )}
         </div>
 
-        <div className="flex items-center justify-between gap-2 pt-2">
+        <div className="flex flex-wrap items-center justify-between gap-2 pt-2">
           <div>
             {!isArchived(book) && (
               <button
@@ -323,7 +335,7 @@ export const EditBookModal: React.FC<EditBookModalProps> = ({ book, onClose }) =
                 data-testid="archive-book-btn"
                 onClick={() => void handleArchive()}
                 disabled={submitting || archiving}
-                className={`${BTN_TERTIARY} h-10`}
+                className={`${BTN_TERTIARY} h-11 sm:h-10`}
               >
                 <Archive className="w-4 h-4" aria-hidden="true" />
                 <span>Archive Book</span>
@@ -334,7 +346,7 @@ export const EditBookModal: React.FC<EditBookModalProps> = ({ book, onClose }) =
           <button
             type="button"
             onClick={onClose}
-            className="h-10 px-4 rounded-[10px] text-body font-medium text-muted-foreground hover:text-foreground hover:bg-surface2 transition-colors"
+            className="h-11 sm:h-10 px-4 rounded-[10px] text-body font-medium text-muted-foreground hover:text-foreground hover:bg-surface2 transition-colors"
           >
             Cancel
           </button>
@@ -342,7 +354,7 @@ export const EditBookModal: React.FC<EditBookModalProps> = ({ book, onClose }) =
             type="submit"
             disabled={submitting}
             data-testid="edit-book-submit-btn"
-            className="h-10 px-5 rounded-[10px] bg-primary text-primary-foreground font-semibold text-body hover:opacity-90 disabled:opacity-50 transition-opacity"
+            className="h-11 sm:h-10 px-5 rounded-[10px] bg-primary text-primary-foreground font-semibold text-body hover:opacity-90 disabled:opacity-50 transition-opacity"
           >
             {submitting ? 'Saving…' : 'Save Changes'}
           </button>

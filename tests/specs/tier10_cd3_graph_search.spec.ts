@@ -258,7 +258,7 @@ test.describe('Tier 10 — CD Batch 3 fix-up', () => {
   test('R1#2: EditBook status finished → reading marks everFinished; R1#1: a session note keeps a fresher endPos written elsewhere', async ({ page }) => {
     await demo(page);
     await go(page, '#/book/book-finite');
-    await page.getByTestId('book-detail-view').getByRole('button', { name: 'Edit', exact: true }).click();
+    await page.getByTestId('book-detail-view').getByRole('button', { name: 'Edit (E)', exact: true }).click();
     await page.getByTestId('edit-book-modal').locator('select').filter({ has: page.locator('option[value="reading"]') }).first().selectOption('reading');
     await page.getByTestId('edit-book-submit-btn').click();
     await expect(page.getByTestId('edit-book-modal')).toBeHidden();

@@ -22,9 +22,13 @@ function normalizePath(file) {
   return String(file).split('\\').join('/').replace(/^\.?\/+/, '');
 }
 
+/** CD D2.3: self-hosted fonts copied from public/fonts (unhashed; the build id rotates them). */
+export const FONT_FILE_RE = /^fonts\/[^/]+\.woff2$/;
+
 /**
  * Sorted, de-duplicated list of scope-relative URLs to precache: every emitted
- * `assets/*` file (except source maps) plus the shell files that exist.
+ * `assets/*` file (except source maps), the self-hosted `fonts/*.woff2`, plus the shell
+ * files that exist.
  * @param {string[]} files paths relative to the build output directory
  * @returns {string[]}
  */
@@ -34,6 +38,7 @@ export function buildPrecacheList(files) {
     const file = normalizePath(raw);
     if (!file) continue;
     if (/^assets\/[^/]+$/.test(file) && !file.endsWith('.map')) out.add(file);
+    else if (FONT_FILE_RE.test(file)) out.add(file);
     else if (SHELL_FILES.includes(file)) out.add(file);
   }
   return [...out].sort();

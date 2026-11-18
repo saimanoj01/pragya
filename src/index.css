@@ -2,6 +2,27 @@
 @tailwind components;
 @tailwind utilities;
 
+/*
+ * CD D2.3 self-hosted Inter 4.1 variable (OQ-9; SIL OFL, see public/fonts/Inter-LICENSE.txt).
+ * Full files (not subsets) so the cv11 / ss01 / tnum features and Latin-Ext glyphs survive.
+ * The italic face exists because quotes are set in italic (Q8); it is never preloaded.
+ */
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url('/fonts/InterVariable.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'Inter';
+  font-style: italic;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url('/fonts/InterVariable-Italic.woff2') format('woff2');
+}
+
 @layer base {
   :root, .dark {
     color-scheme: dark;
@@ -71,6 +92,8 @@
 
   body {
     font-feature-settings: 'cv11', 'ss01';
+    /* CD D2.3: keep the fallback's x-height close to Inter's while the font swaps in. */
+    font-size-adjust: from-font;
   }
 }
 
@@ -111,5 +134,128 @@
 
   .no-scrollbar::-webkit-scrollbar {
     display: none;
+  }
+}
+
+/*
+ * CD D1.1: 16px form controls on phones so iOS Safari never zooms on focus (pinch-zoom stays
+ * enabled — the viewport has no maximum-scale). One rule covers every input / textarea /
+ * select, whatever per-file text size class it carries; >= 640px keeps the 14px density.
+ */
+@media (max-width: 639.98px) {
+  input:not([type='checkbox'], [type='radio'], [type='range'], [type='file'], [type='color']),
+  textarea,
+  select {
+    font-size: max(1rem, 16px) !important;
+  }
+}
+
+/*
+ * CD D2.3 reduced motion (framer-motion is covered by <MotionConfig reducedMotion="user">):
+ * show the final state, no transitions, no smooth scroll, a static (dimmed) sync icon.
+ */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  .animate-spin {
+    animation: none !important;
+    opacity: 0.5;
+  }
+}
+
+/*
+ * CD D2.3 print: light tokens on white, app chrome and controls hidden, cards kept whole.
+ * Spoiler-shielded notes print as their shield — hidden content is never in the DOM.
+ */
+@media print {
+  :root,
+  .dark {
+    color-scheme: light;
+    --background: 0 0% 100%;
+    --card: 0 0% 100%;
+    --card-foreground: 228 12% 6%;
+    --surface-2: 240 5% 96%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 228 12% 6%;
+    --border: 240 6% 85%;
+    --input: 240 6% 88%;
+    --foreground: 228 12% 6%;
+    --muted-foreground: 222 6% 38%;
+    --faint: 222 6% 43%;
+    --primary: 228 12% 8%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 240 5% 95%;
+    --secondary-foreground: 228 12% 8%;
+    --muted: 240 5% 95%;
+    --accent: 240 5% 95%;
+    --accent-foreground: 228 12% 8%;
+    --ring: 228 12% 8%;
+  }
+
+  @page {
+    margin: 16mm;
+  }
+
+  html,
+  body {
+    background: #fff !important;
+  }
+
+  *,
+  *::before,
+  *::after {
+    box-shadow: none !important;
+    text-shadow: none !important;
+    backdrop-filter: none !important;
+  }
+
+  [data-sonner-toaster],
+  [data-testid='offline-readonly-badge'],
+  [role='dialog'],
+  [data-popover='true'],
+  [data-print-hide],
+  main input,
+  main select,
+  main textarea,
+  main button:not([data-print-keep]) {
+    display: none !important;
+  }
+
+  article,
+  [data-print-card] {
+    break-inside: avoid;
+  }
+
+  h1,
+  h2,
+  h3 {
+    break-after: avoid;
+  }
+
+  [data-jk-focused='true'] {
+    outline: none !important;
+    --tw-ring-shadow: 0 0 #0000 !important;
+  }
+
+  details[data-print-expand]::details-content {
+    display: block;
+    content-visibility: visible;
+  }
+
+  details[data-print-expand]:not([open]) > *:not(summary) {
+    display: block !important;
+  }
+
+  a[data-print-href]::after {
+    content: ' (' attr(data-print-href) ')';
+    font-size: 0.85em;
+    word-break: break-all;
   }
 }

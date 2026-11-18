@@ -155,7 +155,7 @@ export const DriveImage: React.FC<DriveImageProps> = ({
     <img
       data-testid={testId}
       src={src}
-      alt={alt || attachment.fileName}
+      alt={alt ?? attachment.fileName}
       onClick={onClick}
       className={`${className} ${onClick ? 'cursor-zoom-in' : ''}`}
     />

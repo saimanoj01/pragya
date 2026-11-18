@@ -46,7 +46,7 @@ export const SessionExpiredModal: React.FC<SessionExpiredModalProps> = ({
             type="button"
             data-testid="session-reauth-btn"
             onClick={onReconnect}
-            className="w-full h-10 rounded-[10px] bg-primary text-primary-foreground font-semibold text-body hover:opacity-90 transition-opacity"
+            className="w-full h-11 sm:h-10 rounded-[10px] bg-primary text-primary-foreground font-semibold text-body hover:opacity-90 transition-opacity"
           >
             Reconnect Google
           </button>
@@ -54,7 +54,7 @@ export const SessionExpiredModal: React.FC<SessionExpiredModalProps> = ({
             type="button"
             data-testid="session-demo-btn"
             onClick={onContinueDemo}
-            className="w-full h-10 rounded-[10px] bg-surface2 border border-border text-foreground font-medium text-body hover:bg-secondary transition-colors"
+            className="w-full h-11 sm:h-10 rounded-[10px] bg-surface2 border border-border text-foreground font-medium text-body hover:bg-secondary transition-colors"
           >
             Continue in Demo Mode
           </button>

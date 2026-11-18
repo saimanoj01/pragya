@@ -10,6 +10,7 @@ const SHELL_CACHE = SHELL_PREFIX + BUILD_ID;
 const scopeUrl = new URL('./', self.registration.scope);
 const INDEX_URL = new URL('index.html', scopeUrl).toString();
 const ASSETS_PREFIX = new URL('assets/', scopeUrl).toString();
+const FONTS_PREFIX = new URL('fonts/', scopeUrl).toString();
 const CORE_SHELL_FILES = [
   'index.html',
   'manifest.webmanifest',
@@ -17,6 +18,8 @@ const CORE_SHELL_FILES = [
   'icon-192.png',
   'icon-512.png',
   'apple-touch-icon.png',
+  'fonts/InterVariable.woff2',
+  'fonts/InterVariable-Italic.woff2',
 ];
 // Precache URLs are scope-relative, so one build works under both './' and '/pragya/'.
 const PRECACHE_URLS = Array.from(
@@ -109,7 +112,7 @@ self.addEventListener('fetch', event => {
     return;
   }
 
-  // Hard bypass for all cross-origin requests (Google APIs, OAuth, Fonts, pragya.local media).
+  // Hard bypass for all cross-origin requests (Google APIs, OAuth, pragya.local media).
   if (url.origin !== self.location.origin) {
     return;
   }
@@ -148,8 +151,8 @@ self.addEventListener('fetch', event => {
     return;
   }
 
-  // Hashed build assets are immutable: cache-first, then network, then Response.error().
-  if (url.href.startsWith(ASSETS_PREFIX)) {
+  // Hashed build assets and self-hosted fonts (versioned via BUILD_ID): cache-first, then network.
+  if (url.href.startsWith(ASSETS_PREFIX) || url.href.startsWith(FONTS_PREFIX)) {
     event.respondWith(
       caches
         .match(request)

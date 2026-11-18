@@ -598,7 +598,7 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
           type="button"
           onClick={onClose}
           aria-label="Close"
-          className="p-1.5 rounded-[8px] text-muted-foreground hover:text-foreground hover:bg-surface2 transition-colors"
+          className="min-w-11 min-h-11 sm:min-w-0 sm:min-h-0 p-1.5 rounded-[8px] inline-flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-surface2 transition-colors"
         >
           <X className="w-4 h-4" />
         </button>
@@ -622,7 +622,7 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
             <button
               type="button"
               onClick={onClose}
-              className="h-10 px-4 rounded-[10px] text-body font-medium text-muted-foreground hover:text-foreground hover:bg-surface2 transition-colors"
+              className="h-11 sm:h-10 px-4 rounded-[10px] text-body font-medium text-muted-foreground hover:text-foreground hover:bg-surface2 transition-colors"
             >
               Cancel
             </button>
@@ -637,7 +637,7 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
                   navigateTo('#/shelf');
                 }
               }}
-              className="h-10 px-5 rounded-[10px] bg-primary text-primary-foreground font-semibold text-body hover:opacity-90 inline-flex items-center gap-1.5"
+              className="h-11 sm:h-10 px-5 rounded-[10px] bg-primary text-primary-foreground font-semibold text-body hover:opacity-90 inline-flex items-center gap-1.5"
             >
               <Plus className="w-4 h-4" />
               <span>Add Your First Book</span>
@@ -662,7 +662,7 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
                 type="button"
                 data-testid="draft-discard-btn"
                 onClick={handleDiscardDraft}
-                className="inline-flex items-center gap-1 font-semibold text-muted-foreground hover:text-foreground"
+                className="min-h-11 sm:min-h-0 px-2 sm:px-0 inline-flex items-center gap-1 font-semibold text-muted-foreground hover:text-foreground"
               >
                 <RotateCcw className="w-3 h-3" />
                 <span>Discard</span>
@@ -695,7 +695,7 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
                   data-testid="capture-book-select"
                   value={bookId}
                   onChange={e => handleBookChange(e.target.value)}
-                  className="w-full h-10 px-3 rounded-[10px] bg-background border border-input text-body text-foreground focus:outline-none focus:ring-2 focus:ring-ring/40"
+                  className="w-full h-11 sm:h-10 px-3 rounded-[10px] bg-background border border-input text-base sm:text-body text-foreground focus:outline-none focus:ring-2 focus:ring-ring/40"
                 >
                   {books.map(b => (
                     <option key={b.id} value={b.id}>
@@ -715,6 +715,7 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
                 <input
                   id={posFieldId}
                   type="number"
+                  inputMode="numeric"
                   min="0"
                   data-testid="capture-pos-input"
                   value={pos}
@@ -729,7 +730,7 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
                       setKindleHint(null);
                     }
                   }}
-                  className="w-full h-10 px-3 rounded-[10px] bg-background border border-input text-body text-foreground num focus:outline-none focus:ring-2 focus:ring-ring/40"
+                  className="w-full h-11 sm:h-10 px-3 rounded-[10px] bg-background border border-input text-base sm:text-body text-foreground num focus:outline-none focus:ring-2 focus:ring-ring/40"
                 />
               </div>
             </div>
@@ -754,7 +755,7 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
                       setPos(String(kindleHint.hint.pos));
                       setKindleHint(null);
                     }}
-                    className="px-2.5 py-1 rounded-[8px] bg-primary text-primary-foreground text-[11px] font-semibold hover:opacity-90"
+                    className="min-h-11 sm:min-h-0 px-3 sm:px-2.5 py-1 rounded-[8px] bg-primary text-primary-foreground text-[11px] font-semibold hover:opacity-90 inline-flex items-center"
                   >
                     Apply {kindleHint.hint.pos}
                   </button>
@@ -765,7 +766,7 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
                       dismissedHintRef.current = kindleHint.hint.label;
                       setKindleHint(null);
                     }}
-                    className="p-0.5 text-muted-foreground hover:text-foreground"
+                    className="min-w-11 min-h-11 sm:min-w-0 sm:min-h-0 p-1 inline-flex items-center justify-center text-muted-foreground hover:text-foreground"
                   >
                     <X className="w-3.5 h-3.5" />
                   </button>
@@ -789,7 +790,7 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
                     dismissedHintRef.current = kindleHint.hint.label;
                     setKindleHint(null);
                   }}
-                  className="p-0.5 text-muted-foreground hover:text-foreground"
+                  className="min-w-11 min-h-11 sm:min-w-0 sm:min-h-0 p-1 inline-flex items-center justify-center text-muted-foreground hover:text-foreground"
                 >
                   <X className="w-3.5 h-3.5" />
                 </button>
@@ -813,7 +814,7 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
                     else setTakeaway(kindleClean.rawValue);
                     setKindleClean(null);
                   }}
-                  className="inline-flex items-center gap-1 text-label font-medium text-muted-foreground hover:text-foreground"
+                  className="min-h-11 sm:min-h-0 px-2 sm:px-0 inline-flex items-center gap-1 text-label font-medium text-muted-foreground hover:text-foreground"
                 >
                   Undo
                 </button>
@@ -840,7 +841,7 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
                   setChapterInput(e.target.value);
                   setChapterTouched(true);
                 }}
-                className="w-full h-10 px-3 rounded-[10px] bg-background border border-input text-body text-foreground placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-ring/40"
+                className="w-full h-11 sm:h-10 px-3 rounded-[10px] bg-background border border-input text-base sm:text-body text-foreground placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-ring/40"
               />
               {chapterState.hint && (
                 <p
@@ -867,7 +868,7 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
                 onChange={e => setTitle(e.target.value)}
                 placeholder="A few words you'll recognize later"
                 aria-describedby={initialSlug ? `${titleFieldId}-slug` : undefined}
-                className="w-full h-10 px-3 rounded-[10px] bg-background border border-input text-body text-foreground placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-ring/40"
+                className="w-full h-11 sm:h-10 px-3 rounded-[10px] bg-background border border-input text-base sm:text-body text-foreground placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-ring/40"
               />
               {initialSlug && (
                 <p id={`${titleFieldId}-slug`} data-testid="capture-slug-hint" className="text-label text-muted-foreground">
@@ -896,7 +897,7 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
                   detectKindleHint(next, pos);
                 }}
                 placeholder="Quotation, excerpt, or dictation..."
-                className="w-full p-3 rounded-[10px] bg-surface2/50 border border-input text-body text-foreground placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-ring/40 resize-y"
+                className="w-full p-3 rounded-[10px] bg-surface2/50 border border-input text-base sm:text-body text-foreground placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-ring/40 resize-y"
               />
             </div>
 
@@ -926,7 +927,7 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
                 onKeyUp={e => setTakeawayCursor(e.currentTarget.selectionStart)}
                 onBlur={() => setTakeawayCursor(null)}
                 placeholder="Why this matters, core resonance, or concrete realization in your own words..."
-                className="w-full p-3 rounded-[10px] bg-background border border-foreground/30 text-body text-foreground placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-ring/50 resize-y"
+                className="w-full p-3 rounded-[10px] bg-background border border-foreground/30 text-base sm:text-body text-foreground placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-ring/50 resize-y"
               />
               <WikilinkAutocomplete
                 textareaRef={takeawayInputRef}
@@ -956,14 +957,14 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
                   value={tagsRaw}
                   onChange={e => setTagsRaw(e.target.value)}
                   placeholder="#systems, #heuristics, #favorites"
-                  className="w-full h-10 px-3 rounded-[10px] bg-background border border-input text-body text-foreground placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-ring/40"
+                  className="w-full h-11 sm:h-10 px-3 rounded-[10px] bg-background border border-input text-base sm:text-body text-foreground placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-ring/40"
                 />
               </div>
 
               <div className="flex flex-wrap items-center gap-4 pb-2">
                 <label
                   htmlFor={sparFieldId}
-                  className="inline-flex items-center gap-2 text-body text-foreground cursor-pointer select-none"
+                  className="min-h-11 sm:min-h-0 inline-flex items-center gap-2 text-body text-foreground cursor-pointer select-none"
                 >
                   <input
                     id={sparFieldId}
@@ -979,7 +980,7 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
                 {selectedBook?.kind === 'fiction' && (
                   <label
                     htmlFor={predFieldId}
-                    className="inline-flex items-center gap-2 text-body text-foreground cursor-pointer select-none"
+                    className="min-h-11 sm:min-h-0 inline-flex items-center gap-2 text-body text-foreground cursor-pointer select-none"
                   >
                     <input
                       id={predFieldId}
@@ -1024,7 +1025,7 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
                     data-testid="capture-attach-photo-btn"
                     disabled={atLimit || uploadingImage}
                     onClick={() => fileInputRef.current?.click()}
-                    className="h-9 sm:h-8 px-2.5 rounded-[8px] border border-border bg-surface2/60 hover:bg-surface2 text-label font-medium text-foreground inline-flex items-center gap-1.5 disabled:opacity-40 transition-colors"
+                    className="h-11 sm:h-8 px-3 sm:px-2.5 rounded-[8px] border border-border bg-surface2/60 hover:bg-surface2 text-label font-medium text-foreground inline-flex items-center gap-1.5 disabled:opacity-40 transition-colors"
                   >
                     {uploadingImage ? (
                       <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -1043,7 +1044,7 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
                       setDraftUrl('');
                       setDraftTitle('');
                     }}
-                    className="h-9 sm:h-8 px-2.5 rounded-[8px] border border-border bg-surface2/60 hover:bg-surface2 text-label font-medium text-foreground inline-flex items-center gap-1.5 disabled:opacity-40 transition-colors"
+                    className="h-11 sm:h-8 px-3 sm:px-2.5 rounded-[8px] border border-border bg-surface2/60 hover:bg-surface2 text-label font-medium text-foreground inline-flex items-center gap-1.5 disabled:opacity-40 transition-colors"
                   >
                     <FileText className="w-3.5 h-3.5" />
                     <span>Doc</span>
@@ -1058,7 +1059,7 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
                       setDraftUrl('');
                       setDraftTitle('');
                     }}
-                    className="h-9 sm:h-8 px-2.5 rounded-[8px] border border-border bg-surface2/60 hover:bg-surface2 text-label font-medium text-foreground inline-flex items-center gap-1.5 disabled:opacity-40 transition-colors"
+                    className="h-11 sm:h-8 px-3 sm:px-2.5 rounded-[8px] border border-border bg-surface2/60 hover:bg-surface2 text-label font-medium text-foreground inline-flex items-center gap-1.5 disabled:opacity-40 transition-colors"
                   >
                     <Link2 className="w-3.5 h-3.5" />
                     <span>Link</span>
@@ -1080,22 +1081,23 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
                           ? 'Paste Google Doc URL (https://docs.google.com/document/d/...)'
                           : 'Paste reference URL (https://...)'
                       }
-                      className="flex-1 h-9 px-3 rounded-[8px] bg-background border border-input text-label text-foreground focus:outline-none focus:ring-2 focus:ring-ring/40"
+                      className="flex-1 h-11 sm:h-9 px-3 rounded-[8px] bg-background border border-input text-base sm:text-label text-foreground focus:outline-none focus:ring-2 focus:ring-ring/40"
                     />
                     <input
                       type="text"
+                      enterKeyHint="done"
                       aria-label="Attachment title"
                       data-testid="capture-attachment-title-input"
                       value={draftTitle}
                       onChange={e => setDraftTitle(e.target.value)}
                       placeholder="Title (optional)"
-                      className="sm:w-40 h-9 px-3 rounded-[8px] bg-background border border-input text-label text-foreground focus:outline-none focus:ring-2 focus:ring-ring/40"
+                      className="sm:w-40 h-11 sm:h-9 px-3 rounded-[8px] bg-background border border-input text-base sm:text-label text-foreground focus:outline-none focus:ring-2 focus:ring-ring/40"
                     />
                     <button
                       type="button"
                       data-testid="capture-attachment-confirm-btn"
                       onClick={() => void handleAddUrlConfirm()}
-                      className="h-9 px-3 rounded-[8px] bg-primary text-primary-foreground text-label font-semibold whitespace-nowrap"
+                      className="h-11 sm:h-9 px-3 rounded-[8px] bg-primary text-primary-foreground text-label font-semibold whitespace-nowrap"
                     >
                       Attach
                     </button>
@@ -1132,7 +1134,7 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
                       type="button"
                       aria-label="Remove attachment"
                       onClick={() => setAttachments(prev => prev.filter(a => a.id !== att.id))}
-                      className="p-1 text-muted-foreground hover:text-negative transition-colors shrink-0"
+                      className="min-w-11 min-h-11 sm:min-w-0 sm:min-h-0 p-1 inline-flex items-center justify-center text-muted-foreground hover:text-negative transition-colors shrink-0"
                     >
                       <X className="w-3.5 h-3.5" />
                     </button>

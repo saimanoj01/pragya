@@ -28,6 +28,7 @@ import { EditBookModal } from './components/modals/EditBookModal';
 import { QuickCaptureModal } from './components/modals/QuickCaptureModal';
 import { DeepenNoteModal } from './components/modals/DeepenNoteModal';
 import { EditNoteModal } from './components/modals/EditNoteModal';
+import { KeyboardHelpModal } from './components/modals/KeyboardHelpModal';
 
 function PragyaShell() {
   const {
@@ -53,6 +54,8 @@ function PragyaShell() {
   const [deepeningNote, setDeepeningNote] = useState<Note | null>(null);
   const [editingNote, setEditingNote] = useState<Note | null>(null);
   const [showCommandPalette, setShowCommandPalette] = useState(false);
+  // CD D2.1: `?` Keyboard Help (Sidebar footer, palette command, More drawer, `?`).
+  const [showKeyboardHelp, setShowKeyboardHelp] = useState(false);
   // CD C.1.5: logout asks first only when unsaved drafts exist on this device.
   const [logoutDraftList, setLogoutDraftList] = useState<string | null>(null);
   const requestLogout = () => {
@@ -76,6 +79,7 @@ function PragyaShell() {
 
   const hasOpenOverlay = Boolean(
     showCommandPalette ||
+      showKeyboardHelp ||
       showCaptureModal ||
       showAddBookModal ||
       editingBook ||
@@ -91,6 +95,7 @@ function PragyaShell() {
     onToggleCommandPalette: () => setShowCommandPalette(prev => !prev),
     onOpenCapture: () => openGlobalCapture(),
     onSyncNow: () => void syncNow(true),
+    onOpenKeyboardHelp: () => setShowKeyboardHelp(true),
   });
 
   const openQuickCapture = (
@@ -142,6 +147,8 @@ function PragyaShell() {
         bookId={route.bookId}
         onEditBook={b => setEditingBook(b)}
         onOpenCaptureForBook={id => openQuickCapture(id)}
+        onEditNote={n => setEditingNote(n)}
+        onDeepenNote={n => setDeepeningNote(n)}
       />
     );
   } else if (route.view === 'note' && route.noteSlug) {
@@ -168,7 +175,7 @@ function PragyaShell() {
   return (
     <AppLayout>
       {!isAuthenticated ? (
-        <main className="flex-1 overflow-y-auto custom-scrollbar">
+        <main className="flex-1 overflow-y-auto pb-[env(safe-area-inset-bottom)] custom-scrollbar">
           <LoginView />
         </main>
       ) : (
@@ -183,10 +190,11 @@ function PragyaShell() {
               toggleTheme={toggleTheme}
               onOpenCapture={openGlobalCapture}
               onOpenCommandPalette={() => setShowCommandPalette(true)}
+              onOpenKeyboardHelp={() => setShowKeyboardHelp(true)}
               logout={requestLogout}
             />
 
-            <main className="flex-1 overflow-y-auto print:overflow-visible px-4 md:px-8 print:px-0 pt-0 pb-24 md:pb-8 print:pb-0 w-full relative custom-scrollbar">
+            <main className="flex-1 overflow-y-auto print:overflow-visible px-4 md:px-8 print:px-0 pt-0 pb-[calc(6rem+env(safe-area-inset-bottom))] md:pb-8 print:pb-0 w-full relative custom-scrollbar">
               <div className="max-w-5xl mx-auto w-full">
                 {!isMockMode && isOfflineReadOnly && (
                   <div
@@ -209,7 +217,7 @@ function PragyaShell() {
                       data-testid="offline-retry-sync-btn"
                       disabled={isSyncing}
                       onClick={() => void syncNow(true)}
-                      className="h-8 px-3 rounded-[8px] bg-card border border-border hover:bg-surface2 text-label font-semibold text-foreground inline-flex items-center gap-1.5 whitespace-nowrap disabled:opacity-50"
+                      className="h-11 sm:h-8 px-3 rounded-[8px] bg-card border border-border hover:bg-surface2 text-label font-semibold text-foreground inline-flex items-center gap-1.5 whitespace-nowrap disabled:opacity-50"
                     >
                       <RefreshCw className={`w-3.5 h-3.5 ${isSyncing ? 'animate-spin' : ''}`} />
                       <span>Retry Sync</span>
@@ -230,6 +238,7 @@ function PragyaShell() {
             onOpenCommandPalette={() => setShowCommandPalette(true)}
             onSyncNow={() => void syncNow(true)}
             onLogout={requestLogout}
+            onOpenKeyboardHelp={() => setShowKeyboardHelp(true)}
           />
 
           <QuickCaptureModal
@@ -275,7 +284,10 @@ function PragyaShell() {
             onOpenCapture={openGlobalCapture}
             onToggleTheme={toggleTheme}
             onSyncNow={() => void syncNow(true)}
+            onOpenKeyboardHelp={() => setShowKeyboardHelp(true)}
           />
+
+          <KeyboardHelpModal isOpen={showKeyboardHelp} onClose={() => setShowKeyboardHelp(false)} />
         </>
       )}
 

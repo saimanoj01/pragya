@@ -29,6 +29,7 @@ const TYPES: Record<string, string> = {
   '.css': 'text/css',
   '.svg': 'image/svg+xml',
   '.png': 'image/png',
+  '.woff2': 'font/woff2',
   '.webmanifest': 'application/manifest+json',
   '.json': 'application/json',
 };
@@ -50,7 +51,7 @@ function startServer(): Promise<void> {
       const rel = decodeURIComponent(url.pathname.slice('/pragya/'.length)) || 'index.html';
       let file = path.join(distDir, rel);
       if (!file.startsWith(distDir) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) {
-        if (rel.startsWith('assets/')) {
+        if (rel.startsWith('assets/') || rel.startsWith('fonts/')) {
           res.writeHead(404);
           res.end();
           return;
@@ -150,6 +151,8 @@ test('SW /pragya/: precaches the whole build; offline reload, demo flow and deep
     .map(f => `/pragya/assets/${f}`);
   expect(distAssets.length).toBeGreaterThan(0);
   for (const a of distAssets) expect(info.urls).toContain(a);
+  expect(info.urls).toContain('/pragya/fonts/InterVariable.woff2');
+  expect(info.urls).toContain('/pragya/fonts/InterVariable-Italic.woff2');
   expect(info.urls).toContain('/pragya/index.html');
   expect(info.urls.every(u => u.startsWith('/pragya/'))).toBe(true);
   const swSource = fs.readFileSync(path.join(distDir, 'sw.js'), 'utf8');

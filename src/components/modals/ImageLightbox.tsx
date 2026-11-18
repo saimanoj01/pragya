@@ -25,7 +25,8 @@ export const ImageLightbox: React.FC<ImageLightboxProps> = ({ attachment, onClos
     }
 
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
+      // CD D.2.2: Space closes the image too (Esc stays the universal close).
+      if (e.key === 'Escape' || (e.key === ' ' && !e.repeat)) {
         const dialogs = document.querySelectorAll('[role="dialog"]');
         if (dialogs.length > 0 && dialogs[dialogs.length - 1] !== lightboxRef.current) {
           return;
@@ -64,7 +65,7 @@ export const ImageLightbox: React.FC<ImageLightboxProps> = ({ attachment, onClos
         type="button"
         aria-label="Close image lightbox"
         onClick={() => onCloseRef.current()}
-        className="absolute top-4 right-4 w-10 h-10 rounded-full bg-card border border-border text-foreground hover:bg-surface2 flex items-center justify-center shadow-lg transition-colors"
+        className="absolute top-[calc(env(safe-area-inset-top)+12px)] right-[max(env(safe-area-inset-right),1rem)] w-11 h-11 rounded-full bg-card border border-border text-foreground hover:bg-surface2 flex items-center justify-center shadow-lg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
       >
         <X className="w-5 h-5" />
       </button>

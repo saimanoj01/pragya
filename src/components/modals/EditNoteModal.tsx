@@ -33,6 +33,7 @@ import {
 import { clampNotePos } from '../../utils/positionClamp';
 import { createUuid } from '../../utils/sessionCoalesce';
 import { parseTagsCsv, serializeTagsCsv } from '../../utils/sheetCodecs';
+import { isSubmitShortcut } from '../../utils/keyboard';
 import { computeNormalizedPos } from '../../utils/spoilerMath';
 import { normalizeSlugInput, resolveSlugEdit, takenSlugs } from '../../utils/wikilinks';
 import { showToast } from '../../utils/toast';
@@ -692,7 +693,7 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
           type="button"
           onClick={onClose}
           aria-label="Close"
-          className="p-1.5 rounded-[8px] text-muted-foreground hover:text-foreground hover:bg-surface2 shrink-0"
+          className="min-w-11 min-h-11 sm:min-w-0 sm:min-h-0 p-1.5 rounded-[8px] inline-flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-surface2 shrink-0"
         >
           <X className="w-4 h-4" />
         </button>
@@ -708,7 +709,7 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
             type="button"
             data-testid="draft-discard-btn"
             onClick={handleDiscardDraft}
-            className="inline-flex items-center gap-1 font-semibold text-muted-foreground hover:text-foreground"
+            className="min-h-11 sm:min-h-0 px-2 sm:px-0 inline-flex items-center gap-1 font-semibold text-muted-foreground hover:text-foreground"
           >
             <RotateCcw className="w-3 h-3" />
             <span>Discard</span>
@@ -716,7 +717,16 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
         </div>
       )}
 
-      <form onSubmit={e => void handleSubmit(e)} className="space-y-4">
+      <form
+        onSubmit={e => void handleSubmit(e)}
+        onKeyDown={e => {
+          if (isSubmitShortcut(e.nativeEvent)) {
+            e.preventDefault();
+            if (!submitting && !uploadingImage && !archiving) e.currentTarget.requestSubmit();
+          }
+        }}
+        className="space-y-4"
+      >
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <div className="space-y-1.5">
             <label htmlFor={titleId} className="block text-eyebrow uppercase text-muted-foreground">
@@ -729,7 +739,7 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
               value={title}
               onChange={e => setTitle(e.target.value)}
               placeholder="Optional note title..."
-              className="w-full h-10 px-3 rounded-[10px] bg-background border border-input text-body text-foreground placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-ring/40"
+              className="w-full h-11 sm:h-10 px-3 rounded-[10px] bg-background border border-input text-base sm:text-body text-foreground placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-ring/40"
             />
           </div>
 
@@ -749,7 +759,7 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
               onBlur={e => setSlug(normalizeSlugInput(e.target.value))}
               aria-invalid={Boolean(slugError)}
               aria-describedby={slugError ? `${slugId}-error` : undefined}
-              className="w-full h-10 px-3 rounded-[10px] bg-background border border-input font-mono text-label text-foreground focus:outline-none focus:ring-2 focus:ring-ring/40"
+              className="w-full h-11 sm:h-10 px-3 rounded-[10px] bg-background border border-input font-mono text-base sm:text-label text-foreground focus:outline-none focus:ring-2 focus:ring-ring/40"
             />
             {slugError && (
               <p id={`${slugId}-error`} role="alert" data-testid="edit-note-slug-error" className="text-label text-negative">
@@ -767,11 +777,12 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
             <input
               id={posId}
               type="number"
+              inputMode="numeric"
               min="0"
               data-testid="edit-note-pos-input"
               value={pos}
               onChange={e => setPos(e.target.value)}
-              className="w-full h-10 px-3 rounded-[10px] bg-background border border-input text-body text-foreground num focus:outline-none focus:ring-2 focus:ring-ring/40"
+              className="w-full h-11 sm:h-10 px-3 rounded-[10px] bg-background border border-input text-base sm:text-body text-foreground num focus:outline-none focus:ring-2 focus:ring-ring/40"
             />
           </div>
 
@@ -787,7 +798,7 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
               data-testid="edit-note-status-select"
               value={status}
               onChange={e => setStatus(e.target.value as NoteStatus)}
-              className="w-full h-10 px-2.5 rounded-[10px] bg-background border border-input text-body text-foreground focus:outline-none focus:ring-2 focus:ring-ring/40"
+              className="w-full h-11 sm:h-10 px-2.5 rounded-[10px] bg-background border border-input text-base sm:text-body text-foreground focus:outline-none focus:ring-2 focus:ring-ring/40"
             >
               <option value="saved">Saved</option>
               <option value="inbox">Inbox (To Spar)</option>
@@ -807,7 +818,7 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
               value={tagsRaw}
               onChange={e => setTagsRaw(e.target.value)}
               placeholder="#systems, #favorites"
-              className="w-full h-10 px-3 rounded-[10px] bg-background border border-input text-body text-foreground focus:outline-none focus:ring-2 focus:ring-ring/40"
+              className="w-full h-11 sm:h-10 px-3 rounded-[10px] bg-background border border-input text-base sm:text-body text-foreground focus:outline-none focus:ring-2 focus:ring-ring/40"
             />
           </div>
         </div>
@@ -825,14 +836,14 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
             value={chapter}
             onChange={e => setChapter(e.target.value)}
             placeholder="e.g. Ch. 3: Run · or a story title"
-            className="w-full h-10 px-3 rounded-[10px] bg-background border border-input text-body text-foreground placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-ring/40"
+            className="w-full h-11 sm:h-10 px-3 rounded-[10px] bg-background border border-input text-base sm:text-body text-foreground placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-ring/40"
           />
         </div>
 
         {book?.kind === 'fiction' && (
           <label
             htmlFor={predictionId}
-            className="inline-flex items-center gap-2 text-body text-foreground cursor-pointer select-none"
+            className="min-h-11 sm:min-h-0 inline-flex items-center gap-2 text-body text-foreground cursor-pointer select-none"
           >
             <input
               id={predictionId}
@@ -856,7 +867,7 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
             data-testid="edit-note-quote-input"
             value={quote}
             onChange={e => setQuote(e.target.value)}
-            className="w-full p-3 rounded-[10px] bg-surface2/50 border border-input text-body text-foreground focus:outline-none focus:ring-2 focus:ring-ring/40 resize-y"
+            className="w-full p-3 rounded-[10px] bg-surface2/50 border border-input text-base sm:text-body text-foreground focus:outline-none focus:ring-2 focus:ring-ring/40 resize-y"
           />
         </div>
 
@@ -880,7 +891,7 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
             onClick={e => setTakeawayCursor(e.currentTarget.selectionStart)}
             onKeyUp={e => setTakeawayCursor(e.currentTarget.selectionStart)}
             onBlur={() => setTakeawayCursor(null)}
-            className="w-full p-3 rounded-[10px] bg-background border border-input text-body text-foreground focus:outline-none focus:ring-2 focus:ring-ring/40 resize-y"
+            className="w-full p-3 rounded-[10px] bg-background border border-input text-base sm:text-body text-foreground focus:outline-none focus:ring-2 focus:ring-ring/40 resize-y"
           />
           <WikilinkAutocomplete
             textareaRef={takeawayRef}
@@ -917,7 +928,7 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
             onClick={e => setContextCursor(e.currentTarget.selectionStart)}
             onKeyUp={e => setContextCursor(e.currentTarget.selectionStart)}
             onBlur={() => setContextCursor(null)}
-            className="w-full p-3 rounded-[10px] bg-background border border-input text-body text-foreground focus:outline-none focus:ring-2 focus:ring-ring/40 resize-y"
+            className="w-full p-3 rounded-[10px] bg-background border border-input text-base sm:text-body text-foreground focus:outline-none focus:ring-2 focus:ring-ring/40 resize-y"
           />
           <WikilinkAutocomplete
             textareaRef={contextRef}
@@ -950,7 +961,7 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
                 data-testid="edit-note-trigger-input"
                 value={deltaTrigger}
                 onChange={e => setDeltaTrigger(e.target.value)}
-                className="w-full h-9 px-3 rounded-[8px] bg-background border border-input text-body text-foreground focus:outline-none focus:ring-2 focus:ring-ring/40"
+                className="w-full h-11 sm:h-9 px-3 rounded-[8px] bg-background border border-input text-base sm:text-body text-foreground focus:outline-none focus:ring-2 focus:ring-ring/40"
               />
             </div>
             <div className="space-y-1">
@@ -966,7 +977,7 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
                 data-testid="edit-note-action-input"
                 value={deltaAction}
                 onChange={e => setDeltaAction(e.target.value)}
-                className="w-full h-9 px-3 rounded-[8px] bg-background border border-input text-body text-foreground focus:outline-none focus:ring-2 focus:ring-ring/40"
+                className="w-full h-11 sm:h-9 px-3 rounded-[8px] bg-background border border-input text-base sm:text-body text-foreground focus:outline-none focus:ring-2 focus:ring-ring/40"
               />
             </div>
           </div>
@@ -980,7 +991,7 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
               data-testid="edit-note-delta-status-select"
               value={deltaStatus}
               onChange={e => setDeltaStatus(e.target.value as DeltaStatus)}
-              className="h-9 px-2.5 rounded-[8px] bg-background border border-input text-body text-foreground focus:outline-none focus:ring-2 focus:ring-ring/40"
+              className="h-11 sm:h-9 px-2.5 rounded-[8px] bg-background border border-input text-base sm:text-body text-foreground focus:outline-none focus:ring-2 focus:ring-ring/40"
             >
               <option value="none">None</option>
               <option value="active">Active (Practice)</option>
@@ -1023,7 +1034,7 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
             onClick={e => setCritiqueCursor(e.currentTarget.selectionStart)}
             onKeyUp={e => setCritiqueCursor(e.currentTarget.selectionStart)}
             onBlur={() => setCritiqueCursor(null)}
-            className="w-full p-3 rounded-[10px] bg-background border border-input text-body text-foreground focus:outline-none focus:ring-2 focus:ring-ring/40 resize-y"
+            className="w-full p-3 rounded-[10px] bg-background border border-input text-base sm:text-body text-foreground focus:outline-none focus:ring-2 focus:ring-ring/40 resize-y"
           />
           <WikilinkAutocomplete
             textareaRef={critiqueRef}
@@ -1064,7 +1075,7 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
                 type="button"
                 disabled={atLimit || uploadingImage}
                 onClick={() => fileInputRef.current?.click()}
-                className="h-8 px-2.5 rounded-[8px] border border-border bg-surface2/60 hover:bg-surface2 text-label font-medium text-foreground inline-flex items-center gap-1.5 disabled:opacity-40"
+                className="h-11 sm:h-8 px-3 sm:px-2.5 rounded-[8px] border border-border bg-surface2/60 hover:bg-surface2 text-label font-medium text-foreground inline-flex items-center gap-1.5 disabled:opacity-40"
               >
                 {uploadingImage ? (
                   <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -1081,7 +1092,7 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
                   setDraftUrl('');
                   setDraftTitle('');
                 }}
-                className="h-8 px-2.5 rounded-[8px] border border-border bg-surface2/60 hover:bg-surface2 text-label font-medium text-foreground inline-flex items-center gap-1.5 disabled:opacity-40"
+                className="h-11 sm:h-8 px-3 sm:px-2.5 rounded-[8px] border border-border bg-surface2/60 hover:bg-surface2 text-label font-medium text-foreground inline-flex items-center gap-1.5 disabled:opacity-40"
               >
                 <FileText className="w-3.5 h-3.5" />
                 <span>Doc</span>
@@ -1094,7 +1105,7 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
                   setDraftUrl('');
                   setDraftTitle('');
                 }}
-                className="h-8 px-2.5 rounded-[8px] border border-border bg-surface2/60 hover:bg-surface2 text-label font-medium text-foreground inline-flex items-center gap-1.5 disabled:opacity-40"
+                className="h-11 sm:h-8 px-3 sm:px-2.5 rounded-[8px] border border-border bg-surface2/60 hover:bg-surface2 text-label font-medium text-foreground inline-flex items-center gap-1.5 disabled:opacity-40"
               >
                 <Link2 className="w-3.5 h-3.5" />
                 <span>Link</span>
@@ -1110,15 +1121,16 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
                 value={draftUrl}
                 onChange={e => setDraftUrl(e.target.value)}
                 placeholder="https://..."
-                className="flex-1 h-9 px-3 rounded-[8px] bg-background border border-input text-label text-foreground focus:outline-none focus:ring-2 focus:ring-ring/40"
+                className="flex-1 h-11 sm:h-9 px-3 rounded-[8px] bg-background border border-input text-base sm:text-label text-foreground focus:outline-none focus:ring-2 focus:ring-ring/40"
               />
               <input
                 type="text"
+                enterKeyHint="done"
                 aria-label="Attachment title"
                 value={draftTitle}
                 onChange={e => setDraftTitle(e.target.value)}
                 placeholder="Title (optional)"
-                className="sm:w-36 h-9 px-3 rounded-[8px] bg-background border border-input text-label text-foreground focus:outline-none focus:ring-2 focus:ring-ring/40"
+                className="sm:w-36 h-11 sm:h-9 px-3 rounded-[8px] bg-background border border-input text-base sm:text-label text-foreground focus:outline-none focus:ring-2 focus:ring-ring/40"
               />
               <button
                 type="button"
@@ -1131,7 +1143,7 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
                     }
                   });
                 }}
-                className="h-9 px-3 rounded-[8px] bg-primary text-primary-foreground text-label font-semibold whitespace-nowrap"
+                className="h-11 sm:h-9 px-3 rounded-[8px] bg-primary text-primary-foreground text-label font-semibold whitespace-nowrap"
               >
                 Attach
               </button>
@@ -1164,7 +1176,7 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
                     type="button"
                     aria-label={`Remove ${att.type === 'image' ? att.fileName : att.title}`}
                     onClick={() => setAttachments(prev => prev.filter(a => a.id !== att.id))}
-                    className="p-1 text-muted-foreground hover:text-negative shrink-0"
+                    className="min-w-11 min-h-11 sm:min-w-0 sm:min-h-0 p-1 inline-flex items-center justify-center text-muted-foreground hover:text-negative shrink-0"
                   >
                     <X className="w-3.5 h-3.5" />
                   </button>
@@ -1174,7 +1186,7 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
           )}
         </div>
 
-        <div className="flex items-center justify-between gap-2 pt-2">
+        <div className="flex flex-wrap items-center justify-between gap-2 pt-2">
           <div>
             {!isArchived(note) && (
               <button
@@ -1182,7 +1194,7 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
                 data-testid="archive-note-btn"
                 onClick={requestArchive}
                 disabled={submitting || uploadingImage || archiving}
-                className={`${BTN_TERTIARY} h-10`}
+                className={`${BTN_TERTIARY} h-11 sm:h-10`}
               >
                 <Archive className="w-4 h-4" aria-hidden="true" />
                 <span>Archive Note</span>
@@ -1193,7 +1205,7 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
             <button
               type="button"
               onClick={onClose}
-              className="h-10 px-4 rounded-[10px] text-body font-medium text-muted-foreground hover:text-foreground hover:bg-surface2"
+              className="h-11 sm:h-10 px-4 rounded-[10px] text-body font-medium text-muted-foreground hover:text-foreground hover:bg-surface2"
             >
               Cancel
             </button>
@@ -1201,7 +1213,7 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
               type="submit"
               disabled={submitting || uploadingImage}
               data-testid="edit-note-submit-btn"
-              className="h-10 px-5 rounded-[10px] bg-primary text-primary-foreground font-semibold text-body hover:opacity-90 disabled:opacity-50"
+              className="h-11 sm:h-10 px-5 rounded-[10px] bg-primary text-primary-foreground font-semibold text-body hover:opacity-90 disabled:opacity-50"
             >
               {submitting ? 'Saving…' : 'Save Changes'}
             </button>
