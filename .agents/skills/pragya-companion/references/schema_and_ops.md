@@ -68,7 +68,7 @@ Locate spreadsheet by exact title **`Pragya Commonplace`** (non-trashed). If mis
 | `B` | `noteId` | UUID string | FK -> `Notes.id` |
 | `C` | `date` | `YYYY-MM-DD` | Local calendar date |
 | `D` | `outcome` | `"applied" \| "missed" \| "no-trigger"` | `1` / `2` / `3` practice outcome |
-| `E` | `reflection` | string | Optional check-in reflection |
+| `E` | `reflection` | string | Optional check-in reflection. One row per note per local day (CD C2.1): a later same-day check-in updates the row's outcome instead of appending |
 
 ### 1.5 `metaJson` Keys, Preservation Rule & Drift Aliases
 
@@ -80,6 +80,7 @@ No schema columns change for new data: everything new lives inside `metaJson` (`
 | Books | `currentChapter` | string | Free-form chapter / story label for the bookmark. Empty = cleared (key dropped). |
 | Notes | `chapter` | string | Chapter / story label of the note. |
 | Notes | `socraticQuestions` | string[] (1–3) | Canonical store for the saved Socratic questions. |
+| Notes | `predictionOutcome` | `{text: string, at: ISO}` | PWA "Reflect on Outcome" for an unlocked fiction prediction (CD C4.2). Preserve verbatim; never fill it in yourself. |
 | Notes | `sparStage` | any | Agent-owned sparring state; stored **verbatim** (never string-coerced). |
 | Books & Notes | `archivedAt` | ISO string | Soft-archive (CD C1.1). Present → excluded from default lists (PWA Shelf/Notes/search/palette/shuffle/practice/backlinks, a book's Captured Notes, the capstone prompt; CLI `book-list`, `recall`, Doc/MD timelines, `notesSummary`, per-note `export-md`) and never counted toward the 5 active-delta slots. Archiving a **book** hides only the book (its notes stay reachable). Companion Doc text already written for a later-archived note is never deleted. Set/cleared by `book-update`/`note-update --archive|--unarchive` or the PWA. Lookups by id/slug still resolve archived items. |
 | Notes | `archivedDeltaStatus` | `"active"` | Written only when archiving paused an active delta; unarchive reactivates it if fewer than 5 other deltas are active, then removes the key. |
@@ -123,6 +124,7 @@ No schema columns change for new data: everything new lives inside `metaJson` (`
    - Never surface spoiler notes or later plot knowledge from model memory when discussing a non-finished fiction book.
 5. **Media & Companion Docs:**
    - Store photos in Drive folder **`Pragya Media/`** (`<= 1600px` WebP preferred; convert mobile HEIC/PNG before upload when possible). Never delete Drive files when editing/removing note attachments.
+   - **Unsaved PWA capture uploads stay in Drive (policy, CD C4.3):** a photo uploaded in Quick Capture is written to `Pragya Media/` immediately; the capture draft keeps only the reference (Drive file id, name, mime, dims — never the image). If the draft is discarded, or never saved, the file remains in `Pragya Media/` (append-only blobs; there is no Drive DELETE). Don't promise cleanup — tell the user they can remove stray files from that folder in Drive themselves.
    - Attachment entries in `Notes!R` (`metaJson.attachments`): add at most `3` (`image`, `doc`, `link`) per note, but never drop existing entries you don't understand — they are stored verbatim and filtered only at render (§1.5).
    - Book Companion Docs are titled **`Pragya · <Book Title>`**, recorded in `Books!K` (`docUrl`), and use structured headings rather than raw `#` markdown strings: `Heading 1` for the book title; `Heading 2` for `Whole-Book Picture [capstone:<bookId>]` (directly under the header) and for each atomic note; `Heading 3` for each saved note. Note headings read `[<Ch. X · p. N>] <Title> [note:<uuid>]`, in reading order.
    - **Editing an existing Doc:** only replace/insert Pragya marker blocks (the marker heading + its Pragya field lines); never rewrite or flatten user prose. Read the Doc (`documents.get`, keep `revisionId`), then send one `gdocs mutate raw-batch` (Docs `batchUpdate`) with `"writeControl": {"requiredRevisionId": "<revisionId>"}`. If it is rejected because the Doc changed, re-read and re-plan **once**; otherwise fall back to append-only (by marker) from a fresh read. Without a `revisionId`, never send index-based edits — append only.

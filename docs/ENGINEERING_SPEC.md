@@ -217,6 +217,7 @@
      - **`Graduate` / `Pause` Behavioral Delta (`PracticeView`):** Restores prior `deltaStatus` (with `<= 5` active cap check).
      - **`Mark Reviewed` Shuffle (`PracticeView`):** Restores prior `meta.lastReviewedAt` (using `preserveUpdatedAt: true`).
   2. **Explicit Exclusion:** Do **NOT** add Undo to `1/2/3` Behavioral Delta check-ins (`PracticeView`) to preserve rapid keyboard repetition and `tier3` E2E behavior.
+     - **Superseded in CD Batch 2 (decisions OQ-5):** check-ins now coalesce per note per local day (a second same-day check-in updates the row; the already-pressed outcome is a no-op) and the toast carries an 8 s Undo. Keyboard `1/2/3` still writes immediately; `tier3` L240+ and `tier6` M5.4 were updated to the new contract.
 
 ### M5.6 — `CommandPalette` Grouping, Mobile Entry & PR E2E Workflow
 - **Files:** [CommandPalette.tsx](file:///home/antigravity/saimanoj01/pragya/src/components/layout/CommandPalette.tsx#L195-L340), [BottomNav.tsx](file:///home/antigravity/saimanoj01/pragya/src/components/layout/BottomNav.tsx#L172-L220), `.github/workflows/e2e.yml` (new)

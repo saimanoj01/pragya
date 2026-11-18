@@ -48,6 +48,7 @@ import { buildSnapshot } from '../utils/snapshot';
 import { savePreImportBackup } from '../utils/importSafety';
 import { DEMO_DRAFT_SCOPE, clearAllDrafts } from '../utils/draftStorage';
 import { countOtherActiveDeltas } from '../utils/archive';
+import { applyDeltaLogPatch, planDeltaCheckIn, type DeltaCheckInPlan } from '../utils/deltaCheckIn';
 import {
   clearLastDeleteBackup,
   planBookDelete,
@@ -199,11 +200,27 @@ export interface PragyaContextValue {
   markBookFinished: (bookId: string) => Promise<Book | null>;
   captureNote: (input: QuickCaptureInput) => Promise<Note>;
   updateNote: (note: Note, options?: UpdateNoteOptions) => Promise<Note>;
+  /** @deprecated CD C2.1: always appends (no same-day coalescing) — use `checkInDelta`. */
   logDeltaOutcome: (
     noteId: string,
     outcome: DeltaOutcome,
     reflection?: string
   ) => Promise<DeltaLog>;
+  /**
+   * CD C2.1 (decisions OQ-5): same-day coalescing check-in. First of the local day →
+   * append; later → update today's row's outcome (reflection kept); same outcome → no write.
+   */
+  checkInDelta: (noteId: string, outcome: DeltaOutcome) => Promise<DeltaCheckInPlan>;
+  /**
+   * CD C2.1 fix-up (R1#2): field-level change of one DeltaLogs row against a FRESH read
+   * (reflection edits; check-in Undo restores only the outcome). Never reverts the other field.
+   */
+  updateDeltaLogFields: (
+    logId: string,
+    patch: { outcome?: DeltaOutcome; reflection?: string }
+  ) => Promise<DeltaLog>;
+  /** CD C2.1: remove one DeltaLogs row (check-in Undo of a first-of-day append). */
+  deleteDeltaLog: (logId: string) => Promise<void>;
   replaceWorkspaceFromSnapshot: (
     snapshot: PragyaSnapshot,
     options?: ReplaceWorkspaceOptions
@@ -852,6 +869,62 @@ export const PragyaProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     [adapter, assertCloudWritable, enqueueMutation]
   );
 
+  /** R1#1: fresh DeltaLogs (adapter read) adopted into local state before any plan/patch. */
+  const readFreshDeltaLogs = useCallback(async (): Promise<DeltaLog[]> => {
+    if (!adapter.loadDeltaLogs) return deltaLogsRef.current;
+    const fresh = await adapter.loadDeltaLogs();
+    deltaLogsRef.current = fresh;
+    setDeltaLogs(fresh);
+    return fresh;
+  }, [adapter]);
+
+  const checkInDelta = useCallback(
+    (noteId: string, outcome: DeltaOutcome): Promise<DeltaCheckInPlan> =>
+      enqueueMutation(async () => {
+        assertCloudWritable();
+        // R1#1/#2: plan against a fresh read, so a same-day check-in from the CLI or another
+        // device is updated (never duplicated) and its reflection is kept (outcome-only patch).
+        const fresh = await readFreshDeltaLogs();
+        const plan = planDeltaCheckIn(fresh, noteId, getLocalDateString(), outcome, createUuid());
+        if (plan.kind === 'unchanged') return plan;
+        const saved = await adapter.saveDeltaLog(plan.log);
+        const nextLogs = upsertList(deltaLogsRef.current, saved);
+        deltaLogsRef.current = nextLogs;
+        setDeltaLogs(nextLogs);
+        return { ...plan, log: saved };
+      }),
+    [adapter, assertCloudWritable, enqueueMutation, readFreshDeltaLogs]
+  );
+
+  const updateDeltaLogFields = useCallback(
+    (logId: string, patch: { outcome?: DeltaOutcome; reflection?: string }): Promise<DeltaLog> =>
+      enqueueMutation(async () => {
+        assertCloudWritable();
+        const fresh = await readFreshDeltaLogs();
+        const row = fresh.find(l => l.id === logId);
+        if (!row) throw new Error('That check-in was removed on another device.');
+        const saved = await adapter.saveDeltaLog(applyDeltaLogPatch(row, patch));
+        const nextLogs = upsertList(deltaLogsRef.current, saved);
+        deltaLogsRef.current = nextLogs;
+        setDeltaLogs(nextLogs);
+        return saved;
+      }),
+    [adapter, assertCloudWritable, enqueueMutation, readFreshDeltaLogs]
+  );
+
+  const deleteDeltaLog = useCallback(
+    (logId: string): Promise<void> =>
+      enqueueMutation(async () => {
+        assertCloudWritable();
+        if (!adapter.deleteDeltaLog) throw new Error('Undo is not supported here.');
+        await adapter.deleteDeltaLog(logId);
+        const nextLogs = deltaLogsRef.current.filter(l => l.id !== logId);
+        deltaLogsRef.current = nextLogs;
+        setDeltaLogs(nextLogs);
+      }),
+    [adapter, assertCloudWritable, enqueueMutation]
+  );
+
   const replaceWorkspaceFromSnapshot = useCallback(
     (snapshot: PragyaSnapshot, options: ReplaceWorkspaceOptions = {}): Promise<void> =>
       enqueueMutation(async () => {
@@ -1061,6 +1134,9 @@ export const PragyaProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         captureNote,
         updateNote,
         logDeltaOutcome,
+        checkInDelta,
+        updateDeltaLogFields,
+        deleteDeltaLog,
         replaceWorkspaceFromSnapshot,
         resetDemoWorkspace,
         uploadImageAttachment,

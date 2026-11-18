@@ -170,6 +170,9 @@ test.describe('Tier 3 — BookDetail, Deepen/Edit, Lightbox, Practice & Snapshot
     await expect(contextInput).toHaveValue(/\[\[delays-in-feedback-loops\]\]/);
 
     // Enter WHEN/DO with accidental duplicate prefixes & include a self-link in critique to verify self-exclusion
+    // CD Batch 2 (C4.5): on a fiction note with no delta yet, the Behavioral Delta section
+    // starts collapsed — open it first (same fields, same assertions).
+    await page.getByTestId('deepen-delta-details').locator('summary').click();
     await page.getByTestId('deepen-trigger-input').fill('WHEN WHEN reviewing an old conflict');
     await page.getByTestId('deepen-action-input').fill('DO DO separate intent from transcript');
     await page.getByTestId('deepen-delta-status-select').selectOption('active');
@@ -255,17 +258,26 @@ test.describe('Tier 3 — BookDetail, Deepen/Edit, Lightbox, Practice & Snapshot
         })
       )
       .toBe(beforeNoTriggerCount + 1);
-    await page.getByTestId('delta-notrigger-btn-note-delays-feedback').click();
-    await expect
-      .poll(() =>
-        page.evaluate(() => {
-          const raw = JSON.parse(localStorage.getItem('pragya_demo_state_v1') || '{}');
-          return (raw.deltaLogs || []).filter(
-            (l: { outcome?: string }) => l.outcome === 'no-trigger'
-          ).length;
-        })
-      )
-      .toBe(beforeNoTriggerCount + 2);
+    // CD Batch 2 (decisions OQ-5, replaces the old "two same-day check-ins append two rows"
+    // contract): check-ins coalesce per note per local day. Pressing the already-pressed
+    // Didn't Come Up (3) is a no-op — still one no-trigger row, and exactly ONE row today
+    // for this note after Applied → Missed → Didn't Come Up.
+    const notrigger = page.getByTestId('delta-notrigger-btn-note-delays-feedback');
+    await expect(notrigger).toHaveAttribute('aria-pressed', 'true');
+    await notrigger.click();
+    await page.waitForTimeout(300);
+    const after = await page.evaluate(() => {
+      const raw = JSON.parse(localStorage.getItem('pragya_demo_state_v1') || '{}');
+      const d = new Date();
+      const today = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+      const logs = (raw.deltaLogs || []) as { outcome?: string; noteId?: string; date?: string }[];
+      return {
+        noTrigger: logs.filter(l => l.outcome === 'no-trigger').length,
+        todayForNote: logs.filter(l => l.noteId === 'note-delays-feedback' && l.date === today).length,
+      };
+    });
+    expect(after.noTrigger).toBe(beforeNoTriggerCount + 1);
+    expect(after.todayForNote).toBe(1);
 
     // Export current snapshot via Practice Export JSON button & verify valid JSON schema
     const downloadPromise = page.waitForEvent('download');

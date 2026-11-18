@@ -233,7 +233,7 @@ const SHEET_ID: Record<string, number> = { Books: 101, Notes: 102, Sessions: 103
 const ARCH_META = JSON.stringify({ updatedAt: '2026-11-15T10:00:00.000Z', archivedAt: '2026-11-10T00:00:00.000Z' });
 
 type Sheet = Record<string, unknown[][]>;
-type BatchMode = 'ok' | 'fail500' | 'applyThenDrop';
+type BatchMode = 'ok' | 'fail500' | 'applyThenDrop' | 'dropBeforeApply' | 'applyThenDropReadsFail';
 
 function seedSheet(): Sheet {
   return {
@@ -250,7 +250,7 @@ function seedSheet(): Sheet {
   };
 }
 
-async function statefulCloud(page: Page, sheet: Sheet, ctl: { batchMode: BatchMode; batchUpdates: number }) {
+async function statefulCloud(page: Page, sheet: Sheet, ctl: { batchMode: BatchMode; batchUpdates: number; readsFail?: boolean }) {
   await page.route('https://www.googleapis.com/**', (route: Route) =>
     route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(route.request().url().includes('drive/v3/files/sheet-st') ? { id: 'sheet-st', modifiedTime: `2026-11-15T10:00:0${ctl.batchUpdates}Z` } : { files: [] }) })
   );
@@ -264,6 +264,10 @@ async function statefulCloud(page: Page, sheet: Sheet, ctl: { batchMode: BatchMo
       return;
     }
     if (href.includes('values:batchGet')) {
+      if (ctl.readsFail) {
+        await route.abort('connectionreset');
+        return;
+      }
       const ranges = new URL(href).searchParams.getAll('ranges');
       await json({
         valueRanges: ranges.map(r => {
@@ -279,6 +283,10 @@ async function statefulCloud(page: Page, sheet: Sheet, ctl: { batchMode: BatchMo
     }
     if (href.endsWith(':batchUpdate') && req.method() === 'POST') {
       ctl.batchUpdates += 1;
+      if (ctl.batchMode === 'dropBeforeApply') {
+        await route.abort('connectionreset'); // never reached the server
+        return;
+      }
       if (ctl.batchMode === 'fail500') {
         await json({ error: { code: 500, message: 'backendError' } }, 500);
         return;
@@ -288,6 +296,11 @@ async function statefulCloud(page: Page, sheet: Sheet, ctl: { batchMode: BatchMo
         if (!range) continue;
         const tab = Object.keys(SHEET_ID).find(t => SHEET_ID[t] === range.sheetId)!;
         sheet[tab].splice(range.startIndex - 1, 1);
+      }
+      if (ctl.batchMode === 'applyThenDropReadsFail') {
+        ctl.readsFail = true;
+        await route.abort('connectionreset');
+        return;
       }
       if (ctl.batchMode === 'applyThenDrop') {
         // Server applied the batch, but the response never reached the client.
@@ -394,5 +407,43 @@ test.describe('Tier 11 — CD 1b fix-up re-verify (stateful mocked Cloud)', () =
     const toasts = (await page.locator('[data-sonner-toast]').allInnerTexts()).join(' | ');
     expect.soft(toasts, 'no false "Nothing was removed" claim').not.toContain('Nothing was removed');
     expect(backup, 'support backup still holds the deleted rows').toContain('book-arch');
+  });
+
+  test('R2-a: connection dropped BEFORE apply → re-read finds every id → "Nothing was removed", backup cleared', async ({ page }) => {
+    const sheet = seedSheet();
+    const ctl = { batchMode: 'dropBeforeApply' as BatchMode, batchUpdates: 0 };
+    await statefulCloud(page, sheet, ctl);
+    await openBookDelete(page);
+    await page.getByTestId('confirm-dialog-confirm-btn').click();
+    await expect(page.getByText('Couldn\'t delete "Archived Cloud Book". Nothing was removed. Try again.')).toBeVisible({ timeout: 15000 });
+    expect(ids(sheet)).toEqual(ids(seedSheet()));
+    expect(await backupKey(page)).toBeNull();
+  });
+
+  test('R2-a: applied, response lost → Deleted + Undo (backup confirmed); Undo restores', async ({ page }) => {
+    const sheet = seedSheet();
+    const ctl = { batchMode: 'applyThenDrop' as BatchMode, batchUpdates: 0 };
+    await statefulCloud(page, sheet, ctl);
+    await openBookDelete(page);
+    await page.getByTestId('confirm-dialog-confirm-btn').click();
+    await expect(page.getByText('Deleted "Archived Cloud Book".')).toBeVisible({ timeout: 15000 });
+    expect(JSON.parse((await backupKey(page))!).confirmed).toBe(true);
+    ctl.batchMode = 'ok';
+    await deletedToastUndo(page, 'Deleted "Archived Cloud Book"').click();
+    await expect(page.getByText(/Restored "Archived Cloud Book"/)).toBeVisible();
+    expect(ids(sheet).Books).toEqual(['book-live', 'book-arch']);
+  });
+
+  test('R2-a: applied, response lost AND re-read fails → outcome-unknown toast, backup KEPT (unconfirmed)', async ({ page }) => {
+    const sheet = seedSheet();
+    const ctl = { batchMode: 'applyThenDropReadsFail' as BatchMode, batchUpdates: 0 };
+    await statefulCloud(page, sheet, ctl);
+    await openBookDelete(page);
+    await page.getByTestId('confirm-dialog-confirm-btn').click();
+    await expect(page.getByText(/Lost the connection while deleting "Archived Cloud Book"/)).toBeVisible({ timeout: 20000 });
+    await expect(page.getByText(/Nothing was removed/)).toHaveCount(0);
+    const backup = JSON.parse((await backupKey(page))!);
+    expect(backup.targetId).toBe('book-arch');
+    expect(backup.confirmed).toBeFalsy();
   });
 });

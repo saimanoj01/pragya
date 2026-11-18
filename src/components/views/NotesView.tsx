@@ -113,7 +113,14 @@ export const NotesView: React.FC<NotesViewProps> = ({
         });
         return haystack.includes(q);
       })
-      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+      .sort((a, b) =>
+        // QA-35 / ux Q.11: To Spar lists oldest createdAt first (id tie-break) — the same
+        // order Save & Next walks (`nextInboxNote`). Every other filter: newest update first.
+        filter === 'to-spar'
+          ? String(a.createdAt || '').localeCompare(String(b.createdAt || '')) ||
+            (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)
+          : b.updatedAt.localeCompare(a.updatedAt)
+      );
   }, [archivedNotes, bookMap, filter, notes, query, revealedSlugs]);
 
   const showSpoilerSearchFootnote = useMemo(

@@ -2,6 +2,7 @@ import React, { useEffect, useId, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   ChevronDown,
+  ChevronRight,
   ChevronUp,
   FileText,
   Link2,
@@ -35,12 +36,16 @@ import { WikilinkAutocomplete } from '../common/WikilinkAutocomplete';
 import { ImageLightbox } from './ImageLightbox';
 import { describeSyncError } from '../../utils/apiErrors';
 import { countOtherActiveDeltas } from '../../utils/archive';
+import { parseTagsCsv } from '../../utils/sheetCodecs';
+import { SAVE_NEXT_DONE_MESSAGE, isToSpar, nextInboxNote } from '../../utils/deepenFlow';
 
 export interface DeepenNoteModalProps {
   note: Note | null;
   isOpen: boolean;
   onClose: () => void;
   onSaved?: (savedNote: Note) => void;
+  /** CD C4.5 "Save & Next": open Deepen on the next To Spar note (modal stays open). */
+  onOpenNext?: (next: Note) => void;
 }
 
 export const DeepenNoteModal: React.FC<DeepenNoteModalProps> = ({
@@ -48,6 +53,7 @@ export const DeepenNoteModal: React.FC<DeepenNoteModalProps> = ({
   isOpen,
   onClose,
   onSaved,
+  onOpenNext,
 }) => {
   const { books, notes, updateNote } = usePragya();
   const baseId = useId();
@@ -61,6 +67,7 @@ export const DeepenNoteModal: React.FC<DeepenNoteModalProps> = ({
   const deltaStatusId = `${baseId}-delta-status`;
   const critiqueId = `${baseId}-critique`;
   const chapterId = `${baseId}-chapter`;
+  const tagsId = `${baseId}-tags`;
 
   const [title, setTitle] = useState('');
   const [slug, setSlug] = useState('');
@@ -71,6 +78,10 @@ export const DeepenNoteModal: React.FC<DeepenNoteModalProps> = ({
   const [deltaStatus, setDeltaStatus] = useState<DeltaStatus>('none');
   const [critique, setCritique] = useState('');
   const [chapter, setChapter] = useState('');
+  const [tagsRaw, setTagsRaw] = useState('');
+  // CD C4.5: fiction notes keep the Behavioral Delta collapsed unless one already exists
+  // (initial state per note; the <details> is uncontrolled afterwards).
+  const [deltaOpen, setDeltaOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [draftRestored, setDraftRestored] = useState(false);
   const [baseUpdatedAt, setBaseUpdatedAt] = useState('');
@@ -86,6 +97,7 @@ export const DeepenNoteModal: React.FC<DeepenNoteModalProps> = ({
   const takeawayRef = useRef<HTMLTextAreaElement>(null);
   const contextRef = useRef<HTMLTextAreaElement>(null);
   const critiqueRef = useRef<HTMLTextAreaElement>(null);
+  const titleRef = useRef<HTMLInputElement>(null);
 
   const wasOpenRef = useRef(false);
   const initializedIdRef = useRef<string | null>(null);
@@ -100,6 +112,7 @@ export const DeepenNoteModal: React.FC<DeepenNoteModalProps> = ({
     deltaStatus: 'none' as DeltaStatus,
     critique: '',
     chapter: '',
+    tagsRaw: '',
   });
 
   const isDirty = useMemo(() => {
@@ -113,9 +126,10 @@ export const DeepenNoteModal: React.FC<DeepenNoteModalProps> = ({
       deltaAction !== c.deltaAction ||
       deltaStatus !== c.deltaStatus ||
       critique !== c.critique ||
-      chapter !== c.chapter
+      chapter !== c.chapter ||
+      tagsRaw !== c.tagsRaw
     );
-  }, [title, slug, takeaway, contextMechanism, deltaTrigger, deltaAction, deltaStatus, critique, chapter]);
+  }, [title, slug, takeaway, contextMechanism, deltaTrigger, deltaAction, deltaStatus, critique, chapter, tagsRaw]);
 
   const draftStateRef = useRef<{
     key: string;
@@ -135,6 +149,7 @@ export const DeepenNoteModal: React.FC<DeepenNoteModalProps> = ({
       deltaStatus: 'none',
       critique: '',
       chapter: '',
+      tagsRaw: '',
       savedAt: '',
     },
   });
@@ -152,6 +167,7 @@ export const DeepenNoteModal: React.FC<DeepenNoteModalProps> = ({
       deltaStatus,
       critique,
       chapter,
+      tagsRaw,
       savedAt: new Date().toISOString(),
     },
   };
@@ -173,6 +189,8 @@ export const DeepenNoteModal: React.FC<DeepenNoteModalProps> = ({
     if (wasOpenRef.current && initializedIdRef.current === note.id) {
       return;
     }
+    // CD C4.5 Save & Next swaps the note while the modal stays open.
+    const swapping = wasOpenRef.current && initializedIdRef.current !== null;
     wasOpenRef.current = true;
     initializedIdRef.current = note.id;
     submittedOrDiscardedRef.current = false;
@@ -188,6 +206,7 @@ export const DeepenNoteModal: React.FC<DeepenNoteModalProps> = ({
       deltaStatus: (note.deltaStatus || 'none') as DeltaStatus,
       critique: note.critique || '',
       chapter: typeof note.meta?.chapter === 'string' ? note.meta.chapter : '',
+      tagsRaw: Array.isArray(note.tags) ? note.tags.join(', ') : '',
     };
     canonicalRef.current = canonical;
     setBaseUpdatedAt(note.updatedAt);
@@ -210,7 +229,8 @@ export const DeepenNoteModal: React.FC<DeepenNoteModalProps> = ({
         validDraft.deltaAction !== canonical.deltaAction ||
         validDraft.deltaStatus !== canonical.deltaStatus ||
         validDraft.critique !== canonical.critique ||
-        (validDraft.chapter ?? canonical.chapter) !== canonical.chapter);
+        (validDraft.chapter ?? canonical.chapter) !== canonical.chapter ||
+        (validDraft.tagsRaw ?? canonical.tagsRaw) !== canonical.tagsRaw);
 
     if (validDraft && draftHasEdits) {
       setTitle(validDraft.title);
@@ -222,6 +242,7 @@ export const DeepenNoteModal: React.FC<DeepenNoteModalProps> = ({
       setDeltaStatus(validDraft.deltaStatus || 'none');
       setCritique(validDraft.critique);
       setChapter(validDraft.chapter ?? canonical.chapter);
+      setTagsRaw(validDraft.tagsRaw ?? canonical.tagsRaw);
       setDraftRestored(true);
     } else {
       setTitle(canonical.title);
@@ -233,16 +254,25 @@ export const DeepenNoteModal: React.FC<DeepenNoteModalProps> = ({
       setDeltaStatus(canonical.deltaStatus);
       setCritique(canonical.critique);
       setChapter(canonical.chapter);
+      setTagsRaw(canonical.tagsRaw);
       setDraftRestored(false);
     }
 
+    const noteBook = books.find(b => b.id === note.bookId);
+    setDeltaOpen(
+      noteBook?.kind !== 'fiction' ||
+        Boolean(formattedDelta.triggerBody || formattedDelta.actionBody) ||
+        (note.deltaStatus || 'none') !== 'none'
+    );
     setTakeawayCursor(null);
     setContextCursor(null);
     setCritiqueCursor(null);
     setSubmitting(false);
     setShowSourceRef(true);
     setLightboxAtt(null);
-  }, [isOpen, note]);
+    // Save & Next: focus the first field of the next note.
+    if (swapping) requestAnimationFrame(() => titleRef.current?.focus());
+  }, [isOpen, note, books]);
 
   // Debounced (250ms) draft autosave
   useEffect(() => {
@@ -272,6 +302,7 @@ export const DeepenNoteModal: React.FC<DeepenNoteModalProps> = ({
     deltaStatus,
     critique,
     chapter,
+    tagsRaw,
   ]);
 
   useEffect(() => {
@@ -301,6 +332,7 @@ export const DeepenNoteModal: React.FC<DeepenNoteModalProps> = ({
     setDeltaStatus(c.deltaStatus);
     setCritique(c.critique);
     setChapter(c.chapter);
+    setTagsRaw(c.tagsRaw);
     setDraftRestored(false);
   };
 
@@ -319,7 +351,7 @@ export const DeepenNoteModal: React.FC<DeepenNoteModalProps> = ({
   const capReached = otherActiveCount >= 5;
   const isDeltaCapViolation = capReached && deltaStatus === 'active';
 
-  const persistDeepen = async (mode: 'draft' | 'atomic') => {
+  const persistDeepen = async (mode: 'draft' | 'atomic', options: { next?: boolean } = {}) => {
     if (!note) return;
 
     if (isDeltaCapViolation) {
@@ -356,6 +388,7 @@ export const DeepenNoteModal: React.FC<DeepenNoteModalProps> = ({
           deltaTrigger: normalizedTrigger,
           deltaAction: normalizedAction,
           deltaStatus,
+          tags: parseTagsCsv(tagsRaw),
           meta: {
             ...withChapterKey(note.meta, 'chapter', chapter),
             ...(title.trim() ? { title: title.trim() } : { title: undefined }),
@@ -371,11 +404,27 @@ export const DeepenNoteModal: React.FC<DeepenNoteModalProps> = ({
       submittedOrDiscardedRef.current = true;
       clearDraft(getDeepenDraftKey(note.id));
       setDraftRestored(false);
+      onSaved?.(saved);
+      if (options.next) {
+        // CD C4.5: next To Spar note, oldest first, skipping shielded/archived ones.
+        const next = nextInboxNote(
+          notes.map(n => (n.id === saved.id ? saved : n)),
+          books,
+          saved.id
+        );
+        if (next && onOpenNext) {
+          showToast('Note deepened to Atomic', 'success');
+          onOpenNext(next);
+          return;
+        }
+        showToast(SAVE_NEXT_DONE_MESSAGE, 'success');
+        onClose();
+        return;
+      }
       showToast(
         mode === 'atomic' ? 'Note deepened to Atomic' : 'Deepening draft saved',
         mode === 'atomic' ? 'success' : 'info'
       );
-      onSaved?.(saved);
       onClose();
     } catch (err) {
       showToast(describeSyncError(err, 'Failed to deepen note'), 'error');
@@ -392,6 +441,8 @@ export const DeepenNoteModal: React.FC<DeepenNoteModalProps> = ({
   if (!note) return null;
 
   const socraticQuestions = note.meta?.socraticQuestions;
+  const isFiction = book?.kind === 'fiction';
+  const canSaveNext = Boolean(onOpenNext) && isToSpar(note) && nextInboxNote(notes, books, note.id) !== null;
   const sourceAttachments = getRenderableAttachments(note.meta);
   const hasSourceReference = Boolean(note.quote?.trim()) || sourceAttachments.length > 0;
 
@@ -552,6 +603,7 @@ export const DeepenNoteModal: React.FC<DeepenNoteModalProps> = ({
             <input
               id={titleId}
               type="text"
+              ref={titleRef}
               data-testid="deepen-title-input"
               value={title}
               onChange={e => setTitle(e.target.value)}
@@ -574,6 +626,22 @@ export const DeepenNoteModal: React.FC<DeepenNoteModalProps> = ({
               className="w-full h-10 px-3 rounded-[10px] bg-background border border-input font-mono text-label text-foreground placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-ring/40"
             />
           </div>
+        </div>
+
+        <div className="space-y-1.5">
+          <label htmlFor={tagsId} className="block text-eyebrow uppercase text-muted-foreground">
+            Tags
+          </label>
+          <input
+            id={tagsId}
+            type="text"
+            autoComplete="off"
+            data-testid="deepen-tags-input"
+            value={tagsRaw}
+            onChange={e => setTagsRaw(e.target.value)}
+            placeholder="#craft, #subtext"
+            className="w-full h-10 px-3 rounded-[10px] bg-background border border-input text-body text-foreground placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-ring/40"
+          />
         </div>
 
         <div className="space-y-1.5">
@@ -684,16 +752,27 @@ export const DeepenNoteModal: React.FC<DeepenNoteModalProps> = ({
         </div>
 
         {/* Behavioral Delta Section */}
-        <div className="rounded-[12px] bg-surface2/50 border border-border p-4 space-y-3">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <span className="text-eyebrow uppercase text-muted-foreground">
-              Behavioral Delta (Optional)
-            </span>
-            <span className="text-[11px] text-muted-foreground num">
-              Active slots used: {otherActiveCount}/5
-            </span>
-          </div>
-
+        {isFiction ? (
+          <details
+            // Uncontrolled after mount: remount when the per-note initial state is computed.
+            key={`${note.id}-${deltaOpen ? 'open' : 'closed'}`}
+            data-testid="deepen-delta-details"
+            open={deltaOpen || undefined}
+            className="group rounded-[12px] bg-surface2/50 border border-border p-4 space-y-3"
+          >
+            <summary className="flex flex-wrap items-center justify-between gap-2 cursor-pointer list-none [&::-webkit-details-marker]:hidden">
+              <span className="inline-flex items-center gap-1.5 text-eyebrow uppercase text-muted-foreground">
+                <ChevronRight
+                  className="w-4 h-4 transition-transform group-open:rotate-90"
+                  aria-hidden="true"
+                />
+                Behavioral Delta (optional for fiction)
+              </span>
+              <span className="text-[11px] text-muted-foreground num">
+                Active slots used: {otherActiveCount}/5
+              </span>
+            </summary>
+            <div className="space-y-3 pt-3">
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div className="space-y-1">
               <label
@@ -774,7 +853,100 @@ export const DeepenNoteModal: React.FC<DeepenNoteModalProps> = ({
               </span>
             </div>
           )}
-        </div>
+            </div>
+          </details>
+        ) : (
+          <div className="rounded-[12px] bg-surface2/50 border border-border p-4 space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span className="text-eyebrow uppercase text-muted-foreground">
+                Behavioral Delta (Optional)
+              </span>
+              <span className="text-[11px] text-muted-foreground num">
+                Active slots used: {otherActiveCount}/5
+              </span>
+            </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div className="space-y-1">
+              <label
+                htmlFor={triggerId}
+                className="block text-[11px] font-semibold uppercase text-muted-foreground"
+              >
+                WHEN (Trigger Condition)
+              </label>
+              <input
+                id={triggerId}
+                type="text"
+                data-testid="deepen-trigger-input"
+                value={deltaTrigger}
+                onChange={e => setDeltaTrigger(e.target.value)}
+                placeholder="e.g. a dashboard metric spikes unexpectedly"
+                className="w-full h-10 px-3 rounded-[10px] bg-background border border-input text-body text-foreground placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-ring/40"
+              />
+            </div>
+
+            <div className="space-y-1">
+              <label
+                htmlFor={actionId}
+                className="block text-[11px] font-semibold uppercase text-muted-foreground"
+              >
+                DO (Concrete Action)
+              </label>
+              <input
+                id={actionId}
+                type="text"
+                data-testid="deepen-action-input"
+                value={deltaAction}
+                onChange={e => setDeltaAction(e.target.value)}
+                placeholder="e.g. observe the delay window before changing knobs"
+                className="w-full h-10 px-3 rounded-[10px] bg-background border border-input text-body text-foreground placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-ring/40"
+              />
+            </div>
+          </div>
+
+          <div className="flex flex-col sm:flex-row sm:items-center gap-3">
+            <div className="sm:w-56 space-y-1">
+              <label
+                htmlFor={deltaStatusId}
+                className="block text-[11px] font-semibold uppercase text-muted-foreground"
+              >
+                Delta Status
+              </label>
+              <select
+                id={deltaStatusId}
+                data-testid="deepen-delta-status-select"
+                value={deltaStatus}
+                onChange={e => setDeltaStatus(e.target.value as DeltaStatus)}
+                className="w-full h-10 px-2.5 rounded-[10px] bg-background border border-input text-body text-foreground focus:outline-none focus:ring-2 focus:ring-ring/40"
+              >
+                <option value="none">None</option>
+                <option value="active">Active (Practice)</option>
+                <option value="paused">Paused</option>
+                <option value="graduated">Graduated</option>
+              </select>
+            </div>
+
+            {capReached && deltaStatus !== 'active' && (
+              <p className="text-label text-muted-foreground sm:pt-5">
+                5/5 active delta slots are full; graduate or pause an active delta in Practice
+                before activating another.
+              </p>
+            )}
+          </div>
+
+          {isDeltaCapViolation && (
+            <div
+              data-testid="deepen-delta-cap-warning"
+              className="rounded-[10px] bg-negative/10 border border-negative/30 px-3 py-2.5 flex items-start gap-2 text-label text-negative"
+            >
+              <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+              <span>
+                Active Behavioral Delta cap (5/5) reached. Select Paused/None or graduate an active
+                delta in Practice first.
+              </span>
+            </div>
+          )}
+          </div>
+        )}
 
         <div className="space-y-1.5 relative">
           <label
@@ -831,6 +1003,17 @@ export const DeepenNoteModal: React.FC<DeepenNoteModalProps> = ({
           >
             Save Draft
           </button>
+          {canSaveNext && (
+            <button
+              type="button"
+              disabled={submitting}
+              data-testid="deepen-save-next-btn"
+              onClick={() => void persistDeepen('atomic', { next: true })}
+              className="h-10 px-4 rounded-[10px] bg-surface2 hover:bg-secondary border border-border text-body font-semibold text-foreground disabled:opacity-50"
+            >
+              Save &amp; Next
+            </button>
+          )}
           <button
             type="submit"
             disabled={submitting}

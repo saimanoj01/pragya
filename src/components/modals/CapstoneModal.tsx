@@ -65,10 +65,21 @@ export interface CapstonePromptFallbackModalProps {
   isOpen: boolean;
   onClose: () => void;
   prompt: string;
+  /** CD C4.1: reused by "Copy Sparring Prompt" (defaults keep the capstone copy/test id). */
+  title?: string;
+  dataTestId?: string;
+  promptLabel?: string;
 }
 
 /** ux_spec A.5: clipboard failed → select-and-copy fallback (no network). */
-export function CapstonePromptFallbackModal({ isOpen, onClose, prompt }: CapstonePromptFallbackModalProps) {
+export function CapstonePromptFallbackModal({
+  isOpen,
+  onClose,
+  prompt,
+  title = 'Copy Capstone Prompt',
+  dataTestId = 'capstone-prompt-fallback-modal',
+  promptLabel = 'Capstone prompt',
+}: CapstonePromptFallbackModalProps) {
   const headingId = useId();
   const helperId = useId();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -76,21 +87,21 @@ export function CapstonePromptFallbackModal({ isOpen, onClose, prompt }: Capston
     <Modal
       isOpen={isOpen}
       onClose={onClose}
-      title="Copy Capstone Prompt"
+      title={title}
       headingId={headingId}
-      dataTestId="capstone-prompt-fallback-modal"
+      dataTestId={dataTestId}
       initialFocusRef={textareaRef}
     >
       <div className="space-y-3">
         <h2 id={headingId} className="text-title text-foreground">
-          Copy Capstone Prompt
+          {title}
         </h2>
         <textarea
           ref={textareaRef}
           readOnly
           rows={12}
           value={prompt}
-          aria-label="Capstone prompt"
+          aria-label={promptLabel}
           aria-describedby={helperId}
           onFocus={e => e.currentTarget.select()}
           className="w-full p-3 rounded-[10px] bg-background border border-input font-mono text-label text-foreground focus:outline-none focus:ring-2 focus:ring-ring/40 resize-y"

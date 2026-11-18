@@ -5,11 +5,19 @@ import { usePragya } from '../../context/PragyaContext';
 import {
   CAPTURE_DRAFT_KEY,
   clearDraft,
+  draftAttachments,
   readDraft,
   writeDraft,
   type CaptureDraft,
 } from '../../utils/draftStorage';
-import { pickKindlePositionHint, type KindlePositionHint } from '../../utils/kindlePaste';
+import {
+  kindleUnitMismatchCopy,
+  pickCitationHint,
+  stripKindleBoilerplate,
+  type KindleHintResult,
+} from '../../utils/kindlePaste';
+import { isSubmitShortcut, submitShortcutModifierLabel } from '../../utils/keyboard';
+import { WikilinkAutocomplete } from '../common/WikilinkAutocomplete';
 import {
   CAPTURE_CHAPTER_HINTS,
   CHAPTER_MAX_LENGTH,
@@ -27,6 +35,12 @@ import { describeSyncError } from '../../utils/apiErrors';
 export interface QuickCaptureModalProps {
   isOpen: boolean;
   initialBookId?: string | null;
+  /**
+   * CD C4.3: 'route' = soft preselect from the page you're on (global capture). A saved
+   * draft for another book still restores; 'explicit' (default) = a book's own Capture
+   * button, which only restores a draft for that book.
+   */
+  initialBookSource?: 'explicit' | 'route';
   onClose: () => void;
   onOpenAddBook?: () => void;
 }
@@ -37,10 +51,11 @@ const HTTP_URL_REGEX = /^https?:\/\/\S+$/i;
 export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
   isOpen,
   initialBookId,
+  initialBookSource = 'explicit',
   onClose,
   onOpenAddBook,
 }) => {
-  const { books: allBooks, captureNote, uploadImageAttachment, resolveDocTitle } = usePragya();
+  const { books: allBooks, notes, captureNote, uploadImageAttachment, resolveDocTitle } = usePragya();
   // C1.1: archived books aren't offered for capture (the CLI refuses them too).
   const books = useMemo(() => withoutArchived(allBooks), [allBooks]);
   const baseId = useId();
@@ -53,6 +68,7 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
   const sparFieldId = `${baseId}-spar`;
   const predFieldId = `${baseId}-pred`;
   const chapterFieldId = `${baseId}-chapter`;
+  const titleFieldId = `${baseId}-title`;
 
   const defaultBookId = useMemo(() => {
     if (initialBookId && books.some(b => b.id === initialBookId)) return initialBookId;
@@ -73,12 +89,19 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
   const [uploadingImage, setUploadingImage] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [draftRestored, setDraftRestored] = useState(false);
-  const [kindlePosHint, setKindlePosHint] = useState<KindlePositionHint | null>(null);
+  const [kindleHint, setKindleHint] = useState<KindleHintResult>(null);
+  const [title, setTitle] = useState('');
+  const [takeawayCursor, setTakeawayCursor] = useState<number | null>(null);
+  // CD C4.4: last cleaned Kindle paste → `Undo` restores the raw paste in that field.
+  const [kindleClean, setKindleClean] = useState<{ field: 'quote' | 'takeaway'; rawValue: string } | null>(
+    null
+  );
 
   const [attachMode, setAttachMode] = useState<'none' | 'doc' | 'link'>('none');
   const [draftUrl, setDraftUrl] = useState('');
   const [draftTitle, setDraftTitle] = useState('');
 
+  const formRef = useRef<HTMLFormElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const takeawayInputRef = useRef<HTMLTextAreaElement>(null);
   const dismissedHintRef = useRef<string | null>(null);
@@ -89,11 +112,13 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
     () =>
       quote.trim() !== '' ||
       takeaway.trim() !== '' ||
+      title.trim() !== '' ||
       tagsRaw.trim() !== '' ||
       sparLater ||
       isPrediction ||
+      attachments.length > 0 ||
       (chapterTouched && chapterInput.trim() !== ''),
-    [chapterInput, chapterTouched, isPrediction, quote, sparLater, tagsRaw, takeaway]
+    [attachments.length, chapterInput, chapterTouched, isPrediction, quote, sparLater, tagsRaw, takeaway, title]
   );
 
   const draftSnapshotRef = useRef<{ isDirty: boolean; payload: CaptureDraft }>({
@@ -108,6 +133,8 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
       isPrediction: false,
       chapter: '',
       chapterTouched: false,
+      title: '',
+      attachments: [],
       updatedAt: '',
     },
   });
@@ -123,6 +150,9 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
       isPrediction,
       chapter: chapterInput,
       chapterTouched,
+      title,
+      // CD C4.3: references only (Drive file ids / URLs), never blobs.
+      attachments,
       updatedAt: new Date().toISOString(),
     },
   };
@@ -156,8 +186,10 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
         savedDraft.tagsRaw.trim() !== '' ||
         savedDraft.sparLater ||
         savedDraft.isPrediction ||
+        (savedDraft.title || '').trim() !== '' ||
+        draftAttachments(savedDraft).length > 0 ||
         Boolean(savedDraft.chapterTouched && (savedDraft.chapter || '').trim())) &&
-      (!initialBookId || savedDraft.bookId === initialBookId);
+      (!initialBookId || initialBookSource === 'route' || savedDraft.bookId === initialBookId);
 
     if (canRestoreDraft && savedDraft) {
       const resolvedBookId = books.some(b => b.id === savedDraft.bookId)
@@ -175,6 +207,8 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
       );
       setChapterInput(savedDraft.chapter || '');
       setChapterTouched(Boolean(savedDraft.chapterTouched));
+      setTitle(savedDraft.title || '');
+      setAttachments(draftAttachments(savedDraft));
       setDraftRestored(true);
     } else {
       setBookId(chosenId);
@@ -186,18 +220,21 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
       setIsPrediction(false);
       setChapterInput('');
       setChapterTouched(false);
+      setTitle('');
+      setAttachments([]);
       setDraftRestored(false);
     }
 
-    setAttachments([]);
     setAttachMode('none');
     setDraftUrl('');
     setDraftTitle('');
     setUploadingImage(false);
     setSubmitting(false);
-    setKindlePosHint(null);
+    setKindleHint(null);
+    setKindleClean(null);
+    setTakeawayCursor(null);
     dismissedHintRef.current = null;
-  }, [isOpen, defaultBookId, books, initialBookId]);
+  }, [isOpen, defaultBookId, books, initialBookId, initialBookSource]);
 
   useEffect(() => {
     if (isOpen && !bookId && defaultBookId) {
@@ -223,7 +260,7 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
       }
     }, 250);
     return () => window.clearTimeout(timer);
-  }, [isOpen, isDirty, bookId, pos, quote, takeaway, tagsRaw, sparLater, isPrediction, chapterInput, chapterTouched]);
+  }, [isOpen, isDirty, bookId, pos, quote, takeaway, title, tagsRaw, sparLater, isPrediction, chapterInput, chapterTouched, attachments]);
 
   // Warn only when open with unpersisted/unsaved dirty input
   useEffect(() => {
@@ -251,7 +288,7 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
 
   const handleBookChange = (nextId: string) => {
     setBookId(nextId);
-    setKindlePosHint(null);
+    setKindleHint(null);
     dismissedHintRef.current = null;
     const nextBook = books.find(b => b.id === nextId);
     setChapterInput('');
@@ -264,21 +301,44 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
     }
   };
 
+  // CD C4.4: unit-guarded hint — % only from citation lines; a hint in another unit shows
+  // the mismatch chip (no Apply).
   const detectKindleHint = useCallback(
     (rawText: string, currentPosStr: string) => {
-      const hint = pickKindlePositionHint(rawText, selectedBook?.posUnit);
-      if (
-        hint &&
-        hint.label !== dismissedHintRef.current &&
-        String(hint.pos) !== currentPosStr.trim()
-      ) {
-        setKindlePosHint(hint);
+      const result = pickCitationHint(rawText, selectedBook?.posUnit || 'page');
+      if (!result || result.hint.label === dismissedHintRef.current) {
+        setKindleHint(null);
+      } else if (result.kind === 'match' && String(result.hint.pos) === currentPosStr.trim()) {
+        setKindleHint(null);
       } else {
-        setKindlePosHint(null);
+        setKindleHint(result);
       }
     },
     [selectedBook?.posUnit]
   );
+
+  /** Paste into Quote/Takeaway: strip Kindle citation boilerplate (Undo restores raw). */
+  const handleTextPaste = (
+    e: React.ClipboardEvent<HTMLTextAreaElement>,
+    field: 'quote' | 'takeaway',
+    detectHint: boolean
+  ) => {
+    const pasted = e.clipboardData?.getData('text/plain') || '';
+    if (!pasted) return;
+    if (detectHint) detectKindleHint(pasted, pos);
+    const { text: cleanedText, cleaned } = stripKindleBoilerplate(pasted);
+    if (!cleaned) return;
+    e.preventDefault();
+    const el = e.currentTarget;
+    const current = el.value;
+    const start = el.selectionStart ?? current.length;
+    const end = el.selectionEnd ?? current.length;
+    const before = current.slice(0, start);
+    const after = current.slice(end);
+    const setter = field === 'quote' ? setQuote : setTakeaway;
+    setter(`${before}${cleanedText}${after}`);
+    setKindleClean({ field, rawValue: `${before}${pasted}${after}` });
+  };
 
   const handleDiscardDraft = () => {
     submittedOrDiscardedRef.current = true;
@@ -293,8 +353,12 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
     setIsPrediction(false);
     setChapterInput('');
     setChapterTouched(false);
+    setTitle('');
+    // Discard clears the refs only; uploaded files stay in `Pragya Media/` (no Drive DELETE).
+    setAttachments([]);
     setDraftRestored(false);
-    setKindlePosHint(null);
+    setKindleHint(null);
+    setKindleClean(null);
     dismissedHintRef.current = null;
   };
 
@@ -465,6 +529,7 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
         pos: Math.max(0, Number(pos) || 0),
         quote,
         takeaway,
+        title: title.trim() || undefined,
         tags: parseTagsCsv(tagsRaw),
         sparLater,
         isPrediction: selectedBook?.kind === 'fiction' ? isPrediction : false,
@@ -563,7 +628,13 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
               data-testid="draft-restored-banner"
               className="mb-4 px-3 py-2 rounded-[10px] bg-surface2 border border-border flex items-center justify-between gap-2 text-label"
             >
-              <span className="text-foreground">Draft restored from earlier session</span>
+              <span className="text-foreground">
+                Restored your unsaved draft
+                {attachments.length > 0
+                  ? ` (with ${attachments.length} attachment${attachments.length === 1 ? '' : 's'})`
+                  : ''}
+                .
+              </span>
               <button
                 type="button"
                 data-testid="draft-discard-btn"
@@ -576,7 +647,18 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
             </div>
           )}
 
-          <form onSubmit={handleSubmit} className="space-y-4">
+          <form
+            ref={formRef}
+            onSubmit={handleSubmit}
+            onKeyDown={e => {
+              // CD C4.3: ⌘/Ctrl+Enter submits from any field (IME-safe).
+              if (isSubmitShortcut(e.nativeEvent)) {
+                e.preventDefault();
+                if (!submitting && !uploadingImage) formRef.current?.requestSubmit();
+              }
+            }}
+            className="space-y-4"
+          >
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
               <div className="sm:col-span-2 space-y-1.5">
                 <label
@@ -617,8 +699,11 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
                   onChange={e => {
                     const nextVal = e.target.value;
                     setPos(nextVal);
-                    if (kindlePosHint && String(kindlePosHint.pos) === nextVal.trim()) {
-                      setKindlePosHint(null);
+                    if (
+                      kindleHint?.kind === 'match' &&
+                      String(kindleHint.hint.pos) === nextVal.trim()
+                    ) {
+                      setKindleHint(null);
                     }
                   }}
                   className="w-full h-10 px-3 rounded-[10px] bg-background border border-input text-body text-foreground num focus:outline-none focus:ring-2 focus:ring-ring/40"
@@ -626,7 +711,7 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
               </div>
             </div>
 
-            {kindlePosHint && (
+            {kindleHint?.kind === 'match' && (
               <div
                 data-testid="kindle-pos-chip"
                 className="flex flex-wrap items-center justify-between gap-2 px-3 py-1.5 rounded-[10px] bg-surface2 border border-border text-label"
@@ -635,7 +720,7 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
                   <Sparkles className="w-3.5 h-3.5 text-foreground shrink-0" />
                   <span>
                     Detected{' '}
-                    <strong className="text-foreground num">{kindlePosHint.label}</strong>
+                    <strong className="text-foreground num">{kindleHint.hint.label}</strong>
                   </span>
                 </span>
                 <div className="flex items-center gap-2">
@@ -643,25 +728,72 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
                     type="button"
                     data-testid="kindle-pos-apply-btn"
                     onClick={() => {
-                      setPos(String(kindlePosHint.pos));
-                      setKindlePosHint(null);
+                      setPos(String(kindleHint.hint.pos));
+                      setKindleHint(null);
                     }}
                     className="px-2.5 py-1 rounded-[8px] bg-primary text-primary-foreground text-[11px] font-semibold hover:opacity-90"
                   >
-                    Apply {kindlePosHint.pos}
+                    Apply {kindleHint.hint.pos}
                   </button>
                   <button
                     type="button"
                     aria-label="Dismiss detected position"
                     onClick={() => {
-                      dismissedHintRef.current = kindlePosHint.label;
-                      setKindlePosHint(null);
+                      dismissedHintRef.current = kindleHint.hint.label;
+                      setKindleHint(null);
                     }}
                     className="p-0.5 text-muted-foreground hover:text-foreground"
                   >
                     <X className="w-3.5 h-3.5" />
                   </button>
                 </div>
+              </div>
+            )}
+
+            {kindleHint?.kind === 'mismatch' && (
+              <div
+                data-testid="kindle-unit-mismatch-chip"
+                className="flex items-center justify-between gap-2 px-3 py-1.5 rounded-[10px] bg-surface2 border border-border text-label"
+              >
+                <span className="inline-flex items-center gap-1.5 text-muted-foreground">
+                  <Sparkles className="w-3.5 h-3.5 text-foreground shrink-0" />
+                  <span>{kindleUnitMismatchCopy(kindleHint.hint, selectedBook?.posUnit || 'page')}</span>
+                </span>
+                <button
+                  type="button"
+                  aria-label="Dismiss detected position"
+                  onClick={() => {
+                    dismissedHintRef.current = kindleHint.hint.label;
+                    setKindleHint(null);
+                  }}
+                  className="p-0.5 text-muted-foreground hover:text-foreground"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            )}
+
+            {kindleClean && (
+              <div
+                data-testid="kindle-clean-chip"
+                className="flex items-center justify-between gap-2 px-3 py-1.5 rounded-[10px] bg-surface2 border border-border text-label"
+              >
+                <span className="inline-flex items-center gap-1.5 text-muted-foreground">
+                  <Sparkles className="w-3.5 h-3.5 text-foreground shrink-0" />
+                  <span>Cleaned Kindle citation</span>
+                </span>
+                <button
+                  type="button"
+                  data-testid="kindle-clean-undo-btn"
+                  onClick={() => {
+                    if (kindleClean.field === 'quote') setQuote(kindleClean.rawValue);
+                    else setTakeaway(kindleClean.rawValue);
+                    setKindleClean(null);
+                  }}
+                  className="inline-flex items-center gap-1 text-label font-medium text-muted-foreground hover:text-foreground"
+                >
+                  Undo
+                </button>
               </div>
             )}
 
@@ -699,6 +831,23 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
             </div>
 
             <div className="space-y-1.5">
+              <label htmlFor={titleFieldId} className="block text-eyebrow uppercase text-muted-foreground">
+                Title (Optional)
+              </label>
+              <input
+                id={titleFieldId}
+                type="text"
+                maxLength={120}
+                autoComplete="off"
+                data-testid="capture-title-input"
+                value={title}
+                onChange={e => setTitle(e.target.value)}
+                placeholder="A few words you'll recognize later"
+                className="w-full h-10 px-3 rounded-[10px] bg-background border border-input text-body text-foreground placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-ring/40"
+              />
+            </div>
+
+            <div className="space-y-1.5">
               <label
                 htmlFor={quoteFieldId}
                 className="block text-eyebrow uppercase text-muted-foreground"
@@ -710,13 +859,11 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
                 rows={2}
                 data-testid="capture-quote-input"
                 value={quote}
-                onPaste={e => {
-                  const pasted = e.clipboardData?.getData('text/plain') || '';
-                  if (pasted) detectKindleHint(pasted, pos);
-                }}
+                onPaste={e => handleTextPaste(e, 'quote', true)}
                 onChange={e => {
                   const next = e.target.value;
                   setQuote(next);
+                  if (kindleClean?.field === 'quote') setKindleClean(null);
                   detectKindleHint(next, pos);
                 }}
                 placeholder="Quotation, excerpt, or dictation..."
@@ -724,12 +871,13 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
               />
             </div>
 
-            <div className="space-y-1.5">
+            <div className="space-y-1.5 relative">
               <label
                 htmlFor={takeawayFieldId}
                 className="block text-eyebrow uppercase text-muted-foreground"
               >
-                Why I Liked It / Core Takeaway <span className="text-negative">*</span>
+                Why I Liked It / Core Takeaway (supports [[wikilinks]]){' '}
+                <span className="text-negative">*</span>
               </label>
               <textarea
                 id={takeawayFieldId}
@@ -737,17 +885,30 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
                 rows={3}
                 data-testid="capture-takeaway-input"
                 value={takeaway}
-                onPaste={e => {
-                  const pasted = e.clipboardData?.getData('text/plain') || '';
-                  if (pasted && !quote.trim()) detectKindleHint(pasted, pos);
-                }}
+                onPaste={e => handleTextPaste(e, 'takeaway', !quote.trim())}
                 onChange={e => {
                   const next = e.target.value;
                   setTakeaway(next);
+                  setTakeawayCursor(e.target.selectionStart);
+                  if (kindleClean?.field === 'takeaway') setKindleClean(null);
                   if (!quote.trim()) detectKindleHint(next, pos);
                 }}
+                onClick={e => setTakeawayCursor(e.currentTarget.selectionStart)}
+                onKeyUp={e => setTakeawayCursor(e.currentTarget.selectionStart)}
+                onBlur={() => setTakeawayCursor(null)}
                 placeholder="Why this matters, core resonance, or concrete realization in your own words..."
                 className="w-full p-3 rounded-[10px] bg-background border border-foreground/30 text-body text-foreground placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-ring/50 resize-y"
+              />
+              <WikilinkAutocomplete
+                textareaRef={takeawayInputRef}
+                value={takeaway}
+                cursorPos={takeawayCursor}
+                notes={notes}
+                books={allBooks}
+                onSelect={(nextVal, nextCursor) => {
+                  setTakeaway(nextVal);
+                  setTakeawayCursor(nextCursor);
+                }}
               />
             </div>
 
@@ -955,6 +1116,20 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
               data-testid="capture-sticky-footer"
               className="sticky bottom-0 -mx-4 px-4 py-3 pb-[max(env(safe-area-inset-bottom),0.75rem)] sm:static sm:mx-0 sm:px-0 sm:py-0 sm:pt-2 bg-popover/95 backdrop-blur-sm border-t border-border/70 sm:border-t-0 flex items-center justify-end gap-2 z-10"
             >
+              <span
+                data-testid="capture-submit-hint"
+                className="hidden sm:[@media(any-pointer:fine)]:inline-flex items-center gap-1 mr-auto text-label text-muted-foreground"
+              >
+                <kbd className="px-1.5 py-0.5 rounded-[6px] bg-surface2 border border-border font-mono text-[11px] text-muted-foreground">
+                  {submitShortcutModifierLabel(
+                    typeof navigator === 'undefined' ? '' : navigator.platform || navigator.userAgent
+                  )}
+                </kbd>
+                <kbd className="px-1.5 py-0.5 rounded-[6px] bg-surface2 border border-border font-mono text-[11px] text-muted-foreground">
+                  ↵
+                </kbd>
+                <span>to save</span>
+              </span>
               <button
                 type="button"
                 onClick={onClose}

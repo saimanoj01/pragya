@@ -1193,6 +1193,27 @@ export class GoogleSheetsAdapter implements StorageAdapter {
     return result;
   }
 
+  /** CD 2 fix-up (R1#1/#2): one fresh `DeltaLogs!A:E` read (UNFORMATTED, codec-decoded). */
+  async loadDeltaLogs(): Promise<DeltaLog[]> {
+    const spreadsheetId = await this.getActiveSpreadsheetId();
+    const read = await this.batchReadColumns(spreadsheetId, ['DeltaLogs!A:E']);
+    return (read.get('DeltaLogs!A:E') || [])
+      .slice(1)
+      .map(rowToDeltaLog)
+      .filter((d): d is DeltaLog => d !== null);
+  }
+
+  /** CD C2.1 check-in Undo: id-verified single-row delete (idempotent if already gone). */
+  async deleteDeltaLog(logId: string): Promise<void> {
+    return this.enqueueWrite(async () => {
+      await this.deleteRowById('DeltaLogs', logId);
+      await this.updateCacheAfterMutation(s => ({
+        ...s,
+        deltaLogs: s.deltaLogs.filter(x => x.id !== logId),
+      }));
+    });
+  }
+
   async saveDeltaLog(log: DeltaLog): Promise<DeltaLog> {
     return this.enqueueWrite(async () => {
       await this.upsertRowById('DeltaLogs', 'E', log.id, deltaLogToRow(log));

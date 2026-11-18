@@ -1,4 +1,4 @@
-import type { DeltaStatus, NoteStatus } from '../types/pragya';
+import type { Attachment, DeltaStatus, NoteStatus } from '../types/pragya';
 import { ensureLocalStorage } from '../services/storage';
 
 ensureLocalStorage();
@@ -40,7 +40,34 @@ export interface CaptureDraft {
   /** A3.3 (optional for older drafts). */
   chapter?: string;
   chapterTouched?: boolean;
+  /** CD C4.3 (optional for older drafts). */
+  title?: string;
+  /**
+   * CD C4.3: attachment REFERENCES (Drive file id / demo media id / URL + name, mime, dims)
+   * so Escape after an upload never orphans a Drive file. Never blobs or data URLs.
+   */
+  attachments?: unknown[];
   updatedAt: string;
+}
+
+/** Valid attachment refs from a capture draft (max 3; junk entries dropped). */
+export function draftAttachments(draft: Pick<CaptureDraft, 'attachments'> | null | undefined): Attachment[] {
+  const list = Array.isArray(draft?.attachments) ? draft.attachments : [];
+  const out: Attachment[] = [];
+  for (const raw of list) {
+    if (!raw || typeof raw !== 'object') continue;
+    const a = raw as Record<string, unknown>;
+    if (typeof a.id !== 'string' || !a.id) continue;
+    if (a.type === 'image') {
+      if (typeof a.fileName !== 'string' || typeof a.mimeType !== 'string') continue;
+      if (typeof a.driveFileId !== 'string' && typeof a.demoMediaId !== 'string') continue;
+      out.push(a as unknown as Attachment);
+    } else if ((a.type === 'doc' || a.type === 'link') && typeof a.url === 'string' && typeof a.title === 'string') {
+      out.push(a as unknown as Attachment);
+    }
+    if (out.length >= 3) break;
+  }
+  return out;
 }
 
 export interface DeepenDraft {
@@ -55,6 +82,8 @@ export interface DeepenDraft {
   critique: string;
   /** A3.3 (optional for older drafts). */
   chapter?: string;
+  /** CD C4.5 inline tags, raw CSV (optional for older drafts). */
+  tagsRaw?: string;
   savedAt: string;
 }
 

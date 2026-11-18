@@ -3,6 +3,8 @@ import {
   AlertTriangle,
   Archive,
   ArrowLeft,
+  ChevronRight,
+  Copy,
   Edit3,
   Eye,
   FileText,
@@ -36,7 +38,21 @@ import { DriveImage } from '../common/DriveImage';
 import { ChapterPosChip } from '../common/ChapterPosChip';
 import { ArchivedBanner } from '../common/ArchivedBanner';
 import { ConfirmDialog } from '../common/ConfirmDialog';
-import { BTN_TERTIARY, BTN_TERTIARY_NEGATIVE } from '../common/uiClasses';
+import {
+  BTN_SECONDARY,
+  BTN_TERTIARY,
+  BTN_TERTIARY_NEGATIVE,
+  EYEBROW,
+} from '../common/uiClasses';
+import {
+  SPARRING_COPY_SUCCESS_MESSAGE,
+  buildSparringPrompt,
+  canCopySparringPrompt,
+} from '../../utils/sparringPrompt';
+import { tryCopyText } from '../../utils/capstonePrompt';
+import { showToast } from '../../utils/toast';
+import { CapstonePromptFallbackModal } from '../modals/CapstoneModal';
+import { PredictionOutcomeModal } from '../modals/PredictionOutcomeModal';
 import { useArchiveActions } from '../../hooks/useArchiveActions';
 import { useDeleteForever } from '../../hooks/useDeleteForever';
 import {
@@ -112,6 +128,16 @@ export const NoteDetailView: React.FC<NoteDetailViewProps> = ({
   const { archiveNote, restoreNoteFromArchive } = useArchiveActions();
   const { requestDeleteNote, dialogProps: deleteDialogProps } = useDeleteForever();
   const [archiveConfirmOpen, setArchiveConfirmOpen] = useState(false);
+  const [sparringFallback, setSparringFallback] = useState<string | null>(null);
+  const [outcomeOpen, setOutcomeOpen] = useState(false);
+  // CD C4.1: zero-AI clipboard prompt; never built for a shielded (unrevealed) note.
+  const copySparringPrompt = useCallback(async () => {
+    if (!note) return;
+    const prompt = buildSparringPrompt(note, book, { revealed });
+    if (!prompt) return;
+    if (await tryCopyText(prompt)) showToast(SPARRING_COPY_SUCCESS_MESSAGE, 'success');
+    else setSparringFallback(prompt);
+  }, [book, note, revealed]);
   const [archiveBusy, setArchiveBusy] = useState(false);
   const runArchive = useCallback(async () => {
     if (!note) return;
@@ -289,6 +315,32 @@ export const NoteDetailView: React.FC<NoteDetailViewProps> = ({
             <Layers className="w-3.5 h-3.5" />
             <span>Deepen (D)</span>
           </button>
+
+          {canCopySparringPrompt(note) && (
+            <button
+              type="button"
+              data-testid="copy-sparring-prompt-btn"
+              onClick={() => void copySparringPrompt()}
+              disabled={visibility.editDisabled}
+              title={visibility.editTooltip}
+              aria-describedby={visibility.shielded ? 'note-detail-shield-text' : undefined}
+              className={BTN_SECONDARY}
+            >
+              <Copy className="w-3.5 h-3.5" aria-hidden="true" />
+              <span>Copy Sparring Prompt</span>
+            </button>
+          )}
+
+          {unlockedPrediction && (
+            <button
+              type="button"
+              data-testid={`reflect-outcome-btn-${note.id}`}
+              onClick={() => setOutcomeOpen(true)}
+              className={BTN_SECONDARY}
+            >
+              {note.meta?.predictionOutcome?.text ? 'Edit Reflection' : 'Reflect on Outcome'}
+            </button>
+          )}
 
           {!isArchived(note) && (
             <button
@@ -470,6 +522,25 @@ export const NoteDetailView: React.FC<NoteDetailViewProps> = ({
           </div>
         )}
 
+        {unlockedPrediction && note.meta?.predictionOutcome?.text && (
+          <div data-testid="prediction-outcome-section" className="space-y-1">
+            <div className="flex items-center justify-between gap-2">
+              <div className={EYEBROW}>How It Played Out</div>
+              <button
+                type="button"
+                data-testid="prediction-outcome-edit-btn"
+                onClick={() => setOutcomeOpen(true)}
+                className={BTN_TERTIARY}
+              >
+                Edit
+              </button>
+            </div>
+            <p className="text-body text-foreground whitespace-pre-wrap">
+              {note.meta.predictionOutcome.text}
+            </p>
+          </div>
+        )}
+
         {wikilinks.length > 0 && (
           <div className="flex flex-wrap items-center gap-2">
             <span className="text-eyebrow uppercase text-muted-foreground">Related Concepts:</span>
@@ -534,6 +605,26 @@ export const NoteDetailView: React.FC<NoteDetailViewProps> = ({
             <p className="text-body text-foreground whitespace-pre-wrap">{note.critique}</p>
           </div>
         )}
+
+        {/* CD C4.1: questions stay reachable after `atomic`, collapsed (calm). */}
+        {note.status === 'atomic' &&
+          Array.isArray(note.meta.socraticQuestions) &&
+          note.meta.socraticQuestions.length > 0 && (
+            <details data-testid="socratic-prompts-details" className="group pt-2 border-t border-border/60">
+              <summary className="flex items-center justify-between gap-2 cursor-pointer list-none [&::-webkit-details-marker]:hidden">
+                <span className={EYEBROW}>Socratic prompts ({note.meta.socraticQuestions.length})</span>
+                <ChevronRight
+                  className="w-4 h-4 text-muted-foreground transition-transform group-open:rotate-90"
+                  aria-hidden="true"
+                />
+              </summary>
+              <ul className="mt-2 list-disc pl-5 space-y-1 text-body text-foreground">
+                {note.meta.socraticQuestions.map((q, idx) => (
+                  <li key={idx}>{q}</li>
+                ))}
+              </ul>
+            </details>
+          )}
 
         {getRenderableAttachments(note.meta).length > 0 && (
           <div className="space-y-2 pt-2 border-t border-border/60">
@@ -619,6 +710,20 @@ export const NoteDetailView: React.FC<NoteDetailViewProps> = ({
       <ImageLightbox
         attachment={lightboxAttachment}
         onClose={() => setLightboxAttachment(null)}
+      />
+      <CapstonePromptFallbackModal
+        isOpen={sparringFallback !== null}
+        onClose={() => setSparringFallback(null)}
+        prompt={sparringFallback || ''}
+        title="Copy Sparring Prompt"
+        dataTestId="sparring-prompt-fallback-modal"
+        promptLabel="Sparring prompt"
+      />
+      <PredictionOutcomeModal
+        note={unlockedPrediction ? note : null}
+        book={book}
+        isOpen={outcomeOpen}
+        onClose={() => setOutcomeOpen(false)}
       />
     </div>
   );

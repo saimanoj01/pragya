@@ -174,6 +174,19 @@ export class DemoStorageAdapter implements StorageAdapter {
     return result;
   }
 
+  async loadDeltaLogs(): Promise<DeltaLog[]> {
+    return [...this.ensureState().deltaLogs];
+  }
+
+  async deleteDeltaLog(logId: string): Promise<void> {
+    const state = this.ensureState();
+    const next = state.deltaLogs.filter(l => l.id !== logId);
+    if (next.length !== state.deltaLogs.length) {
+      state.deltaLogs = next;
+      writeDemoState(state);
+    }
+  }
+
   async saveDeltaLog(log: DeltaLog): Promise<DeltaLog> {
     const state = this.ensureState();
     state.deltaLogs = upsertById(state.deltaLogs, log);

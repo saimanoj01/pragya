@@ -86,6 +86,13 @@ export interface StorageAdapter {
   /** CD C1.2 Undo: append the rows whose id is absent; never overwrite existing rows. */
   appendRowsIfAbsent?(rows: RestoreRowsInput): Promise<RestoreRowsResult>;
   saveDeltaLog(log: DeltaLog): Promise<DeltaLog>;
+  /**
+   * CD 2 fix-up (R1#1/#2): a fresh read of every DeltaLogs row (one `DeltaLogs!A:E` GET in
+   * Cloud), taken inside the write queue before a check-in is planned or a field changes.
+   */
+  loadDeltaLogs?(): Promise<DeltaLog[]>;
+  /** CD C2.1: Undo of a first check-in of the day removes that one DeltaLogs row (by id). */
+  deleteDeltaLog?(logId: string): Promise<void>;
   replaceWorkspace(snapshot: PragyaSnapshot): Promise<WorkspaceState>;
   uploadImage?(
     blob: Blob,

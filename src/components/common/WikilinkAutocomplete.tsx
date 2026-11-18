@@ -115,6 +115,9 @@ export const WikilinkAutocomplete: React.FC<WikilinkAutocompleteProps> = ({
         e.preventDefault();
         e.stopPropagation();
         setSelectedIdx(prev => (prev - 1 + options.length) % options.length);
+      } else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+        // CD C4.3: ⌘/Ctrl+Enter is the form's submit shortcut, never a pick.
+        return;
       } else if (e.key === 'Enter' || e.key === 'Tab') {
         const chosen = options[selectedIdx];
         if (chosen) {

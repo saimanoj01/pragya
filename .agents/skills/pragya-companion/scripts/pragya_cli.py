@@ -3311,6 +3311,42 @@ def cmd_reflect(args: argparse.Namespace, backend: WorkspaceBackend) -> dict[str
     raise CliError(f"Unsupported reflect stage: {args.stage}")
 
 
+def plan_delta_checkin(
+    logs: list[dict[str, Any]],
+    note_id: str,
+    today: str,
+    outcome: str,
+    new_id: str,
+    reflection: str | None = None,
+) -> dict[str, Any]:
+    """CD C2.1 same-day coalescing (mirror of planDeltaCheckIn in src/utils/deltaCheckIn.ts).
+
+    No log for (note, today) -> ``append``. One exists (the LAST one if legacy duplicates)
+    -> ``update`` its outcome, or ``unchanged`` when the outcome is the same. A non-empty
+    ``reflection`` replaces the stored one; ``None``/blank keeps it (the PWA edits reflections
+    separately). Returns ``{"kind", "log", "previous"}``.
+    """
+    existing = None
+    for log in logs:
+        # R1#4: local day key (C5.1), same as the PWA's toLocalDateKey.
+        if log.get("noteId") == note_id and to_local_date_key(str(log.get("date") or "")) == today:
+            existing = log
+    text = (reflection or "").strip()
+    if existing is None:
+        return {
+            "kind": "append",
+            "log": {"id": new_id, "noteId": note_id, "date": today, "outcome": outcome, "reflection": text},
+            "previous": None,
+        }
+    updated = dict(existing)
+    updated["outcome"] = outcome
+    if text:
+        updated["reflection"] = text
+    if updated == existing:
+        return {"kind": "unchanged", "log": existing, "previous": existing}
+    return {"kind": "update", "log": updated, "previous": existing}
+
+
 def cmd_recall(args: argparse.Namespace, backend: WorkspaceBackend) -> dict[str, Any]:
     ws = backend.load_workspace()
     book_map = {b["id"]: b for b in ws["books"]}
@@ -3378,14 +3414,19 @@ def cmd_recall(args: argparse.Namespace, backend: WorkspaceBackend) -> dict[str,
                 raise CliError(f"Invalid check-in outcome: {args.outcome}")
             note = resolve_note(ws["notes"], args.note)
             today = local_date_str()
-            log = {
-                "id": str(uuid.uuid4()),
-                "noteId": note["id"],
-                "date": today,
-                "outcome": args.outcome,
-                "reflection": (args.reflection or "").strip(),
-            }
-            backend.save_delta_log(log)
+            # CD C2.1 parity (decisions OQ-5): one check-in per note per local day — a later
+            # check-in the same day updates that row (same as the PWA).
+            plan = plan_delta_checkin(
+                ws.get("deltaLogs") or [],
+                note["id"],
+                today,
+                args.outcome,
+                str(uuid.uuid4()),
+                args.reflection,
+            )
+            log = plan["log"]
+            if plan["kind"] != "unchanged":
+                backend.save_delta_log(log)
 
             updated_note = None
             if args.trigger is not None:
@@ -3401,6 +3442,7 @@ def cmd_recall(args: argparse.Namespace, backend: WorkspaceBackend) -> dict[str,
             return {
                 "mode": "checkin",
                 "logged": log,
+                "checkin": plan["kind"],
                 "updatedNote": updated_note,
             }
 

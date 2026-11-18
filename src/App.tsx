@@ -19,6 +19,7 @@ import { NotesView } from './components/views/NotesView';
 import { SettingsView } from './components/views/SettingsView';
 import { ConfirmDialog } from './components/common/ConfirmDialog';
 import { describeDrafts, hasAnyDraft } from './utils/draftStorage';
+import { resolveCaptureBookId } from './utils/captureContext';
 import { BookDetailView } from './components/views/BookDetailView';
 import { NoteDetailView } from './components/views/NoteDetailView';
 import { PracticeView } from './components/views/PracticeView';
@@ -45,6 +46,7 @@ function PragyaShell() {
   const [route, setRoute] = useState<PragyaRoute>(() => parseHash());
   const [showCaptureModal, setShowCaptureModal] = useState(false);
   const [captureBookId, setCaptureBookId] = useState<string | null>(null);
+  const [captureBookSource, setCaptureBookSource] = useState<'explicit' | 'route'>('explicit');
   const [showAddBookModal, setShowAddBookModal] = useState(false);
   const [editingBook, setEditingBook] = useState<Book | null>(null);
   const [deepeningNote, setDeepeningNote] = useState<Note | null>(null);
@@ -86,17 +88,24 @@ function PragyaShell() {
     hasOpenOverlay,
     isSessionExpiredOpen: showSessionExpiredModal,
     onToggleCommandPalette: () => setShowCommandPalette(prev => !prev),
-    onOpenCapture: bookId => {
-      setCaptureBookId(bookId);
-      setShowCaptureModal(true);
-    },
+    onOpenCapture: () => openGlobalCapture(),
     onSyncNow: () => void syncNow(true),
   });
 
   const openQuickCapture = (bookId: string | null = null) => {
     setCaptureBookId(bookId);
+    setCaptureBookSource('explicit');
     setShowCaptureModal(true);
   };
+
+  // CD C4.3: Sidebar / FAB / palette / `N` keep the book you're looking at (book page, or
+  // the open note's book) as a soft preselect.
+  function openGlobalCapture() {
+    const bookId = resolveCaptureBookId(route, notes, books);
+    setCaptureBookId(bookId);
+    setCaptureBookSource('route');
+    setShowCaptureModal(true);
+  }
 
   const handleNoteSaved = (saved: Note) => {
     if (route.view === 'note' && route.noteSlug !== saved.slug) {
@@ -166,7 +175,7 @@ function PragyaShell() {
               isOfflineReadOnly={isOfflineReadOnly}
               theme={theme}
               toggleTheme={toggleTheme}
-              onOpenCapture={() => openQuickCapture(null)}
+              onOpenCapture={openGlobalCapture}
               onOpenCommandPalette={() => setShowCommandPalette(true)}
               logout={requestLogout}
             />
@@ -211,7 +220,7 @@ function PragyaShell() {
             isOfflineReadOnly={!isMockMode && isOfflineReadOnly}
             theme={theme}
             toggleTheme={toggleTheme}
-            onOpenCapture={() => openQuickCapture(null)}
+            onOpenCapture={openGlobalCapture}
             onOpenCommandPalette={() => setShowCommandPalette(true)}
             onSyncNow={() => void syncNow(true)}
             onLogout={requestLogout}
@@ -220,6 +229,7 @@ function PragyaShell() {
           <QuickCaptureModal
             isOpen={showCaptureModal}
             initialBookId={captureBookId}
+            initialBookSource={captureBookSource}
             onClose={() => setShowCaptureModal(false)}
             onOpenAddBook={() => setShowAddBookModal(true)}
           />
@@ -239,6 +249,7 @@ function PragyaShell() {
             isOpen={Boolean(deepeningNote)}
             onClose={() => setDeepeningNote(null)}
             onSaved={handleNoteSaved}
+            onOpenNext={next => setDeepeningNote(next)}
           />
 
           <EditNoteModal
@@ -253,7 +264,7 @@ function PragyaShell() {
             onClose={() => setShowCommandPalette(false)}
             books={books}
             notes={notes}
-            onOpenCapture={() => openQuickCapture(null)}
+            onOpenCapture={openGlobalCapture}
             onToggleTheme={toggleTheme}
             onSyncNow={() => void syncNow(true)}
           />

@@ -294,6 +294,9 @@ export const NOTE_ARCHIVE_OWNED_META_KEYS: readonly string[] = [
   'updatedAt',
 ];
 
+/** CD C4.2 "Reflect on Outcome": only the prediction outcome (+ updatedAt via the column). */
+export const NOTE_PREDICTION_OUTCOME_OWNED_META_KEYS: readonly string[] = ['predictionOutcome'];
+
 /** Key-order-insensitive JSON for deep-equality checks. */
 function stableJson(value: unknown): string {
   const ancestors = new Set<object>();

@@ -91,6 +91,8 @@ export interface NoteMetaJson {
   archivedDeltaStatus?: unknown;
   /** Agent-owned spar progress marker; passed through verbatim (not validated). */
   sparStage?: unknown;
+  /** CD C4.2: reflection on an unlocked fiction prediction (`{ text, at }`, ISO `at`). */
+  predictionOutcome?: { text: string; at: string };
   /** Unknown keys (e.g. written by the CLI/skill) are preserved verbatim on round-trip. */
   [extraKey: string]: unknown;
 }

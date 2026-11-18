@@ -3,6 +3,8 @@ import {
   AlertTriangle,
   Archive,
   CheckCircle2,
+  ChevronRight,
+  Copy,
   Download,
   RefreshCw,
   Shuffle,
@@ -10,10 +12,29 @@ import {
   Unlock,
   Upload,
 } from 'lucide-react';
-import type { Book, DeltaOutcome, Note, PragyaSnapshot } from '../../types/pragya';
+import type { Book, DeltaLog, DeltaOutcome, Note, PragyaSnapshot } from '../../types/pragya';
 import { usePragya } from '../../context/PragyaContext';
 import { isEditableElement } from '../../hooks/useKeyboardShortcuts';
-import { formatWhenDoDisplay, normalizeDeltaTrigger } from '../../utils/deltaFormat';
+import {
+  formatWhenDoDisplay,
+  normalizeDeltaAction,
+  normalizeDeltaTrigger,
+} from '../../utils/deltaFormat';
+import {
+  DELTA_HISTORY_LIMIT,
+  DELTA_OUTCOME_LABELS,
+  DELTA_REFLECTION_PLACEHOLDERS,
+  checkInToastMessage,
+  deltaHistorySummary,
+  recentDeltaHistory,
+  todaysDeltaLog,
+  type DeltaCheckInPlan,
+} from '../../utils/deltaCheckIn';
+import { buildSparringPrompt, SPARRING_COPY_SUCCESS_MESSAGE } from '../../utils/sparringPrompt';
+import { tryCopyText } from '../../utils/capstonePrompt';
+import { CapstonePromptFallbackModal } from '../modals/CapstoneModal';
+import { PredictionOutcomeModal } from '../modals/PredictionOutcomeModal';
+import { BTN_SECONDARY, BTN_TERTIARY, EYEBROW, HELPER, INPUT } from '../common/uiClasses';
 import { navigateTo } from '../../utils/navigation';
 import { getLocalDateString } from '../../utils/sessionCoalesce';
 import { buildSnapshot, validateSnapshotPayload } from '../../utils/snapshot';
@@ -37,13 +58,22 @@ export const PracticeView: React.FC = () => {
     sessions,
     deltaLogs,
     updateNote,
-    logDeltaOutcome,
+    checkInDelta,
+    updateDeltaLogFields,
+    deleteDeltaLog,
     replaceWorkspaceFromSnapshot,
   } = usePragya();
 
   const [focusedDeltaIdx, setFocusedDeltaIdx] = useState<number>(0);
   const [editingTriggerNoteId, setEditingTriggerNoteId] = useState<string | null>(null);
   const [triggerDraft, setTriggerDraft] = useState<string>('');
+  const [actionDraft, setActionDraft] = useState<string>('');
+  // CD C2.1: per-card reflection row — 'edit' shows the input, absent shows the saved line.
+  const [reflectionUi, setReflectionUi] = useState<Record<string, 'edit'>>({});
+  const [reflectionDrafts, setReflectionDrafts] = useState<Record<string, string>>({});
+  const [outcomeNoteId, setOutcomeNoteId] = useState<string | null>(null);
+  const [checkInStatus, setCheckInStatus] = useState('');
+  const [fallbackPrompt, setFallbackPrompt] = useState<string | null>(null);
   const [reactivateCapWarning, setReactivateCapWarning] = useState<boolean>(false);
   const [pendingSnapshot, setPendingSnapshot] = useState<PragyaSnapshot | null>(null);
 
@@ -85,25 +115,21 @@ export const PracticeView: React.FC = () => {
     [bookMap, notes]
   );
 
-  const checkedInTodayNoteIds = useMemo(() => {
-    const set = new Set<string>();
+  const todayLogByNoteId = useMemo(() => {
+    const map = new Map<string, DeltaLog>();
     for (const log of deltaLogs) {
-      if (log.date === todayDate) set.add(log.noteId);
-    }
-    return set;
-  }, [deltaLogs, todayDate]);
-
-  const deltaStatsByNoteId = useMemo(() => {
-    const map = new Map<string, { applied: number; missed: number; noTrigger: number }>();
-    for (const log of deltaLogs) {
-      const curr = map.get(log.noteId) || { applied: 0, missed: 0, noTrigger: 0 };
-      if (log.outcome === 'applied') curr.applied += 1;
-      else if (log.outcome === 'missed') curr.missed += 1;
-      else if (log.outcome === 'no-trigger') curr.noTrigger += 1;
-      map.set(log.noteId, curr);
+      const found = todaysDeltaLog([log], log.noteId, todayDate);
+      if (found) map.set(log.noteId, found);
     }
     return map;
+  }, [deltaLogs, todayDate]);
+
+  const historyCountByNoteId = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const log of deltaLogs) map.set(log.noteId, (map.get(log.noteId) || 0) + 1);
+    return map;
   }, [deltaLogs]);
+
 
   useEffect(() => {
     if (activeDeltas.length < 5) {
@@ -114,26 +140,86 @@ export const PracticeView: React.FC = () => {
     }
   }, [activeDeltas.length, focusedDeltaIdx]);
 
+  const editingTriggerRef = useRef<string | null>(null);
+  editingTriggerRef.current = editingTriggerNoteId;
+  // Opening keeps any text already typed in this card's panel (a repeated Missed press).
+  const openRefinePanel = useCallback((note: Note) => {
+    if (editingTriggerRef.current !== note.id) {
+      const formatted = formatWhenDoDisplay(note.deltaTrigger, note.deltaAction);
+      setTriggerDraft(formatted.triggerBody);
+      setActionDraft(formatted.actionBody);
+    }
+    setEditingTriggerNoteId(note.id);
+  }, []);
+
+  const closeReflection = useCallback((noteId: string) => {
+    setReflectionUi(prev => {
+      const next = { ...prev };
+      delete next[noteId];
+      return next;
+    });
+  }, []);
+
+  const undoCheckIn = useCallback(
+    (plan: DeltaCheckInPlan) => {
+      if (plan.kind === 'unchanged') return;
+      const run =
+        plan.kind === 'append'
+          ? deleteDeltaLog(plan.log.id).then(() => closeReflection(plan.log.noteId))
+          : // R1#3: restore only the outcome — a reflection saved meanwhile is kept.
+            updateDeltaLogFields(plan.log.id, { outcome: plan.previous.outcome }).then(() => undefined);
+      void run
+        .then(() => showToast('Check-in undone.', 'info', { id: `checkin-${plan.log.noteId}` }))
+        .catch(err => showToast(describeSyncError(err, 'Failed to undo check-in'), 'error'));
+    },
+    [closeReflection, deleteDeltaLog, updateDeltaLogFields]
+  );
+
+  // CD C2.1 (decisions OQ-5): same-day coalescing + Undo; pressing the logged outcome is a no-op.
   const handleCheckIn = useCallback(
     async (note: Note, outcome: DeltaOutcome) => {
       try {
-        await logDeltaOutcome(note.id, outcome);
-        if (outcome === 'missed') {
-          const formatted = formatWhenDoDisplay(note.deltaTrigger, note.deltaAction);
-          setEditingTriggerNoteId(note.id);
-          setTriggerDraft(formatted.triggerBody);
-          showToast('Logged missed trigger — refine WHEN trigger below if needed', 'info');
-        } else if (outcome === 'applied') {
-          showToast('Logged Applied!', 'success');
-        } else {
-          showToast("Logged Didn't Come Up", 'info');
+        const plan = await checkInDelta(note.id, outcome);
+        if (outcome === 'missed') openRefinePanel(note);
+        const message = checkInToastMessage(plan);
+        if (!message) {
+          // R2 nit (a11y): re-pressing the logged outcome writes nothing; say so politely.
+          setCheckInStatus(`Already logged today: ${DELTA_OUTCOME_LABELS[plan.log.outcome]}.`);
+          return;
         }
+        setCheckInStatus('');
+        setReflectionDrafts(prev => ({ ...prev, [note.id]: plan.log.reflection || '' }));
+        setReflectionUi(prev => ({ ...prev, [note.id]: 'edit' }));
+        showToast(message, outcome === 'applied' ? 'success' : 'info', {
+          id: `checkin-${note.id}`,
+          duration: 8000,
+          action: { label: 'Undo', testId: 'toast-undo-btn', onClick: () => undoCheckIn(plan) },
+        });
       } catch (err) {
         showToast(describeSyncError(err, 'Failed to log check-in'), 'error');
       }
     },
-    [logDeltaOutcome]
+    [checkInDelta, openRefinePanel, undoCheckIn]
   );
+
+  const handleSaveReflection = async (note: Note) => {
+    const log = todayLogByNoteId.get(note.id);
+    if (!log) return;
+    try {
+      await updateDeltaLogFields(log.id, { reflection: reflectionDrafts[note.id] || '' });
+      closeReflection(note.id);
+      showToast('Reflection saved.', 'success');
+    } catch (err) {
+      showToast(describeSyncError(err, 'Failed to save reflection'), 'error');
+    }
+  };
+
+  const handleCopyPredictionPrompt = async (note: Note) => {
+    const prompt = buildSparringPrompt(note, bookMap.get(note.bookId));
+    if (!prompt) return;
+    if (await tryCopyText(prompt)) showToast(SPARRING_COPY_SUCCESS_MESSAGE, 'success');
+    else setFallbackPrompt(prompt);
+  };
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -186,10 +272,15 @@ export const PracticeView: React.FC = () => {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [activeDeltas, bookMap, focusedDeltaIdx, handleCheckIn, shieldedDeltaIds]);
 
-  const handleSaveRefinedTrigger = async (note: Note) => {
+  const handleSaveRefinedDelta = async (note: Note) => {
     const normalized = normalizeDeltaTrigger(triggerDraft);
     if (!normalized) {
       showToast('Trigger condition cannot be empty', 'error');
+      return;
+    }
+    const normalizedAction = normalizeDeltaAction(actionDraft);
+    if (!normalizedAction && normalizeDeltaAction(note.deltaAction)) {
+      showToast('DO action cannot be empty', 'error');
       return;
     }
     try {
@@ -199,12 +290,14 @@ export const PracticeView: React.FC = () => {
         {
           ...note,
           deltaTrigger: normalized,
+          deltaAction: normalizedAction,
         },
         { expectedBaseUpdatedAt: note.updatedAt }
       );
       setEditingTriggerNoteId(null);
       setTriggerDraft('');
-      showToast('Updated WHEN trigger condition', 'success');
+      setActionDraft('');
+      showToast('Delta refined.', 'success');
     } catch (err) {
       showToast(describeSyncError(err, 'Failed to update trigger'), 'error');
     }
@@ -381,6 +474,9 @@ export const PracticeView: React.FC = () => {
 
       {/* Active Behavioral Deltas (N/5) */}
       <section data-testid="active-deltas-section" className="space-y-3">
+        <span role="status" aria-live="polite" className="sr-only" data-testid="delta-checkin-status">
+          {checkInStatus}
+        </span>
         <div className="flex items-center justify-between gap-2">
           <h2 className="text-eyebrow uppercase text-muted-foreground tracking-wider">
             Active Behavioral Deltas (
@@ -403,14 +499,11 @@ export const PracticeView: React.FC = () => {
             {activeDeltas.map((note, idx) => {
               const book = bookMap.get(note.bookId);
               const display = formatWhenDoDisplay(note.deltaTrigger, note.deltaAction);
-              const stats = deltaStatsByNoteId.get(note.id) || {
-                applied: 0,
-                missed: 0,
-                noTrigger: 0,
-              };
               const isFocused = idx === focusedDeltaIdx;
               const isEditingTrigger = editingTriggerNoteId === note.id;
               const deltaShielded = shieldedDeltaIds.has(note.id);
+              const todayLog = todayLogByNoteId.get(note.id) || null;
+              const historyCount = historyCountByNoteId.get(note.id) || 0;
 
               return (
                 <article
@@ -438,7 +531,7 @@ export const PracticeView: React.FC = () => {
                     </div>
 
                     <div className="flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground num shrink-0">
-                      {checkedInTodayNoteIds.has(note.id) && (
+                      {todayLog && (
                         <span
                           data-testid={`delta-checked-today-${note.id}`}
                           className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide rounded-md bg-positive/15 border border-positive/30 text-positive font-sans"
@@ -447,9 +540,6 @@ export const PracticeView: React.FC = () => {
                           <span>Checked in today</span>
                         </span>
                       )}
-                      <span>{stats.applied} applied</span>
-                      <span>·</span>
-                      <span>{stats.missed} missed</span>
                     </div>
                   </div>
 
@@ -480,74 +570,185 @@ export const PracticeView: React.FC = () => {
 
                   {isEditingTrigger && !deltaShielded && (
                     <div className="rounded-[10px] bg-surface2/70 border border-border p-3 space-y-2">
-                      <div className="text-[11px] font-semibold uppercase text-warning">
-                        Refine WHEN Trigger Condition
-                      </div>
-                      <div className="flex flex-col sm:flex-row gap-2">
-                        <input
-                          type="text"
-                          aria-label="Refine WHEN trigger condition"
-                          data-testid={`delta-trigger-edit-input-${note.id}`}
-                          value={triggerDraft}
-                          onChange={e => setTriggerDraft(e.target.value)}
-                          placeholder="When this situation happens..."
-                          className="flex-1 h-9 px-3 rounded-[8px] bg-background border border-input text-label text-foreground focus:outline-none focus:ring-2 focus:ring-ring/40"
-                        />
-                        <div className="flex items-center gap-2">
-                          <button
-                            type="button"
-                            data-testid={`delta-trigger-save-btn-${note.id}`}
-                            onClick={() => void handleSaveRefinedTrigger(note)}
-                            className="h-9 px-3 rounded-[8px] bg-primary text-primary-foreground text-label font-semibold whitespace-nowrap"
+                      <div className={EYEBROW}>Refine this delta</div>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                        <div className="space-y-1">
+                          <label
+                            htmlFor={`refine-when-${note.id}`}
+                            className="block text-[11px] font-semibold uppercase text-muted-foreground"
                           >
-                            Save Trigger
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => setEditingTriggerNoteId(null)}
-                            className="h-9 px-2.5 rounded-[8px] text-label text-muted-foreground hover:text-foreground"
-                          >
-                            Dismiss
-                          </button>
+                            WHEN
+                          </label>
+                          <input
+                            id={`refine-when-${note.id}`}
+                            type="text"
+                            data-testid={`delta-trigger-edit-input-${note.id}`}
+                            value={triggerDraft}
+                            onChange={e => setTriggerDraft(e.target.value)}
+                            placeholder="When this situation happens..."
+                            className={`${INPUT} h-9 text-label`}
+                          />
                         </div>
+                        <div className="space-y-1">
+                          <label
+                            htmlFor={`refine-do-${note.id}`}
+                            className="block text-[11px] font-semibold uppercase text-muted-foreground"
+                          >
+                            DO
+                          </label>
+                          <input
+                            id={`refine-do-${note.id}`}
+                            type="text"
+                            data-testid={`delta-action-edit-input-${note.id}`}
+                            value={actionDraft}
+                            onChange={e => setActionDraft(e.target.value)}
+                            placeholder="Do this concrete thing..."
+                            className={`${INPUT} h-9 text-label`}
+                          />
+                        </div>
+                      </div>
+                      <div className="flex items-center justify-end gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setEditingTriggerNoteId(null)}
+                          className="h-9 px-2.5 rounded-[8px] text-label text-muted-foreground hover:text-foreground"
+                        >
+                          Dismiss
+                        </button>
+                        <button
+                          type="button"
+                          data-testid={`delta-trigger-save-btn-${note.id}`}
+                          onClick={() => void handleSaveRefinedDelta(note)}
+                          className="h-9 px-3 rounded-[8px] bg-primary text-primary-foreground text-label font-semibold whitespace-nowrap"
+                        >
+                          Save Changes
+                        </button>
                       </div>
                     </div>
                   )}
 
+                  {!deltaShielded && todayLog && reflectionUi[note.id] === 'edit' && (
+                    <div className="flex flex-col sm:flex-row sm:items-center gap-2">
+                      <input
+                        type="text"
+                        aria-label="Check-in reflection"
+                        data-testid={`delta-reflection-input-${note.id}`}
+                        value={reflectionDrafts[note.id] ?? ''}
+                        placeholder={DELTA_REFLECTION_PLACEHOLDERS[todayLog.outcome]}
+                        onChange={e =>
+                          setReflectionDrafts(prev => ({ ...prev, [note.id]: e.target.value }))
+                        }
+                        onKeyDown={e => {
+                          if (e.nativeEvent.isComposing || e.keyCode === 229) return;
+                          if (e.key === 'Enter') {
+                            e.preventDefault();
+                            void handleSaveReflection(note);
+                          } else if (e.key === 'Escape') {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            closeReflection(note.id);
+                          }
+                        }}
+                        className={`${INPUT} h-9 text-label flex-1`}
+                      />
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          data-testid={`delta-reflection-save-btn-${note.id}`}
+                          onClick={() => void handleSaveReflection(note)}
+                          className={BTN_SECONDARY}
+                        >
+                          Save
+                        </button>
+                        <button
+                          type="button"
+                          data-testid={`delta-reflection-skip-btn-${note.id}`}
+                          onClick={() => closeReflection(note.id)}
+                          className={BTN_TERTIARY}
+                        >
+                          Skip
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {!deltaShielded &&
+                    todayLog &&
+                    reflectionUi[note.id] !== 'edit' &&
+                    todayLog.reflection && (
+                      <p
+                        data-testid={`delta-reflection-saved-${note.id}`}
+                        className={`${HELPER} flex items-baseline gap-2`}
+                      >
+                        <span className="min-w-0 truncate">&ldquo;{todayLog.reflection}&rdquo;</span>
+                        <button
+                          type="button"
+                          data-testid={`delta-reflection-edit-btn-${note.id}`}
+                          onClick={() => {
+                            setReflectionDrafts(prev => ({ ...prev, [note.id]: todayLog.reflection }));
+                            setReflectionUi(prev => ({ ...prev, [note.id]: 'edit' }));
+                          }}
+                          className={BTN_TERTIARY}
+                        >
+                          Edit
+                        </button>
+                      </p>
+                    )}
+
                   {/* Check-in & Lifecycle Actions */}
                   <div className="pt-2 border-t border-border/60 flex flex-wrap items-center justify-between gap-2">
-                    <div className="flex flex-wrap items-center gap-1.5">
-                      {!deltaShielded && (
-                      <>
-                      <button
-                        type="button"
-                        data-testid={`delta-apply-btn-${note.id}`}
-                        onClick={() => void handleCheckIn(note, 'applied')}
-                        className="h-8 px-2.5 rounded-[8px] bg-positive/15 hover:bg-positive/25 border border-positive/30 text-label font-semibold text-positive whitespace-nowrap"
+                    {!deltaShielded ? (
+                      <div
+                        role="group"
+                        aria-label="Today's check-in"
+                        className="flex flex-wrap items-center gap-1.5"
                       >
-                        Applied (1)
-                      </button>
-
-                      <button
-                        type="button"
-                        data-testid={`delta-missed-btn-${note.id}`}
-                        onClick={() => void handleCheckIn(note, 'missed')}
-                        className="h-8 px-2.5 rounded-[8px] bg-warning/15 hover:bg-warning/25 border border-warning/30 text-label font-semibold text-warning whitespace-nowrap"
-                      >
-                        Missed Trigger (2)
-                      </button>
-
-                      <button
-                        type="button"
-                        data-testid={`delta-notrigger-btn-${note.id}`}
-                        onClick={() => void handleCheckIn(note, 'no-trigger')}
-                        className="h-8 px-2.5 rounded-[8px] bg-surface2 hover:bg-secondary border border-border text-label font-medium text-muted-foreground hover:text-foreground whitespace-nowrap"
-                      >
-                        Didn&apos;t Come Up (3)
-                      </button>
-                      </>
-                      )}
-                    </div>
+                        {(
+                          [
+                            {
+                              outcome: 'applied' as const,
+                              testId: `delta-apply-btn-${note.id}`,
+                              label: 'Applied (1)',
+                              base: 'bg-positive/15 hover:bg-positive/25 border border-positive/30 font-semibold text-positive',
+                              pressed: 'bg-positive/25 border border-positive/50 font-semibold text-positive',
+                            },
+                            {
+                              outcome: 'missed' as const,
+                              testId: `delta-missed-btn-${note.id}`,
+                              label: 'Missed Trigger (2)',
+                              base: 'bg-warning/15 hover:bg-warning/25 border border-warning/30 font-semibold text-warning',
+                              pressed: 'bg-warning/25 border border-warning/50 font-semibold text-warning',
+                            },
+                            {
+                              outcome: 'no-trigger' as const,
+                              testId: `delta-notrigger-btn-${note.id}`,
+                              label: "Didn't Come Up (3)",
+                              base: 'bg-surface2 hover:bg-secondary border border-border font-medium text-muted-foreground hover:text-foreground',
+                              pressed: 'bg-secondary border border-foreground/30 font-semibold text-foreground',
+                            },
+                          ]
+                        ).map(btn => {
+                          const isPressed = todayLog?.outcome === btn.outcome;
+                          return (
+                            <button
+                              key={btn.outcome}
+                              type="button"
+                              data-testid={btn.testId}
+                              aria-pressed={isPressed}
+                              onClick={() => void handleCheckIn(note, btn.outcome)}
+                              className={`h-8 px-2.5 rounded-[8px] text-label whitespace-nowrap inline-flex items-center gap-1 ${
+                                isPressed ? btn.pressed : btn.base
+                              }`}
+                            >
+                              {isPressed && <CheckCircle2 className="w-3.5 h-3.5" aria-hidden="true" />}
+                              <span>{btn.label}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      <div />
+                    )}
 
                     <div className="flex flex-wrap items-center gap-1.5">
                       <button
@@ -568,6 +769,43 @@ export const PracticeView: React.FC = () => {
                       </button>
                     </div>
                   </div>
+
+                  {!deltaShielded && historyCount > 0 && (
+                    <details data-testid={`delta-history-${note.id}`} className="group">
+                      <summary className="flex items-center justify-between gap-2 cursor-pointer list-none [&::-webkit-details-marker]:hidden">
+                        <span className={HELPER}>{deltaHistorySummary(deltaLogs, note.id)}</span>
+                        <ChevronRight
+                          className="w-4 h-4 text-muted-foreground transition-transform group-open:rotate-90"
+                          aria-hidden="true"
+                        />
+                      </summary>
+                      <ol className="mt-2 divide-y divide-border/60">
+                        {recentDeltaHistory(deltaLogs, note.id, DELTA_HISTORY_LIMIT).map(log => (
+                          <li
+                            key={log.id}
+                            data-testid={`delta-history-row-${log.id}`}
+                            className="py-1.5 flex flex-wrap items-baseline gap-x-2 gap-y-0.5"
+                          >
+                            <span className="num text-label text-foreground">{String(log.date)}</span>
+                            <span
+                              className={`px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase border ${
+                                log.outcome === 'applied'
+                                  ? 'bg-positive/15 border-positive/30 text-positive'
+                                  : log.outcome === 'missed'
+                                    ? 'bg-warning/15 border-warning/30 text-warning'
+                                    : 'bg-surface2 border-border text-muted-foreground'
+                              }`}
+                            >
+                              {DELTA_OUTCOME_LABELS[log.outcome] || log.outcome}
+                            </span>
+                            {log.reflection && (
+                              <span className="text-label text-muted-foreground">{log.reflection}</span>
+                            )}
+                          </li>
+                        ))}
+                      </ol>
+                    </details>
+                  )}
                 </article>
               );
             })}
@@ -784,12 +1022,46 @@ export const PracticeView: React.FC = () => {
                     </blockquote>
                   )}
                   <p className="text-body text-foreground">{note.takeaway}</p>
+                  <div className="pt-2 border-t border-border/50 flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      data-testid={`reflect-outcome-btn-${note.id}`}
+                      onClick={() => setOutcomeNoteId(note.id)}
+                      className={BTN_SECONDARY}
+                    >
+                      {note.meta?.predictionOutcome?.text ? 'Edit Reflection' : 'Reflect on Outcome'}
+                    </button>
+                    <button
+                      type="button"
+                      data-testid={`copy-prediction-prompt-btn-${note.id}`}
+                      onClick={() => void handleCopyPredictionPrompt(note)}
+                      className={BTN_TERTIARY}
+                    >
+                      <Copy className="w-3.5 h-3.5" aria-hidden="true" />
+                      <span>Copy Sparring Prompt</span>
+                    </button>
+                  </div>
                 </article>
               );
             })}
           </div>
         </section>
       )}
+
+      <PredictionOutcomeModal
+        note={notes.find(n => n.id === outcomeNoteId) || null}
+        book={bookMap.get(notes.find(n => n.id === outcomeNoteId)?.bookId || '') || null}
+        isOpen={outcomeNoteId !== null}
+        onClose={() => setOutcomeNoteId(null)}
+      />
+      <CapstonePromptFallbackModal
+        isOpen={fallbackPrompt !== null}
+        onClose={() => setFallbackPrompt(null)}
+        prompt={fallbackPrompt || ''}
+        title="Copy Sparring Prompt"
+        dataTestId="sparring-prompt-fallback-modal"
+        promptLabel="Sparring prompt"
+      />
 
       <ImportConfirmModal
         snapshot={pendingSnapshot}

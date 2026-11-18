@@ -75,21 +75,28 @@ test.describe('Tier 6 — M5 Daily Flow, Mobile Ergonomics, Undo & Command Palet
     expect(sheetBox!.width).toBeGreaterThanOrEqual(385);
 
     // 3. Kindle paste smart position extraction chip fills Position on 1-tap apply,
-    //    and editing quote to match current pos clears any stale chip cleanly
+    //    and editing quote to match current pos clears any stale chip cleanly.
+    //    CD Batch 2 (C4.4 unit guard): this book tracks PAGES, so a Location hint now shows
+    //    the mismatch chip (no Apply) instead of offering to put 1423 into a page field; the
+    //    Apply path is exercised with a Page hint.
     await page
       .getByTestId('capture-quote-input')
       .fill('Your Highlight on Location 1423-1425 | Added on Nov 16');
-    await expect(page.getByTestId('kindle-pos-chip')).toBeVisible();
+    await expect(page.getByTestId('kindle-unit-mismatch-chip')).toContainText(
+      'Detected Location 1423 — this book tracks pages.'
+    );
+    await expect(page.getByTestId('kindle-pos-apply-btn')).toHaveCount(0);
     await page
       .getByTestId('capture-quote-input')
       .fill('Your Highlight on Page 142 | Added on Nov 16');
     await expect(page.getByTestId('kindle-pos-chip')).toHaveCount(0);
+    await expect(page.getByTestId('kindle-unit-mismatch-chip')).toHaveCount(0);
     await page
       .getByTestId('capture-quote-input')
-      .fill('Your Highlight on Location 1423-1425 | Added on Nov 16');
+      .fill('Your Highlight on Page 150 | Added on Nov 16');
     await expect(page.getByTestId('kindle-pos-chip')).toBeVisible();
     await page.getByTestId('kindle-pos-apply-btn').click();
-    await expect(page.getByTestId('capture-pos-input')).toHaveValue('1423');
+    await expect(page.getByTestId('capture-pos-input')).toHaveValue('150');
     await page.keyboard.press('Escape');
     await expect(page.getByTestId('quick-capture-modal')).toBeHidden();
 
@@ -354,21 +361,26 @@ test.describe('Tier 6 — M5 Daily Flow, Mobile Ergonomics, Undo & Command Palet
       page.getByTestId('note-card-consciousness-and-thermal-equilibrium')
     ).toContainText('Sealed Prediction');
 
-    // 3. PracticeView: 1/2/3 check-ins (button & keyboard) have NO Undo button, add Checked in today badge, keep 1/2/3 clickable
+    // 3. PracticeView: 1/2/3 check-ins (button & keyboard) add the Checked in today badge and
+    //    keep 1/2/3 clickable. CD Batch 2 (decisions OQ-5 supersedes ENGINEERING_SPEC D3):
+    //    check-in toasts now carry an Undo, and a second same-day check-in updates the row.
     await page.getByTestId('nav-item-practice').click();
     await expect(page.getByTestId('practice-view')).toBeVisible();
 
     await page.getByTestId('delta-apply-btn-note-delays-feedback').click();
     await expect(page.getByTestId('delta-checked-today-note-delays-feedback')).toBeVisible();
-    const appliedToast = page.getByRole('status').filter({ hasText: 'Logged Applied!' }).last();
+    const appliedToast = page.getByRole('status').filter({ hasText: 'Logged: Applied.' }).last();
     await expect(appliedToast).toBeVisible();
-    await expect(appliedToast.getByTestId('toast-undo-btn')).toHaveCount(0);
+    await expect(appliedToast.getByTestId('toast-undo-btn')).toHaveCount(1);
     await expect(page.getByTestId('delta-apply-btn-note-delays-feedback')).toBeEnabled();
 
     await page.keyboard.press('3');
-    const noTriggerToast = page.getByRole('status').filter({ hasText: "Didn't Come Up" }).last();
+    const noTriggerToast = page
+      .getByRole('status')
+      .filter({ hasText: "Updated today's check-in to Didn't come up." })
+      .last();
     await expect(noTriggerToast).toBeVisible();
-    await expect(noTriggerToast.getByTestId('toast-undo-btn')).toHaveCount(0);
+    await expect(noTriggerToast.getByTestId('toast-undo-btn')).toHaveCount(1);
 
     // 4a. Pause delta -> Undo restores active delta
     await page.getByTestId('delta-pause-btn-note-delays-feedback').click();
