@@ -84,4 +84,13 @@ export function showToast(
   );
 }
 
+/**
+ * CD C1.2 fix-up (R2): drop every visible toast (e.g. on logout) so an Undo action can
+ * never run against the next session's workspace.
+ */
+export function dismissAllToasts(): void {
+  activeLogicalToastIds.clear();
+  sonnerToast.dismiss();
+}
+
 export { sonnerToast };

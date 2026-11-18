@@ -250,6 +250,23 @@ export function clearAllDrafts(options: { scope?: 'all' | 'current' | string } =
  * only for a real account whose email matches the last-account marker; never for Demo.
  * An existing scoped draft wins over a legacy one. Returns the number of adopted keys.
  */
+/**
+ * QA-29: legacy unscoped drafts that can't be attributed to an account (no last-account
+ * marker existed when an account signed in — e.g. drafts a pre-scoping build wrote in
+ * Demo) are dropped rather than adopted. Returns the number of removed keys.
+ */
+export function dropLegacyDrafts(): number {
+  const keys = listDraftKeys(null);
+  for (const k of keys) {
+    try {
+      localStorage.removeItem(k);
+    } catch {
+      // Ignore storage errors
+    }
+  }
+  return keys.length;
+}
+
 export function adoptLegacyDrafts(email: string): number {
   const scope = accountDraftScope(email);
   let adopted = 0;

@@ -37,6 +37,27 @@ import {
   type StorageAdapter,
   type StorageLoadOptions,
 } from './storage';
+import {
+  DeleteOutcomeUnknownError,
+  NotArchivedError,
+  type DeleteCascadeResult,
+  type DeleteRowsPlan,
+  type RestoreRowsResult,
+} from '../utils/deletePlan';
+import { isArchived } from '../utils/archive';
+import type { DeleteCascadeOptions, RestoreRowsInput } from './storage';
+
+/**
+ * CD 1b re-review R2-a: did a write fail WITHOUT a server verdict? An HTTP error (ApiError,
+ * incl. 429 after retries) or 401 / missing token means the write was rejected or never
+ * sent. Anything else (fetch TypeError, AbortError/timeout, unreadable body) is ambiguous:
+ * the server may have applied it.
+ */
+export function isAmbiguousWriteError(err: unknown): boolean {
+  if (err instanceof ApiError) return false;
+  if (err instanceof Error && /^(Not authenticated|401 Unauthorized)$/.test(err.message)) return false;
+  return true;
+}
 
 ensureLocalStorage();
 
@@ -923,6 +944,253 @@ export class GoogleSheetsAdapter implements StorageAdapter {
         sessions: s.sessions.filter(x => x.id !== sessionId),
       }));
     });
+  }
+
+  /**
+   * One consistent read of the id column of each tab (+ optional extra ranges), from a
+   * SINGLE values:batchGet. Returns `tab → rows` (header row included, as returned).
+   */
+  private async batchReadColumns(
+    spreadsheetId: string,
+    ranges: string[]
+  ): Promise<Map<string, unknown[][]>> {
+    const query = ranges.map(r => `ranges=${encodeURIComponent(r)}`).join('&');
+    const res = await this.fetchApi<{ valueRanges?: Array<{ range?: string; values?: unknown[][] }> }>(
+      `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(
+        spreadsheetId
+      )}/values:batchGet?${query}&valueRenderOption=UNFORMATTED_VALUE`
+    );
+    const out = new Map<string, unknown[][]>();
+    const vrs = res.valueRanges || [];
+    ranges.forEach((range, idx) => {
+      // Sheets echoes e.g. `Books!A1:A120` (sometimes quoted); match by tab name, then order.
+      const tab = range.split('!')[0];
+      const vr = vrs.find(v => (v.range || '').replace(/'/g, '').startsWith(`${tab}!`)) || vrs[idx];
+      out.set(range, vr?.values || []);
+    });
+    return out;
+  }
+
+  private async sheetIdsByTitle(spreadsheetId: string): Promise<Map<string, number>> {
+    const meta = await this.fetchApi<{
+      sheets?: Array<{ properties?: { sheetId?: number; title?: string } }>;
+    }>(
+      `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(
+        spreadsheetId
+      )}?fields=sheets.properties`
+    );
+    const out = new Map<string, number>();
+    for (const sheet of meta.sheets || []) {
+      const { title, sheetId } = sheet.properties || {};
+      if (title && typeof sheetId === 'number') out.set(title, sheetId);
+    }
+    return out;
+  }
+
+  /**
+   * CD C1.2 fix-up (R1#1/#2, QA-30/31) + re-review (R2-a/R2-b): ATOMIC cascade delete.
+   * 1. ONE values:batchGet of every involved tab's FULL rows (the target's metaJson comes
+   *    from the same read). The full rows are a snapshot for the R2-b repair below.
+   * 2. Re-verify the target is STILL archived in that read (refuse with NotArchivedError).
+   * 3. ONE spreadsheets.batchUpdate with every deleteDimension (descending row index per
+   *    sheet, so earlier deletes never shift later ones). Sheets applies a batchUpdate
+   *    all-or-nothing, so a rejected write deletes nothing. Ids absent from the read are
+   *    skipped (another device already removed them). Never touches Drive files.
+   * 4. ONE A:A re-read of the involved tabs:
+   *    - R2-a: if the write failed with no HTTP answer (network/timeout), the outcome is
+   *      unknown. If any planned id is gone the write landed → treat as success; if every
+   *      planned id is still there → rethrow (nothing removed). If the re-read fails too →
+   *      DeleteOutcomeUnknownError (the caller keeps the backup).
+   *    - R2-b: any id that vanished but was NOT planned was hit by an index shift (another
+   *      device deleted a row above ours in between) → re-append it from the snapshot via
+   *      the append-if-absent path. Planned ids still present are reported for a retry.
+   */
+  async deleteRowsCascade(plan: DeleteRowsPlan, options: DeleteCascadeOptions = {}): Promise<DeleteCascadeResult> {
+    return this.enqueueWrite(async () => {
+      const result: DeleteCascadeResult = { repaired: 0, stillPresent: [] };
+      const spreadsheetId = await this.getActiveSpreadsheetId();
+      const tabs: Array<{ tab: TabSchemaSpec['title']; ids: string[] }> = [
+        { tab: 'DeltaLogs', ids: plan.deltaLogIds },
+        { tab: 'Sessions', ids: plan.sessionIds },
+        { tab: 'Notes', ids: plan.noteIds },
+        { tab: 'Books', ids: plan.bookIds },
+      ];
+      const involved = tabs.filter(t => t.ids.length > 0);
+      if (involved.length === 0) return result;
+      const target = options.target;
+      const targetTab: TabSchemaSpec['title'] | null = target ? (target.kind === 'book' ? 'Books' : 'Notes') : null;
+      const lastCol: Record<TabSchemaSpec['title'], string> = { Books: 'L', Notes: 'R', Sessions: 'G', DeltaLogs: 'E' };
+      const fullRange = (tab: TabSchemaSpec['title']) => `${tab}!A:${lastCol[tab]}`;
+      const readTabs = involved.map(t => t.tab);
+      if (targetTab && !readTabs.includes(targetTab)) readTabs.push(targetTab);
+      const read = await this.batchReadColumns(spreadsheetId, readTabs.map(fullRange));
+      const tabRows = (tab: TabSchemaSpec['title']): unknown[][] => read.get(fullRange(tab)) || [];
+      const cellId = (r: unknown[] | undefined) => String(r?.[0] ?? '').trim();
+
+      if (target && targetTab) {
+        const metaCol = targetTab === 'Books' ? 11 : 17;
+        const row = tabRows(targetTab).find((r, i) => i > 0 && cellId(r) === target.id);
+        if (row) {
+          let meta: unknown = null;
+          try {
+            meta = JSON.parse(String(row[metaCol] ?? '') || 'null');
+          } catch {
+            meta = null;
+          }
+          if (!isArchived({ meta: meta as { archivedAt?: unknown } | null })) {
+            throw new NotArchivedError(target.kind);
+          }
+        }
+      }
+
+      const requests: Array<Record<string, unknown>> = [];
+      const requested: Array<{ tab: TabSchemaSpec['title']; id: string }> = [];
+      let sheetIds: Map<string, number> | null = null;
+      for (const { tab, ids } of involved) {
+        const wanted = new Set(ids);
+        const rows = tabRows(tab);
+        const indexes: number[] = [];
+        for (let i = 1; i < rows.length; i += 1) {
+          if (wanted.has(cellId(rows[i]))) {
+            indexes.push(i);
+            requested.push({ tab, id: cellId(rows[i]) });
+          }
+        }
+        if (indexes.length === 0) continue;
+        indexes.sort((a, b) => b - a);
+        sheetIds = sheetIds || (await this.sheetIdsByTitle(spreadsheetId));
+        const sheetId = sheetIds.get(tab);
+        if (typeof sheetId !== 'number') throw new RowMovedError();
+        for (const i of indexes) {
+          requests.push({
+            deleteDimension: { range: { sheetId, dimension: 'ROWS', startIndex: i, endIndex: i + 1 } },
+          });
+        }
+      }
+
+      const drop = <T extends { id: string }>(list: T[], ids: string[], keep: Set<string>) => {
+        const set = new Set(ids.filter(id => !keep.has(id)));
+        return list.filter(x => !set.has(x.id));
+      };
+      const updateCache = (keep: Set<string>) =>
+        this.updateCacheAfterMutation(st => ({
+          ...st,
+          deltaLogs: drop(st.deltaLogs, plan.deltaLogIds, keep),
+          sessions: drop(st.sessions, plan.sessionIds, keep),
+          notes: drop(st.notes, plan.noteIds, keep),
+          books: drop(st.books, plan.bookIds, keep),
+        }));
+
+      if (requests.length === 0) {
+        await updateCache(new Set());
+        return result;
+      }
+
+      let ambiguous: unknown = null;
+      try {
+        await this.fetchApi(
+          `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(spreadsheetId)}:batchUpdate`,
+          { method: 'POST', body: JSON.stringify({ requests }) }
+        );
+      } catch (err) {
+        // An HTTP answer (incl. 401) or a missing token means Sheets rejected / never got
+        // the write → nothing deleted. Anything else (network drop, timeout, bad body) is
+        // an UNKNOWN outcome that must be reconciled by reading back (R2-a).
+        if (!isAmbiguousWriteError(err)) throw err;
+        ambiguous = err;
+      }
+
+      let after: Map<string, unknown[][]>;
+      try {
+        after = await this.batchReadColumns(spreadsheetId, involved.map(t => `${t.tab}!A:A`));
+      } catch {
+        if (ambiguous) throw new DeleteOutcomeUnknownError();
+        // The write was acknowledged; only the shift check is skipped.
+        await updateCache(new Set());
+        return result;
+      }
+      const afterIds = new Map<string, Set<string>>(
+        involved.map(t => [t.tab, new Set((after.get(`${t.tab}!A:A`) || []).slice(1).map(cellId).filter(Boolean))])
+      );
+      const present = (tab: string, id: string) => afterIds.get(tab)?.has(id) ?? false;
+      if (ambiguous && requested.every(r => present(r.tab, r.id))) throw ambiguous;
+
+      const restore: RestoreRowsInput = { books: [], notes: [], sessions: [], deltaLogs: [] };
+      for (const { tab, ids } of involved) {
+        const planned = new Set(ids);
+        result.stillPresent.push(...ids.filter(id => present(tab, id)));
+        for (const row of tabRows(tab).slice(1)) {
+          const id = cellId(row);
+          if (!id || planned.has(id) || present(tab, id)) continue;
+          if (tab === 'Books') {
+            const b = rowToBook(row);
+            if (b) restore.books.push(b);
+          } else if (tab === 'Notes') {
+            const n = rowToNote(row);
+            if (n) restore.notes.push(n);
+          } else if (tab === 'Sessions') {
+            const s = rowToSession(row);
+            if (s) restore.sessions.push(s);
+          } else {
+            const l = rowToDeltaLog(row);
+            if (l) restore.deltaLogs.push(l);
+          }
+        }
+      }
+      await updateCache(new Set(result.stillPresent));
+      if (restore.books.length + restore.notes.length + restore.sessions.length + restore.deltaLogs.length > 0) {
+        const repaired = await this.appendRowsIfAbsentUnlocked(spreadsheetId, restore);
+        const r = repaired.restored;
+        result.repaired = r.books.length + r.notes.length + r.sessions.length + r.deltaLogs.length;
+      }
+      return result;
+    });
+  }
+
+  /**
+   * CD C1.2 fix-up (R1#4): Undo re-append. ONE values:batchGet of the id columns, then ONE
+   * values:append per tab for the rows whose id is ABSENT. Existing rows are never
+   * overwritten (they're reported as skipped). Parents first: Books, Notes, Sessions, Logs.
+   * Rows are written through the canonical codecs and land at the bottom of each tab.
+   */
+  async appendRowsIfAbsent(rows: RestoreRowsInput): Promise<RestoreRowsResult> {
+    return this.enqueueWrite(async () => this.appendRowsIfAbsentUnlocked(await this.getActiveSpreadsheetId(), rows));
+  }
+
+  /** appendRowsIfAbsent body, for callers already inside the write queue. */
+  private async appendRowsIfAbsentUnlocked(spreadsheetId: string, rows: RestoreRowsInput): Promise<RestoreRowsResult> {
+    const groups: Array<{ tab: TabSchemaSpec['title']; key: keyof RestoreRowsResult['restored']; items: Array<{ id: string }>; toRow: (x: never) => (string | number)[] }> = [
+      { tab: 'Books', key: 'books', items: rows.books, toRow: bookToRow as (x: never) => (string | number)[] },
+      { tab: 'Notes', key: 'notes', items: rows.notes, toRow: noteToRow as (x: never) => (string | number)[] },
+      { tab: 'Sessions', key: 'sessions', items: rows.sessions, toRow: sessionToRow as (x: never) => (string | number)[] },
+      { tab: 'DeltaLogs', key: 'deltaLogs', items: rows.deltaLogs, toRow: deltaLogToRow as (x: never) => (string | number)[] },
+    ];
+    const result: RestoreRowsResult = { restored: { books: [], notes: [], sessions: [], deltaLogs: [] }, skipped: 0 };
+    const involved = groups.filter(g => g.items.length > 0);
+    if (involved.length === 0) return result;
+    const read = await this.batchReadColumns(spreadsheetId, involved.map(g => `${g.tab}!A:A`));
+    for (const g of involved) {
+      const present = new Set((read.get(`${g.tab}!A:A`) || []).slice(1).map(r => String(r?.[0] ?? '').trim()));
+      const absent = g.items.filter(x => !present.has(x.id));
+      result.skipped += g.items.length - absent.length;
+      if (absent.length === 0) continue;
+      await this.fetchApi(
+        `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(
+          spreadsheetId
+        )}/values/${encodeURIComponent(`${g.tab}!A1`)}:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS`,
+        { method: 'POST', body: JSON.stringify({ values: absent.map(x => g.toRow(x as never)) }) }
+      );
+      result.restored[g.key] = absent.map(x => x.id);
+    }
+    const ids = result.restored;
+    await this.updateCacheAfterMutation(st => ({
+      ...st,
+      books: rows.books.filter(b => ids.books.includes(b.id)).reduce((acc, b) => upsertInArray(acc, b), st.books),
+      notes: rows.notes.filter(n => ids.notes.includes(n.id)).reduce((acc, n) => upsertInArray(acc, n), st.notes),
+      sessions: rows.sessions.filter(x => ids.sessions.includes(x.id)).reduce((acc, x) => upsertInArray(acc, x), st.sessions),
+      deltaLogs: rows.deltaLogs.filter(l => ids.deltaLogs.includes(l.id)).reduce((acc, l) => upsertInArray(acc, l), st.deltaLogs),
+    }));
+    return result;
   }
 
   async saveDeltaLog(log: DeltaLog): Promise<DeltaLog> {

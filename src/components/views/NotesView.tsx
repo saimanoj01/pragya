@@ -26,6 +26,9 @@ import { extractNoteWikilinks } from '../../utils/wikilinks';
 import { DriveImage } from '../common/DriveImage';
 import { ArchivedBanner } from '../common/ArchivedBanner';
 import { useArchiveActions } from '../../hooks/useArchiveActions';
+import { useDeleteForever } from '../../hooks/useDeleteForever';
+import { ConfirmDialog } from '../common/ConfirmDialog';
+import { BTN_TERTIARY_NEGATIVE } from '../common/uiClasses';
 import { archivedDateLabel, onlyArchived, withoutArchived } from '../../utils/archive';
 import { ChapterPosChip } from '../common/ChapterPosChip';
 
@@ -44,6 +47,7 @@ export const NotesView: React.FC<NotesViewProps> = ({
 }) => {
   const { books, notes: allNotes } = usePragya();
   const { restoreNoteFromArchive } = useArchiveActions();
+  const { requestDeleteNote, dialogProps: deleteDialogProps } = useDeleteForever();
   // C1.1: archived notes leave the stream, counts and search; they live behind the pill.
   const notes = useMemo(() => withoutArchived(allNotes), [allNotes]);
   const archivedNotes = useMemo(() => onlyArchived(allNotes), [allNotes]);
@@ -241,6 +245,7 @@ export const NotesView: React.FC<NotesViewProps> = ({
 
   return (
     <div data-testid="notes-view" className="py-6 space-y-6">
+      <ConfirmDialog {...deleteDialogProps} />
       <div className="flex items-start justify-between gap-4">
         <div className="min-w-0">
           <h1 className="text-display-l text-foreground tracking-tight">Notes</h1>
@@ -403,7 +408,19 @@ export const NotesView: React.FC<NotesViewProps> = ({
                     compact
                     date={archivedDateLabel(note)}
                     onRestore={() => void restoreNoteFromArchive(note)}
-                  />
+                  >
+                    {/* A shielded card never offers delete (its title/slug would surface). */}
+                    {!showShield && (
+                      <button
+                        type="button"
+                        data-testid="delete-forever-btn"
+                        onClick={() => requestDeleteNote(note)}
+                        className={BTN_TERTIARY_NEGATIVE}
+                      >
+                        Delete Forever…
+                      </button>
+                    )}
+                  </ArchivedBanner>
                 )}
 
                 {/* Spoiler Shield OR Content */}

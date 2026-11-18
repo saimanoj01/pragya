@@ -54,6 +54,9 @@ import {
 import { ChapterPosChip } from '../common/ChapterPosChip';
 import { ArchivedBanner } from '../common/ArchivedBanner';
 import { useArchiveActions } from '../../hooks/useArchiveActions';
+import { useDeleteForever } from '../../hooks/useDeleteForever';
+import { ConfirmDialog } from '../common/ConfirmDialog';
+import { BTN_TERTIARY_NEGATIVE } from '../common/uiClasses';
 import { archivedDateLabel, isArchived } from '../../utils/archive';
 import { CapstoneModal, CapstonePromptFallbackModal } from '../modals/CapstoneModal';
 
@@ -102,6 +105,7 @@ export const BookDetailView: React.FC<BookDetailViewProps> = ({
   const [fallbackPrompt, setFallbackPrompt] = useState<string | null>(null);
   const capstoneHeadingId = useId();
   const { restoreBookFromArchive } = useArchiveActions();
+  const { requestDeleteBook, dialogProps: deleteDialogProps } = useDeleteForever();
 
   useEffect(() => {
     setExactInput(book ? String(book.currentPos) : '0');
@@ -457,7 +461,16 @@ export const BookDetailView: React.FC<BookDetailViewProps> = ({
           kind="book"
           date={archivedDateLabel(book)}
           onRestore={() => void restoreBookFromArchive(book)}
-        />
+        >
+            <button
+              type="button"
+              data-testid="delete-forever-btn"
+              onClick={() => requestDeleteBook(book)}
+              className={BTN_TERTIARY_NEGATIVE}
+            >
+              Delete Forever…
+            </button>
+        </ArchivedBanner>
       )}
 
       {/* Book Header Card */}
@@ -916,6 +929,7 @@ export const BookDetailView: React.FC<BookDetailViewProps> = ({
         )}
       </section>
 
+      <ConfirmDialog {...deleteDialogProps} />
       <CapstoneModal isOpen={capstoneOpen} onClose={() => setCapstoneOpen(false)} book={book} />
       <CapstonePromptFallbackModal
         isOpen={fallbackPrompt !== null}

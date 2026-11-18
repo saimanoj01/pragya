@@ -36,8 +36,9 @@ import { DriveImage } from '../common/DriveImage';
 import { ChapterPosChip } from '../common/ChapterPosChip';
 import { ArchivedBanner } from '../common/ArchivedBanner';
 import { ConfirmDialog } from '../common/ConfirmDialog';
-import { BTN_TERTIARY } from '../common/uiClasses';
+import { BTN_TERTIARY, BTN_TERTIARY_NEGATIVE } from '../common/uiClasses';
 import { useArchiveActions } from '../../hooks/useArchiveActions';
+import { useDeleteForever } from '../../hooks/useDeleteForever';
 import {
   ARCHIVE_ACTIVE_DELTA_COPY,
   archivedDateLabel,
@@ -109,6 +110,7 @@ export const NoteDetailView: React.FC<NoteDetailViewProps> = ({
     [note, notes]
   );
   const { archiveNote, restoreNoteFromArchive } = useArchiveActions();
+  const { requestDeleteNote, dialogProps: deleteDialogProps } = useDeleteForever();
   const [archiveConfirmOpen, setArchiveConfirmOpen] = useState(false);
   const [archiveBusy, setArchiveBusy] = useState(false);
   const runArchive = useCallback(async () => {
@@ -310,8 +312,20 @@ export const NoteDetailView: React.FC<NoteDetailViewProps> = ({
           date={archivedDateLabel(note)}
           busy={archiveBusy}
           onRestore={() => void restoreNoteFromArchive(note)}
-        />
+        >
+            <button
+              type="button"
+              data-testid="delete-forever-btn"
+              onClick={() => requestDeleteNote(note)}
+              disabled={visibility.editDisabled}
+              title={visibility.editTooltip}
+              className={BTN_TERTIARY_NEGATIVE}
+            >
+              Delete Forever…
+            </button>
+        </ArchivedBanner>
       )}
+      <ConfirmDialog {...deleteDialogProps} />
 
       <ConfirmDialog
         isOpen={archiveConfirmOpen}

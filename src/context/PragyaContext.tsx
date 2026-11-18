@@ -48,6 +48,23 @@ import { buildSnapshot } from '../utils/snapshot';
 import { savePreImportBackup } from '../utils/importSafety';
 import { DEMO_DRAFT_SCOPE, clearAllDrafts } from '../utils/draftStorage';
 import { countOtherActiveDeltas } from '../utils/archive';
+import {
+  clearLastDeleteBackup,
+  planBookDelete,
+  planNoteDelete,
+  readLastDeleteBackup,
+  toDeleteRowsPlan,
+  withoutDeleted,
+  withoutIds,
+  DeleteOutcomeUnknownError,
+  type DeleteCascadeResult,
+  type PermanentDeleteResult,
+  writeLastDeleteBackup,
+  expireStaleDeleteBackup,
+  type DeleteBackup,
+  type RestoreRowsResult,
+  type WorkspaceRows,
+} from '../utils/deletePlan';
 import { clampNotePos } from '../utils/positionClamp';
 import { normalizeChapterInput } from '../utils/chapterFormat';
 import {
@@ -194,6 +211,12 @@ export interface PragyaContextValue {
   resetDemoWorkspace: () => Promise<void>;
   uploadImageAttachment: (file: File | Blob) => Promise<Attachment>;
   resolveDocTitle: (docId: string) => Promise<string | null>;
+  /** CD C1.2: permanently delete an ARCHIVED note (+ its delta logs). Resolves to the Undo backup. */
+  deleteNotePermanently: (noteId: string) => Promise<PermanentDeleteResult>;
+  /** CD C1.2: permanently delete an ARCHIVED book with its notes, their logs and its sessions. */
+  deleteBookPermanently: (bookId: string) => Promise<PermanentDeleteResult>;
+  /** CD C1.2 Undo: re-append the exact removed rows (same UUIDs), parents first. */
+  restoreDeletedRows: (backup: DeleteBackup) => Promise<RestoreRowsResult>;
 }
 
 const PragyaContext = createContext<PragyaContextValue | undefined>(undefined);
@@ -288,6 +311,9 @@ export const PragyaProvider: React.FC<{ children: React.ReactNode }> = ({ childr
           // N2: cached data served because Google throttled us is not a fresh sync.
           if (!servedOffline && !ws.servedFromCacheDueToRateLimit) {
             setLastSyncedAt(new Date().toISOString());
+            // CD C1.2: the local copy of the last permanently deleted rows lives only until
+            // the next successful sync after the delete was CONFIRMED (support-only net).
+            if (readLastDeleteBackup()?.confirmed) clearLastDeleteBackup();
           }
         });
         if (servedRateLimitedCache) {
@@ -894,6 +920,115 @@ export const PragyaProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     [adapter, assertCloudWritable]
   );
 
+  // R1 nit 6: a support-only delete backup never lingers past its TTL.
+  useEffect(() => {
+    expireStaleDeleteBackup();
+  }, []);
+
+  const applyRows = useCallback((rows: WorkspaceRows) => {
+    booksRef.current = rows.books;
+    notesRef.current = rows.notes;
+    sessionsRef.current = rows.sessions;
+    deltaLogsRef.current = rows.deltaLogs;
+    setBooks(rows.books);
+    setNotes(rows.notes);
+    setSessions(rows.sessions);
+    setDeltaLogs(rows.deltaLogs);
+  }, []);
+
+  const currentRows = useCallback(
+    (): WorkspaceRows => ({
+      books: booksRef.current,
+      notes: notesRef.current,
+      sessions: sessionsRef.current,
+      deltaLogs: deltaLogsRef.current,
+    }),
+    []
+  );
+
+  /**
+   * CD C1.2 (fix-up): refresh → re-plan → write the (unconfirmed) local backup → ONE atomic
+   * adapter cascade that re-verifies the target is still archived. All-or-nothing: on any
+   * failure nothing was deleted, so the backup is dropped and the error is rethrown.
+   * Re-review R2-a: if the adapter can't tell whether the write landed
+   * (DeleteOutcomeUnknownError) the backup is KEPT (unconfirmed) and the error rethrown.
+   * R2-b: planned rows the adapter reports as still present stay in local state.
+   */
+  const runPermanentDelete = useCallback(
+    (kind: 'book' | 'note', id: string): Promise<PermanentDeleteResult> =>
+      enqueueMutation(async () => {
+        assertCloudWritable();
+        if (!adapter.deleteRowsCascade) throw new Error('Permanent delete is not supported here.');
+        // R1#3: plan from a fresh read so rows added elsewhere (CLI / another device) are
+        // included and the counts are true; a restore done elsewhere surfaces here (QA-30).
+        const ws = await adapter.loadWorkspace({ forceRefresh: true });
+        applyRows(ws);
+        const rows = currentRows();
+        const nowIso = new Date().toISOString();
+        let backup: DeleteBackup;
+        if (kind === 'note') {
+          const note = rows.notes.find(n => n.id === id);
+          if (!note) throw new Error('Note not found');
+          backup = planNoteDelete(note, rows, nowIso);
+        } else {
+          const book = rows.books.find(b => b.id === id);
+          if (!book) throw new Error('Book not found');
+          backup = planBookDelete(book, rows, nowIso);
+        }
+        writeLastDeleteBackup(backup);
+        let outcome: DeleteCascadeResult;
+        try {
+          outcome = (await adapter.deleteRowsCascade(toDeleteRowsPlan(backup), { target: { kind, id } })) || {
+            repaired: 0,
+            stillPresent: [],
+          };
+        } catch (err) {
+          // Unknown outcome: the rows may be gone, so keep the backup as the safety net.
+          if (!(err instanceof DeleteOutcomeUnknownError)) clearLastDeleteBackup(); // atomic: nothing was deleted
+          throw err;
+        }
+        const confirmed: DeleteBackup = { ...backup, confirmed: true };
+        writeLastDeleteBackup(confirmed);
+        applyRows(withoutDeleted(currentRows(), withoutIds(backup, outcome.stillPresent)));
+        return { backup: confirmed, outcome };
+      }),
+    [adapter, applyRows, assertCloudWritable, currentRows, enqueueMutation]
+  );
+
+  const deleteNotePermanently = useCallback(
+    (noteId: string) => runPermanentDelete('note', noteId),
+    [runPermanentDelete]
+  );
+
+  const deleteBookPermanently = useCallback(
+    (bookId: string) => runPermanentDelete('book', bookId),
+    [runPermanentDelete]
+  );
+
+  const restoreDeletedRows = useCallback(
+    (backup: DeleteBackup): Promise<RestoreRowsResult> =>
+      enqueueMutation(async () => {
+        assertCloudWritable();
+        if (!adapter.appendRowsIfAbsent) throw new Error('Restore is not supported here.');
+        // R1#4: append only rows that are absent; never overwrite a row that exists.
+        const result = await adapter.appendRowsIfAbsent(backup);
+        const rows = currentRows();
+        const pick = <T extends { id: string }>(items: T[], ids: string[]) => items.filter(x => ids.includes(x.id));
+        applyRows({
+          books: pick(backup.books, result.restored.books).reduce((acc, b) => upsertList(acc, b), rows.books),
+          notes: pick(backup.notes, result.restored.notes).reduce((acc, n) => upsertList(acc, n), rows.notes),
+          sessions: pick(backup.sessions, result.restored.sessions).reduce((acc, x) => upsertList(acc, x), rows.sessions),
+          deltaLogs: pick(backup.deltaLogs, result.restored.deltaLogs).reduce((acc, l) => upsertList(acc, l), rows.deltaLogs),
+        });
+        const last = readLastDeleteBackup();
+        if (last && last.targetId === backup.targetId && last.deletedAt === backup.deletedAt) {
+          clearLastDeleteBackup();
+        }
+        return result;
+      }),
+    [adapter, applyRows, assertCloudWritable, currentRows, enqueueMutation]
+  );
+
   const resolveDocTitle = useCallback(
     async (docId: string): Promise<string | null> => {
       if (!adapter.resolveDocTitle) return null;
@@ -930,6 +1065,9 @@ export const PragyaProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         resetDemoWorkspace,
         uploadImageAttachment,
         resolveDocTitle,
+        deleteNotePermanently,
+        deleteBookPermanently,
+        restoreDeletedRows,
       }}
     >
       {children}

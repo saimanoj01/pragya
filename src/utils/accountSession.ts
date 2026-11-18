@@ -3,8 +3,9 @@ import {
   SHEETS_CACHE_STORAGE_KEY,
   SPREADSHEET_ID_STORAGE_KEY,
 } from '../services/googleSheetsAdapter';
-import { adoptLegacyDrafts, clearAllDrafts } from './draftStorage';
+import { adoptLegacyDrafts, clearAllDrafts, dropLegacyDrafts } from './draftStorage';
 import { CAPSTONE_HIDDEN_KEY } from './capstonePrompt';
+import { LAST_DELETE_BACKUP_KEY } from './deletePlan';
 import { clearPreImportBackup } from './importSafety';
 
 /** Persisted Google profile (also read by AuthContext). */
@@ -23,6 +24,8 @@ export function clearPerAccountLocalData(): void {
   localStorage.removeItem(SPREADSHEET_ID_STORAGE_KEY);
   clearAllDrafts();
   clearPreImportBackup();
+  // CD C1.2: the previous account's last-deleted rows never outlive an account switch.
+  localStorage.removeItem(LAST_DELETE_BACKUP_KEY);
   // R1 nit: the per-device capstone Hide list belongs to the previous account's books.
   localStorage.removeItem(CAPSTONE_HIDDEN_KEY);
   if (typeof caches !== 'undefined') {
@@ -55,6 +58,11 @@ export function applySignedInAccount(email: string): boolean {
   // R2-b: email addresses are compared case-insensitively.
   const switched = Boolean(previous) && (previous || '').toLowerCase() !== next.toLowerCase();
   if (switched) clearPerAccountLocalData();
+  // QA-29: `previous` is captured BEFORE the marker is rewritten. With no previous
+  // account, legacy unscoped drafts belong to no one we can name (e.g. a pre-scoping Demo
+  // session), so they are dropped instead of being adopted into this account. A matching
+  // previous account keeps them for adoptLegacyDraftsForAccount().
+  else if (!previous) dropLegacyDrafts();
   localStorage.setItem(LAST_ACCOUNT_EMAIL_KEY, next);
   return switched;
 }

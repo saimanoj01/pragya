@@ -207,6 +207,7 @@ python3 scripts/pragya_cli.py note-update --note delays-in-feedback-loops \
 **Soft-archive (`--archive` / `--unarchive`, books and notes):** archiving only sets `metaJson.archivedAt` (no columns change, nothing is deleted). Archived items still resolve by id/slug/title so they can be restored.
 - **Archived book:** drops out of `book-list` (use `--include-archived`) and refuses `capture` (offer `book-update --book <id> --unarchive` first). It hides **only the book** — its notes stay reachable in recall, the Companion Doc / Markdown timelines and `notesSummary`.
 - **Archived note:** drops out of `recall qa|checkin|shuffle`, `notesSummary`, per-note `export-md` and the Markdown book index, is no longer *added* to the Companion Doc, and never holds one of the 5 active-delta slots.
+- **Permanent delete is PWA-only and deliberate:** the user can "Delete Forever…" an archived book (with its notes, check-ins and sessions) or note in the app, with a short Undo. The CLI has no delete command; if asked, point the user to the archive in the app.
 - **Companion Doc text is never deleted:** an entry already written for a note that is archived later stays in the Doc; the user can remove it by hand. Don't tell the user it is "gone from the doc".
 
 ```bash

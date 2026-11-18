@@ -4,7 +4,7 @@ import {
   SHEETS_CACHE_STORAGE_KEY,
   SPREADSHEET_ID_STORAGE_KEY,
 } from '../services/googleSheetsAdapter';
-import { showToast } from '../utils/toast';
+import { dismissAllToasts, showToast } from '../utils/toast';
 import {
   OAUTH_RETURN_ROUTE_KEY,
   isRestorableAppRoute,
@@ -13,6 +13,7 @@ import {
 import { OFFLINE_INFO_TOAST } from '../utils/offline';
 import { DEMO_DRAFT_SCOPE, clearAllDrafts } from '../utils/draftStorage';
 import { CAPSTONE_HIDDEN_KEY } from '../utils/capstonePrompt';
+import { LAST_DELETE_BACKUP_KEY } from '../utils/deletePlan';
 import { clearPreImportBackup } from '../utils/importSafety';
 import {
   adoptLegacyDraftsForAccount,
@@ -470,6 +471,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const logout = useCallback(async (options: LogoutOptions = {}) => {
     setIsLoading(true);
+    // CD C1.2 fix-up: an Undo toast (delete/archive) must not outlive the session.
+    dismissAllToasts();
     const wasDemo = localStorage.getItem(MOCK_MODE_KEY) === 'true';
     const token = localStorage.getItem(GOOGLE_TOKEN_KEY);
     if (token) {
@@ -497,6 +500,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     else if (wasDemo) clearAllDrafts({ scope: DEMO_DRAFT_SCOPE });
     clearPreImportBackup();
     localStorage.removeItem(CAPSTONE_HIDDEN_KEY);
+    localStorage.removeItem(LAST_DELETE_BACKUP_KEY);
     sessionStorage.removeItem(OAUTH_CSRF_STATE_KEY);
     sessionStorage.removeItem(OAUTH_RETURN_ROUTE_KEY);
     if (typeof caches !== 'undefined') {

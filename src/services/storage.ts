@@ -7,6 +7,19 @@ import type {
   ReadingSession,
   WorkspaceState,
 } from '../types/pragya';
+import type { DeleteCascadeResult, DeleteRowsPlan, RestoreRowsResult } from '../utils/deletePlan';
+
+export interface DeleteCascadeOptions {
+  /** The book/note the user chose; must still be archived at delete time (QA-30). */
+  target?: { kind: 'book' | 'note'; id: string };
+}
+
+export interface RestoreRowsInput {
+  books: Book[];
+  notes: Note[];
+  sessions: ReadingSession[];
+  deltaLogs: DeltaLog[];
+}
 
 export function ensureLocalStorage(): void {
   try {
@@ -64,6 +77,14 @@ export interface StorageAdapter {
   saveNote(note: Note, options?: SaveOptions): Promise<Note>;
   saveSession(session: ReadingSession): Promise<ReadingSession>;
   deleteSession?(sessionId: string): Promise<void>;
+  /**
+   * CD C1.2 permanent delete (atomic): resolves every id from one consistent read and
+   * removes all rows in ONE batch (all-or-nothing). `target` is re-verified as still
+   * archived first (NotArchivedError otherwise). Rows already gone are skipped.
+   */
+  deleteRowsCascade?(plan: DeleteRowsPlan, options?: DeleteCascadeOptions): Promise<DeleteCascadeResult | void>;
+  /** CD C1.2 Undo: append the rows whose id is absent; never overwrite existing rows. */
+  appendRowsIfAbsent?(rows: RestoreRowsInput): Promise<RestoreRowsResult>;
   saveDeltaLog(log: DeltaLog): Promise<DeltaLog>;
   replaceWorkspace(snapshot: PragyaSnapshot): Promise<WorkspaceState>;
   uploadImage?(

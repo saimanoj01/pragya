@@ -11,6 +11,9 @@ import { createDemoSeed } from '../data/demoSeed';
 import { createUuid } from '../utils/sessionCoalesce';
 import { clearDemoMedia, saveDemoMediaBlob } from './demoMediaDb';
 import type { StorageAdapter } from './storage';
+import { NotArchivedError, type DeleteCascadeResult, type DeleteRowsPlan, type RestoreRowsResult } from '../utils/deletePlan';
+import { isArchived } from '../utils/archive';
+import type { DeleteCascadeOptions, RestoreRowsInput } from './storage';
 
 export const DEMO_STATE_STORAGE_KEY = 'pragya_demo_state_v1';
 
@@ -126,6 +129,49 @@ export class DemoStorageAdapter implements StorageAdapter {
       state.sessions = next;
       writeDemoState(state);
     }
+  }
+
+  async deleteRowsCascade(plan: DeleteRowsPlan, options: DeleteCascadeOptions = {}): Promise<DeleteCascadeResult> {
+    const state = this.ensureState();
+    // Parity with the Sheets adapter: the target must still be archived (QA-30), and the
+    // whole cascade applies at once (a single state write).
+    const target = options.target;
+    if (target) {
+      const row =
+        target.kind === 'book'
+          ? state.books.find(b => b.id === target.id)
+          : state.notes.find(n => n.id === target.id);
+      if (row && !isArchived(row)) throw new NotArchivedError(target.kind);
+    }
+    const drop = <T extends { id: string }>(list: T[], ids: string[]) => {
+      const set = new Set(ids);
+      return list.filter(x => !set.has(x.id));
+    };
+    state.deltaLogs = drop(state.deltaLogs, plan.deltaLogIds);
+    state.sessions = drop(state.sessions, plan.sessionIds);
+    state.notes = drop(state.notes, plan.noteIds);
+    state.books = drop(state.books, plan.bookIds);
+    writeDemoState(state);
+    // Local state can't shift under us (no concurrent devices), so nothing to repair.
+    return { repaired: 0, stillPresent: [] };
+  }
+
+  async appendRowsIfAbsent(rows: RestoreRowsInput): Promise<RestoreRowsResult> {
+    const state = this.ensureState();
+    const result: RestoreRowsResult = { restored: { books: [], notes: [], sessions: [], deltaLogs: [] }, skipped: 0 };
+    const add = <T extends { id: string }>(list: T[], items: T[], key: keyof RestoreRowsResult['restored']) => {
+      const present = new Set(list.map(x => x.id));
+      const absent = items.filter(x => !present.has(x.id));
+      result.skipped += items.length - absent.length;
+      result.restored[key] = absent.map(x => x.id);
+      return [...list, ...absent];
+    };
+    state.books = add(state.books, rows.books, 'books');
+    state.notes = add(state.notes, rows.notes, 'notes');
+    state.sessions = add(state.sessions, rows.sessions, 'sessions');
+    state.deltaLogs = add(state.deltaLogs, rows.deltaLogs, 'deltaLogs');
+    writeDemoState(state);
+    return result;
   }
 
   async saveDeltaLog(log: DeltaLog): Promise<DeltaLog> {

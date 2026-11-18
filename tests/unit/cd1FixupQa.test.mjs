@@ -187,7 +187,6 @@ test('QA fix-up: legacy migration — matching account at boot adopts; Demo boot
 
 test(
   'QA-29: OAuth first sign-in with NO prior marker adopts unattributable legacy drafts (e.g. pre-upgrade Demo drafts)',
-  { todo: 'QA-29 (Low): AuthContext L339→L349 sets the marker before the match check, so the check is tautological' },
   () => {
     localStorage.clear();
     try {

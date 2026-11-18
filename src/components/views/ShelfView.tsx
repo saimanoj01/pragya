@@ -24,7 +24,9 @@ import { describeSyncError } from '../../utils/apiErrors';
 import { normalizeChapterInput } from '../../utils/chapterFormat';
 import { isArchived, onlyArchived, withoutArchived } from '../../utils/archive';
 import { useArchiveActions } from '../../hooks/useArchiveActions';
-import { BTN_SECONDARY, EYEBROW } from '../common/uiClasses';
+import { BTN_SECONDARY, BTN_TERTIARY_NEGATIVE, EYEBROW } from '../common/uiClasses';
+import { ConfirmDialog } from '../common/ConfirmDialog';
+import { useDeleteForever } from '../../hooks/useDeleteForever';
 
 export interface ShelfViewProps {
   onOpenAddBook: () => void;
@@ -45,6 +47,7 @@ export const ShelfView: React.FC<ShelfViewProps> = ({
   const shelfBooks = useMemo(() => withoutArchived(books), [books]);
   const archivedBooks = useMemo(() => onlyArchived(books), [books]);
   const { restoreBookFromArchive } = useArchiveActions();
+  const { requestDeleteBook, dialogProps: deleteDialogProps } = useDeleteForever();
   const readingBooks = useMemo(() => shelfBooks.filter(b => b.status === 'reading'), [shelfBooks]);
   const queuedBooks = useMemo(() => shelfBooks.filter(b => b.status === 'queued'), [shelfBooks]);
   const finishedBooks = useMemo(() => shelfBooks.filter(b => b.status === 'finished'), [shelfBooks]);
@@ -194,6 +197,7 @@ export const ShelfView: React.FC<ShelfViewProps> = ({
 
   return (
     <div data-testid="shelf-view" className="py-6 space-y-8">
+      <ConfirmDialog {...deleteDialogProps} />
       {/* Header */}
       <div className="flex items-start justify-between gap-4">
         <div className="min-w-0">
@@ -625,6 +629,14 @@ export const ShelfView: React.FC<ShelfViewProps> = ({
                   className={BTN_SECONDARY}
                 >
                   Restore
+                </button>
+                <button
+                  type="button"
+                  data-testid={`archived-book-delete-btn-${book.id}`}
+                  onClick={() => requestDeleteBook(book)}
+                  className={BTN_TERTIARY_NEGATIVE}
+                >
+                  Delete Forever…
                 </button>
               </li>
             ))}
