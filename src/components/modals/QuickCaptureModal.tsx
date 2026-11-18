@@ -16,6 +16,7 @@ import {
   resolveCaptureChapter,
 } from '../../utils/chapterFormat';
 import { navigateTo } from '../../utils/navigation';
+import { withoutArchived } from '../../utils/archive';
 import { createUuid } from '../../utils/sessionCoalesce';
 import { parseTagsCsv } from '../../utils/sheetCodecs';
 import { showToast } from '../../utils/toast';
@@ -39,7 +40,9 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
   onClose,
   onOpenAddBook,
 }) => {
-  const { books, captureNote, uploadImageAttachment, resolveDocTitle } = usePragya();
+  const { books: allBooks, captureNote, uploadImageAttachment, resolveDocTitle } = usePragya();
+  // C1.1: archived books aren't offered for capture (the CLI refuses them too).
+  const books = useMemo(() => withoutArchived(allBooks), [allBooks]);
   const baseId = useId();
   const headingId = `${baseId}-heading`;
   const bookFieldId = `${baseId}-book`;

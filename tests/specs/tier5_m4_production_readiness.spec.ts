@@ -410,6 +410,9 @@ test.describe('Tier 5 — M4 Accessibility, Guided OAuth, Offline Cloud, Draft A
     await page.getByTestId('nav-item-settings').click();
     await expect(page.getByTestId('restore-pre-import-backup-btn')).toBeVisible();
     await page.getByTestId('restore-pre-import-backup-btn').click();
+    // CD C.1.5: Restore now asks first, showing the backup's date and counts.
+    await expect(page.getByTestId('confirm-dialog')).toContainText('Restore your pre-import backup?');
+    await page.getByTestId('confirm-dialog-confirm-btn').click();
 
     await page.getByTestId('nav-item-shelf').click();
     await expect(page.getByTestId('book-card-book-systems')).toBeVisible();
@@ -642,7 +645,11 @@ test.describe('Tier 5 — M4 Accessibility, Guided OAuth, Offline Cloud, Draft A
     ).toContainText(/Updated on another device/i);
     await expect(page.getByTestId('edit-note-modal')).toBeVisible();
     await expect(page.getByTestId('edit-note-title-input')).toHaveValue('Conflicting Draft Title');
-    const savedDraft = await page.evaluate(() => localStorage.getItem('pragya_draft_edit_note-conf-1'));
+    // CD 1a fix-up: drafts live under the signed-in account's scope (`pragya_draft:<scope>:…`).
+    const savedDraft = await page.evaluate(() => {
+      const k = Object.keys(localStorage).find(x => x.endsWith(':pragya_draft_edit_note-conf-1'));
+      return k ? localStorage.getItem(k) : null;
+    });
     expect(savedDraft).toContain('Conflicting Draft Title');
     await page.keyboard.press('Escape');
   });

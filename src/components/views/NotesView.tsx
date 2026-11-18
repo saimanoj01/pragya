@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import {
   AlertTriangle,
+  Archive,
   ArrowUpRight,
   Eye,
   FileText,
@@ -23,9 +24,12 @@ import {
 } from '../../utils/noteVisibility';
 import { extractNoteWikilinks } from '../../utils/wikilinks';
 import { DriveImage } from '../common/DriveImage';
+import { ArchivedBanner } from '../common/ArchivedBanner';
+import { useArchiveActions } from '../../hooks/useArchiveActions';
+import { archivedDateLabel, onlyArchived, withoutArchived } from '../../utils/archive';
 import { ChapterPosChip } from '../common/ChapterPosChip';
 
-type NotesFilter = 'all' | 'to-spar' | 'atomic' | 'media' | 'concepts';
+type NotesFilter = 'all' | 'to-spar' | 'atomic' | 'media' | 'concepts' | 'archived';
 
 export interface NotesViewProps {
   onOpenCapture: () => void;
@@ -38,7 +42,11 @@ export const NotesView: React.FC<NotesViewProps> = ({
   onEditNote,
   onDeepenNote,
 }) => {
-  const { books, notes } = usePragya();
+  const { books, notes: allNotes } = usePragya();
+  const { restoreNoteFromArchive } = useArchiveActions();
+  // C1.1: archived notes leave the stream, counts and search; they live behind the pill.
+  const notes = useMemo(() => withoutArchived(allNotes), [allNotes]);
+  const archivedNotes = useMemo(() => onlyArchived(allNotes), [allNotes]);
 
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState<NotesFilter>('all');
@@ -75,7 +83,7 @@ export const NotesView: React.FC<NotesViewProps> = ({
 
   const filteredNotes = useMemo(() => {
     const q = query.trim().toLowerCase();
-    return notes
+    return (filter === 'archived' ? archivedNotes : notes)
       .filter(n => {
         if (filter === 'to-spar' && n.status !== 'inbox' && n.status !== 'in-reflection') {
           return false;
@@ -102,7 +110,7 @@ export const NotesView: React.FC<NotesViewProps> = ({
         return haystack.includes(q);
       })
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
-  }, [bookMap, filter, notes, query, revealedSlugs]);
+  }, [archivedNotes, bookMap, filter, notes, query, revealedSlugs]);
 
   const showSpoilerSearchFootnote = useMemo(
     () =>
@@ -333,6 +341,22 @@ export const NotesView: React.FC<NotesViewProps> = ({
           >
             [[Concepts]] ({counts.concepts})
           </button>
+
+          {(archivedNotes.length > 0 || filter === 'archived') && (
+            <button
+              type="button"
+              data-testid="notes-filter-archived"
+              onClick={() => setFilter('archived')}
+              className={`h-8 px-3 rounded-full text-label font-medium transition-colors num inline-flex items-center gap-1.5 whitespace-nowrap ${
+                filter === 'archived'
+                  ? 'bg-primary text-primary-foreground'
+                  : 'bg-surface2 border border-border text-muted-foreground hover:text-foreground'
+              }`}
+            >
+              <Archive className="w-3.5 h-3.5" aria-hidden="true" />
+              <span>Archived ({archivedNotes.length})</span>
+            </button>
+          )}
         </div>
       </div>
 
@@ -373,6 +397,14 @@ export const NotesView: React.FC<NotesViewProps> = ({
                   />
                   {renderStatusBadge(note, book)}
                 </div>
+
+                {filter === 'archived' && (
+                  <ArchivedBanner
+                    compact
+                    date={archivedDateLabel(note)}
+                    onRestore={() => void restoreNoteFromArchive(note)}
+                  />
+                )}
 
                 {/* Spoiler Shield OR Content */}
                 {showShield ? (

@@ -3,7 +3,7 @@ import {
   SHEETS_CACHE_STORAGE_KEY,
   SPREADSHEET_ID_STORAGE_KEY,
 } from '../services/googleSheetsAdapter';
-import { clearAllDrafts } from './draftStorage';
+import { adoptLegacyDrafts, clearAllDrafts } from './draftStorage';
 import { CAPSTONE_HIDDEN_KEY } from './capstonePrompt';
 import { clearPreImportBackup } from './importSafety';
 
@@ -72,4 +72,16 @@ export function rememberCurrentAccount(): void {
 /** Explicit logout only. */
 export function forgetLastAccount(): void {
   localStorage.removeItem(LAST_ACCOUNT_EMAIL_KEY);
+}
+
+/**
+ * CD 1a fix-up (R1#1): legacy unscoped drafts are adopted into the scope of the real
+ * account that owns them — only when `email` matches the last-account marker. Demo
+ * never calls this, so it can never read another account's legacy drafts.
+ */
+export function adoptLegacyDraftsForAccount(email: string): number {
+  const next = (email || '').trim();
+  const marker = (localStorage.getItem(LAST_ACCOUNT_EMAIL_KEY) || '').trim();
+  if (!next || !marker || marker.toLowerCase() !== next.toLowerCase()) return 0;
+  return adoptLegacyDrafts(next);
 }

@@ -24,8 +24,8 @@ import type {
  * - `sparStage`: preserved verbatim (not coerced).
  */
 
-const BOOK_META_STRING_KEYS = ['coverUrl', 'startedAt', 'finishedAt', 'currentChapter'] as const;
-const NOTE_META_STRING_KEYS = ['title', 'exportedAt', 'lastReviewedAt', 'chapter'] as const;
+const BOOK_META_STRING_KEYS = ['coverUrl', 'startedAt', 'finishedAt', 'currentChapter', 'archivedAt'] as const;
+const NOTE_META_STRING_KEYS = ['title', 'exportedAt', 'lastReviewedAt', 'chapter', 'archivedAt'] as const;
 const NOTE_META_BOOLEAN_KEYS = ['isPrediction', 'ocrBackfilled'] as const;
 const LEGACY_QUESTION_KEYS = ['q1', 'q2', 'q3'] as const;
 const MAX_SOCRATIC_QUESTIONS = 3;
@@ -285,6 +285,14 @@ export const NOTE_CHAPTER_EDITOR_OWNED_META_KEYS: readonly string[] = [
 export const BOOK_DETAIL_CHAPTER_OWNED_META_KEYS: readonly string[] = ['currentChapter', 'updatedAt'];
 /** CapstoneModal: only the capstone (+ updatedAt). */
 export const CAPSTONE_OWNED_META_KEYS: readonly string[] = ['capstone', 'updatedAt'];
+/** C1.1 archive / restore of a book: only archivedAt (+ updatedAt). */
+export const BOOK_ARCHIVE_OWNED_META_KEYS: readonly string[] = ['archivedAt', 'updatedAt'];
+/** C1.1 archive / restore of a note: archivedAt + the paused-delta memo (+ updatedAt). */
+export const NOTE_ARCHIVE_OWNED_META_KEYS: readonly string[] = [
+  'archivedAt',
+  'archivedDeltaStatus',
+  'updatedAt',
+];
 
 /** Key-order-insensitive JSON for deep-equality checks. */
 function stableJson(value: unknown): string {

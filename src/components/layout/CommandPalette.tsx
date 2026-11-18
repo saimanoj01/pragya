@@ -14,6 +14,7 @@ import {
 import type { Book, Note } from '../../types/pragya';
 import { navigateTo } from '../../utils/navigation';
 import { isNoteSpoiler } from '../../utils/spoilerMath';
+import { isArchived } from '../../utils/archive';
 import { buildNoteSearchHaystack, noteHref, shieldedNoteLabel } from '../../utils/noteVisibility';
 
 export interface CommandPaletteProps {
@@ -167,6 +168,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
     ];
 
     for (const book of books) {
+      if (isArchived(book)) continue; // C1.1: archived books stay out of the palette
       list.push({
         id: `book-${book.id}`,
         title: book.title,
@@ -179,6 +181,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
     }
 
     for (const note of notes) {
+      if (isArchived(note)) continue; // C1.1
       const book = bookMap.get(note.bookId);
       const spoiler = isNoteSpoiler(note, book);
       // B2.2 / decisions.md #2: a shielded note shows only its position; title, slug and

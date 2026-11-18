@@ -289,9 +289,18 @@ test.describe('Tier 7 — M6 integrity & resilience (QA)', () => {
       await expect(page.getByTestId('shelf-view')).toBeVisible();
       await expect.poll(() => page.evaluate(() => localStorage.getItem('pragya_last_account_email'))).toBe(newEmail);
 
+      // CD 1a fix-up: drafts are scoped per account (`pragya_draft:<scope>:<key>`); the
+      // seeded legacy keys are adopted into the same account's scope, so look them up by
+      // logical-key suffix (legacy or scoped) instead of the raw legacy key.
       const snapshot = await page.evaluate(() => ({
-        draftEdit: localStorage.getItem('pragya_draft_edit_note-a'),
-        draftCapture: localStorage.getItem('pragya_draft_capture_v1'),
+        draftEdit: (() => {
+          const k = Object.keys(localStorage).find(x => x === 'pragya_draft_edit_note-a' || x.endsWith(':pragya_draft_edit_note-a'));
+          return k ? localStorage.getItem(k) : null;
+        })(),
+        draftCapture: (() => {
+          const k = Object.keys(localStorage).find(x => x === 'pragya_draft_capture_v1' || x.endsWith(':pragya_draft_capture_v1'));
+          return k ? localStorage.getItem(k) : null;
+        })(),
         backup: localStorage.getItem('pragya_pre_import_backup_v1'),
         sheetId: localStorage.getItem('pragya_spreadsheet_id'),
         expiresAt: Number(localStorage.getItem('pragya_google_token_expires_at')),

@@ -1,5 +1,5 @@
 import React, { useEffect, useId, useState } from 'react';
-import { X } from 'lucide-react';
+import { Archive, X } from 'lucide-react';
 import type { Book, BookFormat, BookKind, BookStatus, PosUnit } from '../../types/pragya';
 import { usePragya } from '../../context/PragyaContext';
 import { showToast } from '../../utils/toast';
@@ -7,6 +7,10 @@ import { Modal } from '../common/Modal';
 import { describeSyncError } from '../../utils/apiErrors';
 import { BOOK_CHAPTER_EDITOR_OWNED_META_KEYS } from '../../utils/metaCodecs';
 import { CHAPTER_MAX_LENGTH, withChapterKey } from '../../utils/chapterFormat';
+import { isArchived } from '../../utils/archive';
+import { navigateTo } from '../../utils/navigation';
+import { useArchiveActions } from '../../hooks/useArchiveActions';
+import { BTN_TERTIARY } from '../common/uiClasses';
 
 export interface EditBookModalProps {
   book: Book | null;
@@ -15,6 +19,21 @@ export interface EditBookModalProps {
 
 export const EditBookModal: React.FC<EditBookModalProps> = ({ book, onClose }) => {
   const { updateBook } = usePragya();
+  const { archiveBook } = useArchiveActions();
+  const [archiving, setArchiving] = useState(false);
+
+  // C1.1: archive the book as stored (unsaved form edits are discarded with the modal).
+  const handleArchive = async () => {
+    if (!book) return;
+    setArchiving(true);
+    const saved = await archiveBook(book);
+    setArchiving(false);
+    if (!saved) return;
+    onClose();
+    if (window.location.hash.startsWith(`#/book/${encodeURIComponent(book.id)}`)) {
+      navigateTo('#/shelf');
+    }
+  };
   const uid = useId();
   const fid = (name: string) => `${uid}-${name}`;
 
@@ -260,7 +279,22 @@ export const EditBookModal: React.FC<EditBookModalProps> = ({ book, onClose }) =
           />
         </div>
 
-        <div className="flex items-center justify-end gap-2 pt-2">
+        <div className="flex items-center justify-between gap-2 pt-2">
+          <div>
+            {!isArchived(book) && (
+              <button
+                type="button"
+                data-testid="archive-book-btn"
+                onClick={() => void handleArchive()}
+                disabled={submitting || archiving}
+                className={`${BTN_TERTIARY} h-10`}
+              >
+                <Archive className="w-4 h-4" aria-hidden="true" />
+                <span>Archive Book</span>
+              </button>
+            )}
+          </div>
+          <div className="flex items-center gap-2">
           <button
             type="button"
             onClick={onClose}
@@ -276,6 +310,7 @@ export const EditBookModal: React.FC<EditBookModalProps> = ({ book, onClose }) =
           >
             {submitting ? 'Saving…' : 'Save Changes'}
           </button>
+          </div>
         </div>
       </form>
     </Modal>

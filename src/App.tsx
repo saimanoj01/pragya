@@ -17,6 +17,8 @@ import { LoginView } from './components/views/LoginView';
 import { ShelfView } from './components/views/ShelfView';
 import { NotesView } from './components/views/NotesView';
 import { SettingsView } from './components/views/SettingsView';
+import { ConfirmDialog } from './components/common/ConfirmDialog';
+import { describeDrafts, hasAnyDraft } from './utils/draftStorage';
 import { BookDetailView } from './components/views/BookDetailView';
 import { NoteDetailView } from './components/views/NoteDetailView';
 import { PracticeView } from './components/views/PracticeView';
@@ -48,6 +50,15 @@ function PragyaShell() {
   const [deepeningNote, setDeepeningNote] = useState<Note | null>(null);
   const [editingNote, setEditingNote] = useState<Note | null>(null);
   const [showCommandPalette, setShowCommandPalette] = useState(false);
+  // CD C.1.5: logout asks first only when unsaved drafts exist on this device.
+  const [logoutDraftList, setLogoutDraftList] = useState<string | null>(null);
+  const requestLogout = () => {
+    if (!isMockMode && hasAnyDraft()) {
+      setLogoutDraftList(describeDrafts());
+      return;
+    }
+    void logout();
+  };
 
   useEffect(() => {
     const onHashChange = () => {
@@ -109,7 +120,7 @@ function PragyaShell() {
       />
     );
   } else if (route.view === 'settings') {
-    mainContent = <SettingsView />;
+    mainContent = <SettingsView onLogout={requestLogout} />;
   } else if (route.view === 'book' && route.bookId) {
     mainContent = (
       <BookDetailView
@@ -157,7 +168,7 @@ function PragyaShell() {
               toggleTheme={toggleTheme}
               onOpenCapture={() => openQuickCapture(null)}
               onOpenCommandPalette={() => setShowCommandPalette(true)}
-              logout={logout}
+              logout={requestLogout}
             />
 
             <main className="flex-1 overflow-y-auto print:overflow-visible px-4 md:px-8 print:px-0 pt-0 pb-24 md:pb-8 print:pb-0 w-full relative custom-scrollbar">
@@ -203,7 +214,7 @@ function PragyaShell() {
             onOpenCapture={() => openQuickCapture(null)}
             onOpenCommandPalette={() => setShowCommandPalette(true)}
             onSyncNow={() => void syncNow(true)}
-            onLogout={() => void logout()}
+            onLogout={requestLogout}
           />
 
           <QuickCaptureModal
@@ -259,6 +270,25 @@ function PragyaShell() {
         onContinueDemo={() => {
           setShowSessionExpiredModal(false);
           void loginAsMock();
+        }}
+      />
+
+      <ConfirmDialog
+        isOpen={logoutDraftList !== null}
+        title="Log out with unsaved drafts?"
+        tone="default"
+        body={`You have unsaved drafts on this device (${logoutDraftList || ''}). They'll stay on this device for when you sign back in. If a different account signs in on this browser, they'll be cleared.`}
+        confirmLabel="Log Out"
+        secondaryTone="destructive"
+        secondaryLabel="Discard drafts and log out"
+        onCancel={() => setLogoutDraftList(null)}
+        onSecondary={() => {
+          setLogoutDraftList(null);
+          void logout({ discardDrafts: true });
+        }}
+        onConfirm={() => {
+          setLogoutDraftList(null);
+          void logout();
         }}
       />
     </AppLayout>

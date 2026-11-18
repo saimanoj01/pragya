@@ -372,6 +372,9 @@ test.describe('Tier 1 — Foundation, Shelf, Quick Capture & Notes', () => {
     // Reset Demo Data restores original seed
     await page.getByTestId('nav-item-settings').click();
     await page.getByTestId('reset-demo-btn').click();
+    // CD C.1.5: Reset Demo Data now asks first (Cancel autofocused); confirm to proceed.
+    await expect(page.getByTestId('confirm-dialog')).toContainText('Reset demo data?');
+    await page.getByTestId('confirm-dialog-confirm-btn').click();
     await page.getByTestId('nav-item-shelf').click();
     await expect(page.getByTestId('activity-count')).toContainText('11 recorded sessions');
   });

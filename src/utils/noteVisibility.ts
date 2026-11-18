@@ -1,5 +1,8 @@
 import type { Book, Note } from '../types/pragya';
 import { formatPosDisplay, isNoteSpoiler } from './spoilerMath';
+import { isArchived } from './archive';
+
+export { isArchived };
 
 /**
  * Spoiler-safe search & discovery (ux_spec C.3). For a shielded, unrevealed note only
@@ -63,9 +66,10 @@ export function getPracticeDeltaLists(
 ): PracticeDeltaLists {
   const out: PracticeDeltaLists = { active: [], archived: [], shieldedIds: new Set() };
   for (const n of notes) {
+    if (isArchived(n)) continue; // C1.1: soft-archived notes leave Practice entirely
     const isActive = n.deltaStatus === 'active';
-    const isArchived = n.deltaStatus === 'paused' || n.deltaStatus === 'graduated';
-    if (!isActive && !isArchived) continue;
+    const isInactive = n.deltaStatus === 'paused' || n.deltaStatus === 'graduated';
+    if (!isActive && !isInactive) continue;
     if (isShielded(n, bookMap.get(n.bookId), revealedIds.has(n.id))) out.shieldedIds.add(n.id);
     (isActive ? out.active : out.archived).push(n);
   }
@@ -111,6 +115,7 @@ export function filterWikilinkCandidates(
   for (const n of notes) {
     if (exclude.noteId && n.id === exclude.noteId) continue;
     if (exclude.slug && n.slug === exclude.slug) continue;
+    if (isArchived(n)) continue; // C1.1: never offer an archived note
     if (books && isNoteSpoiler(n, bookMap.get(n.bookId))) continue;
     if (
       q &&

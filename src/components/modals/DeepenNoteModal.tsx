@@ -34,6 +34,7 @@ import { Modal } from '../common/Modal';
 import { WikilinkAutocomplete } from '../common/WikilinkAutocomplete';
 import { ImageLightbox } from './ImageLightbox';
 import { describeSyncError } from '../../utils/apiErrors';
+import { countOtherActiveDeltas } from '../../utils/archive';
 
 export interface DeepenNoteModalProps {
   note: Note | null;
@@ -312,7 +313,7 @@ export const DeepenNoteModal: React.FC<DeepenNoteModalProps> = ({
 
   const otherActiveCount = useMemo(() => {
     if (!note) return 0;
-    return notes.filter(n => n.id !== note.id && n.deltaStatus === 'active').length;
+    return countOtherActiveDeltas(notes, note.id);
   }, [note, notes]);
 
   const capReached = otherActiveCount >= 5;

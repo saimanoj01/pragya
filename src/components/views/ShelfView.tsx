@@ -6,6 +6,7 @@ import {
   Plus,
   ArrowRight,
   CheckCircle2,
+  ChevronRight,
   Play,
 } from 'lucide-react';
 import type { Book } from '../../types/pragya';
@@ -21,6 +22,9 @@ import {
 import { showToast } from '../../utils/toast';
 import { describeSyncError } from '../../utils/apiErrors';
 import { normalizeChapterInput } from '../../utils/chapterFormat';
+import { isArchived, onlyArchived, withoutArchived } from '../../utils/archive';
+import { useArchiveActions } from '../../hooks/useArchiveActions';
+import { BTN_SECONDARY, EYEBROW } from '../common/uiClasses';
 
 export interface ShelfViewProps {
   onOpenAddBook: () => void;
@@ -37,10 +41,14 @@ export const ShelfView: React.FC<ShelfViewProps> = ({
     usePragya();
   const [exactInputs, setExactInputs] = useState<Record<string, string>>({});
 
-  const readingBooks = useMemo(() => books.filter(b => b.status === 'reading'), [books]);
-  const queuedBooks = useMemo(() => books.filter(b => b.status === 'queued'), [books]);
-  const finishedBooks = useMemo(() => books.filter(b => b.status === 'finished'), [books]);
-  const pausedBooks = useMemo(() => books.filter(b => b.status === 'paused'), [books]);
+  // C1.1: archived books leave every Shelf section; they sit in the final disclosure.
+  const shelfBooks = useMemo(() => withoutArchived(books), [books]);
+  const archivedBooks = useMemo(() => onlyArchived(books), [books]);
+  const { restoreBookFromArchive } = useArchiveActions();
+  const readingBooks = useMemo(() => shelfBooks.filter(b => b.status === 'reading'), [shelfBooks]);
+  const queuedBooks = useMemo(() => shelfBooks.filter(b => b.status === 'queued'), [shelfBooks]);
+  const finishedBooks = useMemo(() => shelfBooks.filter(b => b.status === 'finished'), [shelfBooks]);
+  const pausedBooks = useMemo(() => shelfBooks.filter(b => b.status === 'paused'), [shelfBooks]);
 
   // Build 30-day activity array (index 0 = 29 days ago, index 29 = today)
   const activityDays = useMemo(() => {
@@ -67,7 +75,7 @@ export const ShelfView: React.FC<ShelfViewProps> = ({
       bookSessions[0]?.date || book.meta.updatedAt?.slice(0, 10) || getLocalDateString();
 
     const bookNotes = notes
-      .filter(n => n.bookId === book.id && !isNoteSpoiler(n, book))
+      .filter(n => n.bookId === book.id && !isArchived(n) && !isNoteSpoiler(n, book))
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 
     const latestNote = bookNotes[0];
@@ -581,6 +589,47 @@ export const ShelfView: React.FC<ShelfViewProps> = ({
             ))}
           </div>
         </section>
+      )}
+
+      {/* C1.1 Archived (collapsed, only when there are any) */}
+      {archivedBooks.length > 0 && (
+        <details data-testid="archived-books-section" className="group space-y-3">
+          <summary className="flex items-center justify-between gap-2 cursor-pointer list-none">
+            <span className={`${EYEBROW} tracking-wider num`}>Archived ({archivedBooks.length})</span>
+            <ChevronRight
+              className="w-4 h-4 text-muted-foreground transition-transform group-open:rotate-90"
+              aria-hidden="true"
+            />
+          </summary>
+          <ul className="space-y-2 pt-3">
+            {archivedBooks.map(book => (
+              <li
+                key={book.id}
+                data-testid={`archived-book-row-${book.id}`}
+                className="bg-card border border-border rounded-[14px] px-4 py-3 flex flex-wrap items-center gap-3"
+              >
+                <div className="min-w-0 flex-1">
+                  <button
+                    type="button"
+                    onClick={() => navigateTo(`#/book/${encodeURIComponent(book.id)}`)}
+                    className="text-left text-body font-medium text-foreground hover:underline truncate max-w-full"
+                  >
+                    {book.title}
+                  </button>
+                  <p className="text-label text-muted-foreground truncate">{book.author}</p>
+                </div>
+                <button
+                  type="button"
+                  data-testid={`archived-book-restore-btn-${book.id}`}
+                  onClick={() => void restoreBookFromArchive(book)}
+                  className={BTN_SECONDARY}
+                >
+                  Restore
+                </button>
+              </li>
+            ))}
+          </ul>
+        </details>
       )}
     </div>
   );

@@ -3,6 +3,7 @@ import { formatWhenDoDisplay } from './deltaFormat';
 import { formatChapterBadge } from './chapterFormat';
 import { effectiveNoteNorm, isNoteSpoiler, isSealedPrediction } from './spoilerMath';
 import { getBookCapstone } from './metaCodecs';
+import { isArchived } from './archive';
 
 /**
  * A2.3 / ux_spec A.5–A.6: zero-AI capstone helpers. Pure string work — no network, no
@@ -37,6 +38,7 @@ export function capstoneEligibleNotes(book: Book, notes: Note[]): Note[] {
   return notes.filter(
     n =>
       n.bookId === book.id &&
+      !isArchived(n) && // QA-27 / R1#2: CLI build_notes_summary parity
       (n.status === 'saved' || n.status === 'atomic') &&
       (finished || !(isNoteSpoiler(n, book) || isSealedPrediction(n, book)))
   );

@@ -8,6 +8,10 @@ export interface ModalProps {
   ariaLabel?: string;
   /** Id of the visible heading element inside the dialog; bound via aria-labelledby. */
   headingId?: string;
+  /** Id of the dialog's body text; bound via aria-describedby (ConfirmDialog). */
+  describedById?: string;
+  /** False for destructive confirmations: a stray backdrop tap must not count as an answer. */
+  dismissOnBackdrop?: boolean;
   dataTestId?: string;
   variant?: 'dialog' | 'sheet';
   /** When true (and variant='dialog'), docks as a full-width bottom sheet on <640px mobile. */
@@ -26,6 +30,8 @@ export function Modal({
   title,
   ariaLabel,
   headingId,
+  describedById,
+  dismissOnBackdrop = true,
   dataTestId,
   variant = 'dialog',
   mobileSheet = false,
@@ -148,7 +154,7 @@ export function Modal({
   if (!isOpen) return null;
 
   const handleBackdropClick = (e: React.MouseEvent<HTMLDivElement>) => {
-    if (e.target === e.currentTarget) {
+    if (dismissOnBackdrop && e.target === e.currentTarget) {
       onCloseRef.current();
     }
   };
@@ -161,6 +167,7 @@ export function Modal({
       role="dialog"
       aria-modal="true"
       aria-labelledby={headingId || undefined}
+      aria-describedby={describedById || undefined}
       aria-label={headingId ? undefined : ariaLabel || title || 'Dialog'}
       data-testid={dataTestId}
       onClick={handleBackdropClick}

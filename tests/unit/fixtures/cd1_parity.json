@@ -1,0 +1,42 @@
+{
+  "shuffle": {
+    "today": "2026-03-01",
+    "books": [
+      {"id": "b1", "title": "Thinking in Systems", "author": "Meadows", "format": "physical", "kind": "nonfiction", "status": "finished", "currentPos": 200, "totalPos": 200, "posUnit": "page", "normalizedPos": 1, "docUrl": "", "meta": {"updatedAt": "2026-01-01T00:00:00Z"}}
+    ],
+    "notes": [
+      {"id": "n-recent", "bookId": "b1", "slug": "n-recent", "status": "saved", "pos": 10, "normalizedPos": 0.05, "takeaway": "recent", "quote": "", "tags": [], "createdAt": "2026-01-01T12:00:00Z", "updatedAt": "2026-01-01T12:00:00Z", "deltaStatus": "none", "meta": {"lastReviewedAt": "2026-02-26"}},
+      {"id": "n-mid", "bookId": "b1", "slug": "n-mid", "status": "saved", "pos": 11, "normalizedPos": 0.055, "takeaway": "mid", "quote": "", "tags": [], "createdAt": "2026-01-01T12:00:00Z", "updatedAt": "2026-01-01T12:00:00Z", "deltaStatus": "none", "meta": {"lastReviewedAt": "2026-02-15"}},
+      {"id": "n-old", "bookId": "b1", "slug": "n-old", "status": "saved", "pos": 12, "normalizedPos": 0.06, "takeaway": "old", "quote": "", "tags": [], "createdAt": "2026-01-01T12:00:00Z", "updatedAt": "2026-01-01T12:00:00Z", "deltaStatus": "none", "meta": {"lastReviewedAt": "2026-01-15"}},
+      {"id": "n-never-b", "bookId": "b1", "slug": "n-never-b", "status": "atomic", "pos": 13, "normalizedPos": 0.065, "takeaway": "never b", "quote": "", "tags": [], "createdAt": "2026-01-01T12:00:00Z", "updatedAt": "2026-01-01T12:00:00Z", "deltaStatus": "none", "meta": {}},
+      {"id": "n-never-a", "bookId": "b1", "slug": "n-never-a", "status": "saved", "pos": 14, "normalizedPos": 0.07, "takeaway": "never a", "quote": "", "tags": [], "createdAt": "2026-01-01T12:00:00Z", "updatedAt": "2026-01-01T12:00:00Z", "deltaStatus": "none", "meta": {}},
+      {"id": "n-today", "bookId": "b1", "slug": "n-today", "status": "saved", "pos": 15, "normalizedPos": 0.075, "takeaway": "today", "quote": "", "tags": [], "createdAt": "2026-01-01T12:00:00Z", "updatedAt": "2026-01-01T12:00:00Z", "deltaStatus": "none", "meta": {"lastReviewedAt": "2026-03-01"}},
+      {"id": "n-archived", "bookId": "b1", "slug": "n-archived", "status": "saved", "pos": 16, "normalizedPos": 0.08, "takeaway": "archived", "quote": "", "tags": [], "createdAt": "2026-01-01T12:00:00Z", "updatedAt": "2026-01-01T12:00:00Z", "deltaStatus": "none", "meta": {"archivedAt": "2026-02-01T00:00:00Z"}},
+      {"id": "n-young", "bookId": "b1", "slug": "n-young", "status": "saved", "pos": 17, "normalizedPos": 0.085, "takeaway": "young", "quote": "", "tags": [], "createdAt": "2026-02-25T12:00:00Z", "updatedAt": "2026-02-25T12:00:00Z", "deltaStatus": "none", "meta": {}}
+    ],
+    "expectedBuckets": {"n-never-a": 0, "n-never-b": 0, "n-old": 1, "n-mid": 2, "n-recent": 3},
+    "expectedOrder": ["n-never-a", "n-never-b", "n-old", "n-mid", "n-recent"]
+  },
+  "doPrefix": [
+    ["Do not reply after 9pm", "Do not reply after 9pm"],
+    ["DO Do not refresh dashboards mid-incident", "Do not refresh dashboards mid-incident"],
+    ["DO DO wait", "wait"],
+    ["do: wait", "wait"],
+    ["DO: wait one cycle", "wait one cycle"],
+    ["Do wait one cycle", "wait one cycle"],
+    ["do do wait", "wait"],
+    ["Do nothing until the lag passes", "Do nothing until the lag passes"],
+    ["do no harm", "do no harm"],
+    ["Do none of it", "Do none of it"],
+    ["DO NOT call after 9pm", "DO NOT call after 9pm"],
+    ["Do notes review weekly", "notes review weekly"],
+    ["Don't reply after 9pm", "Don't reply after 9pm"],
+    ["do", ""],
+    ["DO   ", ""],
+    ["   ", ""],
+    ["Dodge the meeting", "Dodge the meeting"],
+    ["DO do: wait", "wait"],
+    ["DO: not after 9pm", "not after 9pm"],
+    ["do: Do not reply", "Do not reply"]
+  ]
+}

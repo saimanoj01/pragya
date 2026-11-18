@@ -23,11 +23,18 @@ import { readPreImportBackup } from '../../utils/importSafety';
 import { buildSnapshot, validateSnapshotPayload } from '../../utils/snapshot';
 import { showToast } from '../../utils/toast';
 import { OAuthSetupGuide } from '../common/OAuthSetupGuide';
+import { ConfirmDialog } from '../common/ConfirmDialog';
 import { ImportConfirmModal } from '../modals/ImportConfirmModal';
 import { describeSyncError } from '../../utils/apiErrors';
 
-export const SettingsView: React.FC = () => {
+export interface SettingsViewProps {
+  /** App-level logout request (asks first when unsaved drafts exist; CD C.1.5). */
+  onLogout?: () => void;
+}
+
+export const SettingsView: React.FC<SettingsViewProps> = ({ onLogout }) => {
   const { user, isMockMode, googleClientId, saveGoogleClientId, logout } = useAuth();
+  const [confirmAction, setConfirmAction] = useState<'reset-demo' | 'restore-backup' | null>(null);
   const {
     books,
     notes,
@@ -299,7 +306,7 @@ export const SettingsView: React.FC = () => {
               type="button"
               data-testid="restore-pre-import-backup-btn"
               disabled={restoringBackup}
-              onClick={() => void handleRestorePreImportBackup()}
+              onClick={() => setConfirmAction('restore-backup')}
               className="h-10 px-4 rounded-[10px] bg-surface2 hover:bg-secondary border border-border text-body font-medium text-foreground inline-flex items-center gap-2 disabled:opacity-50"
               title={`Saved ${new Date(preImportBackup.savedAt).toLocaleString()}`}
             >
@@ -314,7 +321,7 @@ export const SettingsView: React.FC = () => {
             <button
               type="button"
               data-testid="reset-demo-btn"
-              onClick={() => void resetDemoWorkspace()}
+              onClick={() => setConfirmAction('reset-demo')}
               className="h-10 px-4 rounded-[10px] bg-surface2 hover:bg-secondary border border-border text-body font-medium text-foreground inline-flex items-center gap-2"
             >
               <RotateCcw className="w-4 h-4" />
@@ -324,7 +331,7 @@ export const SettingsView: React.FC = () => {
 
           <button
             type="button"
-            onClick={() => void logout()}
+            onClick={() => (onLogout ? onLogout() : void logout())}
             className="h-10 px-4 rounded-[10px] bg-negative/10 hover:bg-negative/20 border border-negative/30 text-body font-medium text-negative inline-flex items-center gap-2 ml-auto"
           >
             <LogOut className="w-4 h-4" />
@@ -340,6 +347,39 @@ export const SettingsView: React.FC = () => {
           </div>
         )}
       </section>
+
+      <ConfirmDialog
+        isOpen={confirmAction === 'reset-demo'}
+        title="Reset demo data?"
+        body="This replaces everything in Demo mode with the original sample books and notes."
+        confirmLabel="Reset"
+        onCancel={() => setConfirmAction(null)}
+        onConfirm={() => {
+          setConfirmAction(null);
+          void resetDemoWorkspace();
+        }}
+      />
+      <ConfirmDialog
+        isOpen={confirmAction === 'restore-backup' && Boolean(preImportBackup)}
+        title="Restore your pre-import backup?"
+        body={
+          preImportBackup
+            ? `This replaces your current workspace with the backup saved ${new Date(
+                preImportBackup.savedAt
+              ).toLocaleString()} (${preImportBackup.snapshot.books.length} books, ${
+                preImportBackup.snapshot.notes.length
+              } notes). Changes made since then will be lost.`
+            : ''
+        }
+        confirmLabel="Restore Backup"
+        busy={restoringBackup}
+        onDownloadBackup={handleExportSnapshot}
+        onCancel={() => setConfirmAction(null)}
+        onConfirm={() => {
+          // Stays open (buttons disabled via `busy`) until the restore settles.
+          void handleRestorePreImportBackup().finally(() => setConfirmAction(null));
+        }}
+      />
 
       <ImportConfirmModal
         snapshot={pendingSnapshot}

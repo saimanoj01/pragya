@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
+  Archive,
   ArrowLeft,
   Edit3,
   Eye,
@@ -33,6 +34,16 @@ import {
 } from '../../utils/noteVisibility';
 import { DriveImage } from '../common/DriveImage';
 import { ChapterPosChip } from '../common/ChapterPosChip';
+import { ArchivedBanner } from '../common/ArchivedBanner';
+import { ConfirmDialog } from '../common/ConfirmDialog';
+import { BTN_TERTIARY } from '../common/uiClasses';
+import { useArchiveActions } from '../../hooks/useArchiveActions';
+import {
+  ARCHIVE_ACTIVE_DELTA_COPY,
+  archivedDateLabel,
+  isArchived,
+  withoutArchived,
+} from '../../utils/archive';
 import { ImageLightbox } from '../modals/ImageLightbox';
 
 export interface NoteDetailViewProps {
@@ -92,7 +103,27 @@ export const NoteDetailView: React.FC<NoteDetailViewProps> = ({
 
   const existingSlugSet = useMemo(() => new Set(notes.map(n => n.slug)), [notes]);
   const wikilinks = useMemo(() => (note ? extractNoteWikilinks(note) : []), [note]);
-  const backlinks = useMemo(() => (note ? computeBacklinks(note.slug, notes) : []), [note, notes]);
+  // C1.1: archived notes don't appear as backlinks.
+  const backlinks = useMemo(
+    () => (note ? computeBacklinks(note.slug, withoutArchived(notes)) : []),
+    [note, notes]
+  );
+  const { archiveNote, restoreNoteFromArchive } = useArchiveActions();
+  const [archiveConfirmOpen, setArchiveConfirmOpen] = useState(false);
+  const [archiveBusy, setArchiveBusy] = useState(false);
+  const runArchive = useCallback(async () => {
+    if (!note) return;
+    setArchiveBusy(true);
+    const saved = await archiveNote(note);
+    setArchiveBusy(false);
+    setArchiveConfirmOpen(false);
+    if (saved) navigateTo('#/notes');
+  }, [archiveNote, note]);
+  const requestArchive = useCallback(() => {
+    if (!note) return;
+    if (note.deltaStatus === 'active') setArchiveConfirmOpen(true);
+    else void runArchive();
+  }, [note, runArchive]);
 
   const imageAttachments = useMemo(
     () =>
@@ -256,8 +287,42 @@ export const NoteDetailView: React.FC<NoteDetailViewProps> = ({
             <Layers className="w-3.5 h-3.5" />
             <span>Deepen (D)</span>
           </button>
+
+          {!isArchived(note) && (
+            <button
+              type="button"
+              data-testid="note-detail-archive-btn"
+              onClick={requestArchive}
+              disabled={visibility.editDisabled || archiveBusy}
+              title={visibility.editTooltip}
+              aria-describedby={visibility.shielded ? 'note-detail-shield-text' : undefined}
+              className={`${BTN_TERTIARY} h-9 px-1`}
+            >
+              <Archive className="w-3.5 h-3.5" aria-hidden="true" />
+              <span>Archive</span>
+            </button>
+          )}
         </div>
       </div>
+
+      {isArchived(note) && (
+        <ArchivedBanner
+          date={archivedDateLabel(note)}
+          busy={archiveBusy}
+          onRestore={() => void restoreNoteFromArchive(note)}
+        />
+      )}
+
+      <ConfirmDialog
+        isOpen={archiveConfirmOpen}
+        tone="default"
+        title={ARCHIVE_ACTIVE_DELTA_COPY.title}
+        body={ARCHIVE_ACTIVE_DELTA_COPY.body}
+        confirmLabel={ARCHIVE_ACTIVE_DELTA_COPY.confirm}
+        busy={archiveBusy}
+        onCancel={() => setArchiveConfirmOpen(false)}
+        onConfirm={() => void runArchive()}
+      />
 
       <article className="bg-card border border-border rounded-[14px] p-5 sm:p-6 space-y-5">
         <div className="space-y-2">

@@ -204,6 +204,20 @@ python3 scripts/pragya_cli.py note-update --note delays-in-feedback-loops \
 - Delta rules: only a note whose resulting delta is **active** must be `atomic` (pass `--status atomic`, or pause with `--delta-status paused`). WHEN/DO are required only when `--delta-status` / `--trigger` / `--action` is passed, so unrelated edits on legacy rows aren't blocked. The `<= 5` active cap is enforced when `--delta-status` is passed. WHEN/DO prefixes are normalized.
 - The note must keep a takeaway, quote or renderable attachment. Conflict guard applies (`--force` to bypass after confirming with the user).
 
+**Soft-archive (`--archive` / `--unarchive`, books and notes):** archiving only sets `metaJson.archivedAt` (no columns change, nothing is deleted). Archived items still resolve by id/slug/title so they can be restored.
+- **Archived book:** drops out of `book-list` (use `--include-archived`) and refuses `capture` (offer `book-update --book <id> --unarchive` first). It hides **only the book** — its notes stay reachable in recall, the Companion Doc / Markdown timelines and `notesSummary`.
+- **Archived note:** drops out of `recall qa|checkin|shuffle`, `notesSummary`, per-note `export-md` and the Markdown book index, is no longer *added* to the Companion Doc, and never holds one of the 5 active-delta slots.
+- **Companion Doc text is never deleted:** an entry already written for a note that is archived later stays in the Doc; the user can remove it by hand. Don't tell the user it is "gone from the doc".
+
+```bash
+python3 scripts/pragya_cli.py note-update --note delays-in-feedback-loops --archive    # an active delta is paused (deltaPaused: true)
+python3 scripts/pragya_cli.py note-update --note delays-in-feedback-loops --unarchive  # reactivated if under the 5 cap, else deltaCapped: true
+python3 scripts/pragya_cli.py book-update --book "Thinking in Systems" --archive
+python3 scripts/pragya_cli.py book-list --include-archived
+```
+
+Never archive on the user's behalf without asking; confirm in one sentence afterwards ("Archived it. It's hidden from your lists and can be restored anytime.").
+
 ### 4. Spoiler-Safe Recall, Check-In & Takeaway Shuffle (`recall`)
 
 ```bash

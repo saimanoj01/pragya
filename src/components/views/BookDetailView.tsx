@@ -52,6 +52,9 @@ import {
   tryCopyText,
 } from '../../utils/capstonePrompt';
 import { ChapterPosChip } from '../common/ChapterPosChip';
+import { ArchivedBanner } from '../common/ArchivedBanner';
+import { useArchiveActions } from '../../hooks/useArchiveActions';
+import { archivedDateLabel, isArchived } from '../../utils/archive';
 import { CapstoneModal, CapstonePromptFallbackModal } from '../modals/CapstoneModal';
 
 const BTN_SECONDARY =
@@ -78,7 +81,8 @@ export const BookDetailView: React.FC<BookDetailViewProps> = ({
   const bookNotes = useMemo(
     () =>
       notes
-        .filter(n => n.bookId === bookId)
+        // QA-26: archived notes leave the book's Captured Notes too (direct links still work).
+        .filter(n => n.bookId === bookId && !isArchived(n))
         .sort((a, b) => a.pos - b.pos || a.createdAt.localeCompare(b.createdAt)),
     [bookId, notes]
   );
@@ -97,6 +101,7 @@ export const BookDetailView: React.FC<BookDetailViewProps> = ({
   const [capstoneHidden, setCapstoneHidden] = useState<boolean>(false);
   const [fallbackPrompt, setFallbackPrompt] = useState<string | null>(null);
   const capstoneHeadingId = useId();
+  const { restoreBookFromArchive } = useArchiveActions();
 
   useEffect(() => {
     setExactInput(book ? String(book.currentPos) : '0');
@@ -447,6 +452,14 @@ export const BookDetailView: React.FC<BookDetailViewProps> = ({
         <span>Back to Shelf</span>
       </button>
 
+      {isArchived(book) && (
+        <ArchivedBanner
+          kind="book"
+          date={archivedDateLabel(book)}
+          onRestore={() => void restoreBookFromArchive(book)}
+        />
+      )}
+
       {/* Book Header Card */}
       <section className="bg-card border border-border rounded-[14px] p-5 space-y-5">
         <div className="flex flex-wrap items-start justify-between gap-4">
@@ -486,6 +499,7 @@ export const BookDetailView: React.FC<BookDetailViewProps> = ({
               <Edit3 className="w-3.5 h-3.5" />
               <span>Edit</span>
             </button>
+            {!isArchived(book) && (
             <button
               type="button"
               onClick={() => onOpenCaptureForBook(book.id)}
@@ -494,6 +508,7 @@ export const BookDetailView: React.FC<BookDetailViewProps> = ({
               <Plus className="w-3.5 h-3.5" />
               <span>New Note</span>
             </button>
+            )}
           </div>
         </div>
 

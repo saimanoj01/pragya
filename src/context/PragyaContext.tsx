@@ -46,7 +46,8 @@ import { generateUniqueSlug } from '../utils/wikilinks';
 import { showToast } from '../utils/toast';
 import { buildSnapshot } from '../utils/snapshot';
 import { savePreImportBackup } from '../utils/importSafety';
-import { clearAllDrafts } from '../utils/draftStorage';
+import { DEMO_DRAFT_SCOPE, clearAllDrafts } from '../utils/draftStorage';
+import { countOtherActiveDeltas } from '../utils/archive';
 import { clampNotePos } from '../utils/positionClamp';
 import { normalizeChapterInput } from '../utils/chapterFormat';
 import {
@@ -736,9 +737,7 @@ export const PragyaProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       enqueueMutation(async () => {
         assertCloudWritable();
         if (note.deltaStatus === 'active') {
-          const otherActiveCount = notesRef.current.filter(
-            n => n.id !== note.id && n.deltaStatus === 'active'
-          ).length;
+          const otherActiveCount = countOtherActiveDeltas(notesRef.current, note.id);
           if (otherActiveCount >= 5) {
             throw new Error(
               'Active Behavioral Delta cap (5/5) reached. Graduate or pause an active delta first.'
@@ -860,7 +859,8 @@ export const PragyaProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     () =>
       enqueueMutation(async () => {
         if (!adapter.resetDemoData) return;
-        clearAllDrafts();
+        // CD 1a fix-up: Reset Demo clears only Demo drafts (real-account scopes untouched).
+        clearAllDrafts({ scope: DEMO_DRAFT_SCOPE });
         const fresh = await adapter.resetDemoData();
         booksRef.current = fresh.books;
         notesRef.current = fresh.notes;

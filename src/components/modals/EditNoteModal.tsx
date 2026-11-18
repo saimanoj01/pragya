@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
+  Archive,
   FileText,
   Image as ImageIcon,
   Link2,
@@ -39,6 +40,11 @@ import { DriveImage } from '../common/DriveImage';
 import { Modal } from '../common/Modal';
 import { WikilinkAutocomplete } from '../common/WikilinkAutocomplete';
 import { describeSyncError } from '../../utils/apiErrors';
+import { ARCHIVE_ACTIVE_DELTA_COPY, countOtherActiveDeltas, isArchived } from '../../utils/archive';
+import { navigateTo } from '../../utils/navigation';
+import { useArchiveActions } from '../../hooks/useArchiveActions';
+import { ConfirmDialog } from '../common/ConfirmDialog';
+import { BTN_TERTIARY } from '../common/uiClasses';
 
 export interface EditNoteModalProps {
   note: Note | null;
@@ -57,6 +63,9 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
   onSaved,
 }) => {
   const { books, notes, updateNote, uploadImageAttachment, resolveDocTitle } = usePragya();
+  const { archiveNote } = useArchiveActions();
+  const [archiving, setArchiving] = useState(false);
+  const [archiveConfirmOpen, setArchiveConfirmOpen] = useState(false);
   const baseId = useId();
   const headingId = `${baseId}-heading`;
   const titleId = `${baseId}-title`;
@@ -405,7 +414,7 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
 
   const otherActiveCount = useMemo(() => {
     if (!note) return 0;
-    return notes.filter(n => n.id !== note.id && n.deltaStatus === 'active').length;
+    return countOtherActiveDeltas(notes, note.id);
   }, [note, notes]);
 
   const isDeltaCapViolation = otherActiveCount >= 5 && deltaStatus === 'active';
@@ -620,6 +629,27 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
     } finally {
       setSubmitting(false);
     }
+  };
+
+  // C1.1: archive the note as stored (unsaved form edits are discarded with the modal).
+  const runArchive = async () => {
+    if (!note) return;
+    setArchiving(true);
+    const saved = await archiveNote(note);
+    setArchiving(false);
+    setArchiveConfirmOpen(false);
+    if (!saved) return;
+    submittedOrDiscardedRef.current = true;
+    clearDraft(getEditNoteDraftKey(note.id));
+    onClose();
+    const hash = window.location.hash;
+    if (hash.startsWith(`#/note/${encodeURIComponent(note.slug)}`) || hash.startsWith(`#/note/${encodeURIComponent(note.id)}`)) {
+      navigateTo('#/notes');
+    }
+  };
+  const requestArchive = () => {
+    if (note?.deltaStatus === 'active') setArchiveConfirmOpen(true);
+    else void runArchive();
   };
 
   if (!note) return null;
@@ -1117,24 +1147,50 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
           )}
         </div>
 
-        <div className="flex items-center justify-end gap-2 pt-2">
-          <button
-            type="button"
-            onClick={onClose}
-            className="h-10 px-4 rounded-[10px] text-body font-medium text-muted-foreground hover:text-foreground hover:bg-surface2"
-          >
-            Cancel
-          </button>
-          <button
-            type="submit"
-            disabled={submitting || uploadingImage}
-            data-testid="edit-note-submit-btn"
-            className="h-10 px-5 rounded-[10px] bg-primary text-primary-foreground font-semibold text-body hover:opacity-90 disabled:opacity-50"
-          >
-            {submitting ? 'Saving…' : 'Save Changes'}
-          </button>
+        <div className="flex items-center justify-between gap-2 pt-2">
+          <div>
+            {!isArchived(note) && (
+              <button
+                type="button"
+                data-testid="archive-note-btn"
+                onClick={requestArchive}
+                disabled={submitting || uploadingImage || archiving}
+                className={`${BTN_TERTIARY} h-10`}
+              >
+                <Archive className="w-4 h-4" aria-hidden="true" />
+                <span>Archive Note</span>
+              </button>
+            )}
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={onClose}
+              className="h-10 px-4 rounded-[10px] text-body font-medium text-muted-foreground hover:text-foreground hover:bg-surface2"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={submitting || uploadingImage}
+              data-testid="edit-note-submit-btn"
+              className="h-10 px-5 rounded-[10px] bg-primary text-primary-foreground font-semibold text-body hover:opacity-90 disabled:opacity-50"
+            >
+              {submitting ? 'Saving…' : 'Save Changes'}
+            </button>
+          </div>
         </div>
       </form>
+      <ConfirmDialog
+        isOpen={archiveConfirmOpen}
+        tone="default"
+        title={ARCHIVE_ACTIVE_DELTA_COPY.title}
+        body={ARCHIVE_ACTIVE_DELTA_COPY.body}
+        confirmLabel={ARCHIVE_ACTIVE_DELTA_COPY.confirm}
+        busy={archiving}
+        onCancel={() => setArchiveConfirmOpen(false)}
+        onConfirm={() => void runArchive()}
+      />
     </Modal>
   );
 };

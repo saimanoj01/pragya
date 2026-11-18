@@ -19,8 +19,13 @@ import { getLocalDateString } from '../../utils/sessionCoalesce';
 import { buildSnapshot, validateSnapshotPayload } from '../../utils/snapshot';
 import { isNoteSpoiler, isUnlockedPrediction } from '../../utils/spoilerMath';
 import { ChapterPosChip } from '../common/ChapterPosChip';
+import { isArchived } from '../../utils/archive';
 import { getPracticeDeltaLists, noteHref, shieldedNoteLabel } from '../../utils/noteVisibility';
-import { getShuffleEmptyReason, selectTakeawayShuffle } from '../../utils/takeawayShuffle';
+import {
+  getShuffleEmptyReason,
+  selectTakeawayShuffle,
+  shuffleProvenanceLabel,
+} from '../../utils/takeawayShuffle';
 import { showToast } from '../../utils/toast';
 import { ImportConfirmModal } from '../modals/ImportConfirmModal';
 import { describeSyncError } from '../../utils/apiErrors';
@@ -76,7 +81,7 @@ export const PracticeView: React.FC = () => {
   );
 
   const unlockedPredictions = useMemo(
-    () => notes.filter(n => isUnlockedPrediction(n, bookMap.get(n.bookId))),
+    () => notes.filter(n => !isArchived(n) && isUnlockedPrediction(n, bookMap.get(n.bookId))),
     [bookMap, notes]
   );
 
@@ -719,6 +724,13 @@ export const PracticeView: React.FC = () => {
                     >
                       Open ↗
                     </button>
+
+                    <span
+                      data-testid={`shuffle-provenance-${note.slug}`}
+                      className="text-label text-muted-foreground num truncate min-w-0"
+                    >
+                      {shuffleProvenanceLabel(note, todayDate)}
+                    </span>
 
                     <button
                       type="button"

@@ -11,12 +11,12 @@ import {
   resolvePostLoginHash,
 } from '../utils/navigation';
 import { OFFLINE_INFO_TOAST } from '../utils/offline';
-import { clearAllDrafts } from '../utils/draftStorage';
+import { DEMO_DRAFT_SCOPE, clearAllDrafts } from '../utils/draftStorage';
 import { CAPSTONE_HIDDEN_KEY } from '../utils/capstonePrompt';
 import { clearPreImportBackup } from '../utils/importSafety';
 import {
+  adoptLegacyDraftsForAccount,
   applySignedInAccount,
-  forgetLastAccount,
   rememberCurrentAccount,
 } from '../utils/accountSession';
 import {
@@ -141,6 +141,11 @@ function clearOAuthHash(): void {
   }
 }
 
+export interface LogoutOptions {
+  /** "Discard drafts and log out" in the logout confirmation (CD C.1.5). */
+  discardDrafts?: boolean;
+}
+
 export interface AuthContextType {
   user: User | null;
   isAuthenticated: boolean;
@@ -152,7 +157,7 @@ export interface AuthContextType {
   getGoogleToken: () => string | null;
   login: () => Promise<{ ok: boolean; reason?: 'missing_client_id' | 'offline' | 'error' }>;
   loginAsMock: () => Promise<void>;
-  logout: () => Promise<void>;
+  logout: (options?: LogoutOptions) => Promise<void>;
   showSessionExpiredModal: boolean;
   setShowSessionExpiredModal: (show: boolean) => void;
   triggerSessionExpired: () => void;
@@ -228,6 +233,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   useEffect(() => {
     rememberCurrentAccount();
+    // CD 1a fix-up: adopt pre-scoping drafts into the signed-in real account's scope.
+    if (localStorage.getItem(MOCK_MODE_KEY) !== 'true') {
+      try {
+        const stored = JSON.parse(localStorage.getItem(GOOGLE_USER_KEY) || 'null') as { email?: string } | null;
+        if (stored?.email) adoptLegacyDraftsForAccount(stored.email);
+      } catch {
+        // Unreadable profile: leave legacy drafts alone.
+      }
+    }
     const existingToken = localStorage.getItem(GOOGLE_TOKEN_KEY);
     if (existingToken && !isUsableStoredToken(existingToken)) {
       const expiredByClock = !isInvalidOrExpiredToken(existingToken) && isStoredTokenExpired();
@@ -331,6 +345,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         }
 
         localStorage.setItem(GOOGLE_USER_KEY, JSON.stringify(profile));
+        // CD 1a fix-up: legacy unscoped drafts belong to this (same) account.
+        adoptLegacyDraftsForAccount(profile.email);
         setUser(profile);
         setIsAuthenticated(true);
         // M4.4: restore the validated pre-login route (fallback #/shelf).
@@ -439,6 +455,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       email: 'demo@pragya.local',
       name: 'Demo Reader',
     };
+    // CD 1a fix-up (R1#1): drafts are scoped per account, so a real account's kept
+    // drafts are invisible in Demo by construction — nothing is wiped here.
     clearStoredToken();
     localStorage.removeItem(GOOGLE_USER_KEY);
     clearPreImportBackup();
@@ -450,8 +468,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setShowSessionExpiredModal(false);
   }, []);
 
-  const logout = useCallback(async () => {
+  const logout = useCallback(async (options: LogoutOptions = {}) => {
     setIsLoading(true);
+    const wasDemo = localStorage.getItem(MOCK_MODE_KEY) === 'true';
     const token = localStorage.getItem(GOOGLE_TOKEN_KEY);
     if (token) {
       try {
@@ -470,10 +489,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     localStorage.removeItem(SHEETS_CACHE_STORAGE_KEY);
     localStorage.removeItem(MEDIA_FOLDER_ID_STORAGE_KEY);
     localStorage.removeItem(SPREADSHEET_ID_STORAGE_KEY);
-    clearAllDrafts();
+    // CD C.1.5 / decisions Q2: unsaved drafts STAY on this device after logout (the
+    // confirm dialog says so). The last-account marker is kept too, so a different
+    // account signing in later still triggers the account-switch wipe + N3 toast.
+    // Demo drafts are throwaway and never carried into a real account.
+    if (options.discardDrafts) clearAllDrafts({ scope: 'all' });
+    else if (wasDemo) clearAllDrafts({ scope: DEMO_DRAFT_SCOPE });
     clearPreImportBackup();
     localStorage.removeItem(CAPSTONE_HIDDEN_KEY);
-    forgetLastAccount();
     sessionStorage.removeItem(OAUTH_CSRF_STATE_KEY);
     sessionStorage.removeItem(OAUTH_RETURN_ROUTE_KEY);
     if (typeof caches !== 'undefined') {

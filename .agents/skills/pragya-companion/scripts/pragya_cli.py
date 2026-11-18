@@ -206,6 +206,18 @@ def effective_note_norm(note: dict[str, Any], book: dict[str, Any] | None) -> fl
 SPOILER_NORM_EPSILON = 1e-6
 
 
+def is_archived(entity: dict[str, Any] | None) -> bool:
+    """C1.1 soft-archive: a non-empty `meta.archivedAt` (TS `isArchived` parity).
+
+    Archived books/notes are excluded from default lists (book-list, recall, Doc/MD
+    timelines, notesSummary) but still resolve by id/slug so they can be unarchived.
+    """
+    if not isinstance(entity, dict):
+        return False
+    value = (entity.get("meta") or {}).get("archivedAt")
+    return isinstance(value, str) and value.strip() != ""
+
+
 def is_note_spoiler(note: dict[str, Any], book: dict[str, Any] | None) -> bool:
     if not book or book.get("status") == "finished":
         return False
@@ -244,7 +256,30 @@ def strip_delta_prefix(value: str, prefix: str) -> str:
         return ""
     if prefix == "WHEN":
         return WHEN_PREFIX_RE.sub("", trimmed).strip()
-    return DO_PREFIX_RE.sub("", trimmed).strip()
+    return strip_do_prefix(trimmed)
+
+
+DO_NEGATION_RE = re.compile(r"^do\s+(?:not|nothing|n't|no|none)(?![\w'])", re.IGNORECASE)
+
+
+def strip_do_prefix(value: str) -> str:
+    """C5.3 / OQ-4: strip a DO prefix only when unambiguous (TS `stripDoPrefix` parity).
+
+    `do:` (any case), repeated `DO DO`, or `do ` not followed by a negation word.
+    `Do not reply after 9pm` stays intact; a lone `do` becomes ''.
+    """
+    s = (value or "").strip()
+    while True:
+        if re.fullmatch(r"do\s*", s, re.IGNORECASE):
+            return ""
+        colon = re.match(r"^do\s*:\s*", s, re.IGNORECASE)
+        if colon:
+            s = s[colon.end():].strip()
+            continue
+        if re.match(r"^do\s+", s, re.IGNORECASE) and not DO_NEGATION_RE.match(s):
+            s = re.sub(r"^do\s+", "", s, count=1, flags=re.IGNORECASE).strip()
+            continue
+        return s
 
 
 def normalize_delta_trigger(value: str) -> str:
@@ -355,12 +390,44 @@ def parse_date_only_utc(date_str: str) -> datetime | None:
         return None
 
 
+def to_local_date_key(value: Any) -> str | None:
+    """C5.1: the user's LOCAL calendar date (`YYYY-MM-DD`) for a stored value.
+
+    Date-only strings pass through; ISO timestamps (with a `T`) convert via astimezone().
+    A timestamp without an offset is read as UTC (parse_iso_utc). TS mirror:
+    `toLocalDateKey` in src/utils/takeawayShuffle.ts.
+    """
+    s = value.strip() if isinstance(value, str) else ""
+    if not s:
+        return None
+    m = re.match(r"^(\d{4}-\d{2}-\d{2})", s)
+    if "T" not in s:
+        return m.group(1) if m else None
+    dt = parse_iso_utc(s)
+    if dt is None:
+        return m.group(1) if m else None
+    return dt.astimezone().strftime("%Y-%m-%d")
+
+
 def calendar_days_between(from_iso: str, to_date_str: str) -> int:
-    start = parse_date_only_utc(from_iso)
-    end = parse_date_only_utc(to_date_str)
+    start = parse_date_only_utc(to_local_date_key(from_iso) or "")
+    end = parse_date_only_utc(to_local_date_key(to_date_str) or "")
     if start is None or end is None:
         return 0
     return (end - start).days
+
+
+def shuffle_staleness_bucket(note: dict[str, Any], today_date: str) -> int:
+    """C5.2: 0 never reviewed, 1 reviewed > 30 days ago, 2 reviewed 8-30 days ago, 3 <= 7."""
+    reviewed = to_local_date_key((note.get("meta") or {}).get("lastReviewedAt"))
+    if not reviewed:
+        return 0
+    days = calendar_days_between(reviewed, today_date)
+    if days > 30:
+        return 1
+    if days >= 8:
+        return 2
+    return 3
 
 
 def is_favorite_note(note: dict[str, Any]) -> bool:
@@ -378,19 +445,11 @@ def is_eligible_for_shuffle(
         return False
     if is_sealed_prediction(note, book):
         return False
-    last_reviewed = (note.get("meta") or {}).get("lastReviewedAt")
-    if last_reviewed:
-        lr = str(last_reviewed)
-        if "T" in lr:
-            dt = parse_iso_utc(lr)
-            if dt is not None:
-                local_lr = dt.astimezone().strftime("%Y-%m-%d")
-                if local_lr == today_date or lr[:10] == today_date:
-                    return False
-            elif lr[:10] == today_date:
-                return False
-        elif lr[:10] == today_date:
-            return False
+    if is_archived(note):
+        return False
+    # C5.1: "reviewed today" means the user's local date (no UTC-slice shortcut).
+    if to_local_date_key((note.get("meta") or {}).get("lastReviewedAt")) == today_date:
+        return False
     if not (note.get("takeaway") or "").strip() and not (note.get("quote") or "").strip():
         return False
     if is_favorite_note(note):
@@ -409,7 +468,13 @@ def select_takeaway_shuffle(
     eligible = [
         n for n in notes if is_eligible_for_shuffle(n, book_map.get(n.get("bookId", "")), target_date)
     ]
-    eligible.sort(key=lambda n: (fnv1a_32(f"{target_date}:{n['id']}"), n["id"]))
+    eligible.sort(
+        key=lambda n: (
+            shuffle_staleness_bucket(n, target_date),
+            fnv1a_32(f"{target_date}:{n['id']}"),
+            n["id"],
+        )
+    )
     return eligible[: max(0, limit)]
 
 
@@ -534,8 +599,8 @@ def json_dumps_strict(value: Any, **kwargs: Any) -> str:
 # renderable_attachments), `capstone` (see get_book_capstone) and `sparStage`.
 # ---------------------------------------------------------------------------
 
-BOOK_META_STRING_KEYS = ("coverUrl", "startedAt", "finishedAt", "currentChapter")
-NOTE_META_STRING_KEYS = ("title", "exportedAt", "lastReviewedAt", "chapter")
+BOOK_META_STRING_KEYS = ("coverUrl", "startedAt", "finishedAt", "currentChapter", "archivedAt")
+NOTE_META_STRING_KEYS = ("title", "exportedAt", "lastReviewedAt", "chapter", "archivedAt")
 NOTE_META_BOOLEAN_KEYS = ("isPrediction", "ocrBackfilled")
 LEGACY_QUESTION_KEYS = ("q1", "q2", "q3")
 MAX_SOCRATIC_QUESTIONS = 3
@@ -2110,8 +2175,11 @@ def check_active_delta_cap(
 ) -> None:
     if next_delta_status != "active":
         return
+    # R1#3: archived notes never hold one of the 5 slots (matches the PWA Practice N/5).
     other_active = [
-        n for n in notes if n["id"] != target_note_id and n.get("deltaStatus") == "active"
+        n
+        for n in notes
+        if n["id"] != target_note_id and n.get("deltaStatus") == "active" and not is_archived(n)
     ]
     if len(other_active) >= ACTIVE_DELTA_CAP:
         raise CliError(
@@ -2304,7 +2372,9 @@ def build_notes_summary(
     picked = [
         n
         for n in notes
-        if n.get("bookId") == book.get("id") and n.get("status") in ("saved", "atomic")
+        if n.get("bookId") == book.get("id")
+        and n.get("status") in ("saved", "atomic")
+        and not is_archived(n)
     ]
 
     def reading_key(n: dict[str, Any]) -> tuple[float, float, str]:
@@ -2374,8 +2444,13 @@ def finish_transition_extras(
 
 def cmd_book_list(args: argparse.Namespace, backend: WorkspaceBackend) -> dict[str, Any]:
     ws = backend.load_workspace()
-    active_delta_count = sum(1 for n in ws["notes"] if n.get("deltaStatus") == "active")
+    active_delta_count = sum(
+        1 for n in ws["notes"] if n.get("deltaStatus") == "active" and not is_archived(n)
+    )
     books = list(ws["books"])
+    archived_count = sum(1 for b in books if is_archived(b))
+    if not getattr(args, "include_archived", False):
+        books = [b for b in books if not is_archived(b)]
 
     status_filter = getattr(args, "status", None)
     kind_filter = getattr(args, "kind", None)
@@ -2396,6 +2471,7 @@ def cmd_book_list(args: argparse.Namespace, backend: WorkspaceBackend) -> dict[s
     return {
         "count": len(books),
         "activeDeltaCount": active_delta_count,
+        "archivedCount": archived_count,
         "books": books,
     }
 
@@ -2492,10 +2568,12 @@ def cmd_book_update(args: argparse.Namespace, backend: WorkspaceBackend) -> dict
         args.cover_url,
         getattr(args, "chapter", None),
     )
-    if all(v is None for v in mutable_values):
+    archive_flag = bool(getattr(args, "archive", False))
+    unarchive_flag = bool(getattr(args, "unarchive", False))
+    if all(v is None for v in mutable_values) and not (archive_flag or unarchive_flag):
         raise CliError(
             "Provide at least one mutable field to update "
-            "(e.g. --status, --pos, --total-pos, --title, --chapter)."
+            "(e.g. --status, --pos, --total-pos, --title, --chapter, --archive)."
         )
 
     if args.title is not None and not args.title.strip():
@@ -2545,6 +2623,10 @@ def cmd_book_update(args: argparse.Namespace, backend: WorkspaceBackend) -> dict
     chapter = _chapter_arg(getattr(args, "chapter", None))
     if chapter is not None:
         _apply_chapter(meta, "currentChapter", chapter)
+    if archive_flag and not is_archived(updated):
+        meta["archivedAt"] = now_iso_utc()
+    elif unarchive_flag:
+        meta.pop("archivedAt", None)
 
     next_unit = updated.get("posUnit") or "page"
     next_total = float(updated.get("totalPos") or 0)
@@ -2738,6 +2820,11 @@ def cmd_capture(args: argparse.Namespace, backend: WorkspaceBackend) -> dict[str
 
     ws = backend.load_workspace()
     book = resolve_book(ws["books"], args.book)
+    if is_archived(book):
+        raise CliError(
+            f"Book \"{book.get('title', '')}\" is archived. Restore it first with "
+            f"`book-update --book {book.get('id')} --unarchive`, then capture."
+        )
     check_active_delta_cap(ws["notes"], "", delta_status)
 
     now_iso = now_iso_utc()
@@ -2956,9 +3043,14 @@ def cmd_note_update(args: argparse.Namespace, backend: WorkspaceBackend) -> dict
     re-derived (even when --title/--takeaway change) so existing [[wikilinks]] keep
     resolving; renaming a slug stays a reflect --stage commit --slug / EditNoteModal action.
     """
-    if all(getattr(args, f, None) is None for f in NOTE_UPDATE_FIELDS):
+    archive_flag = bool(getattr(args, "archive", False))
+    unarchive_flag = bool(getattr(args, "unarchive", False))
+    if all(getattr(args, f, None) is None for f in NOTE_UPDATE_FIELDS) and not (
+        archive_flag or unarchive_flag
+    ):
         raise CliError(
-            "Provide at least one field to update (e.g. --status saved, --takeaway, --chapter)."
+            "Provide at least one field to update "
+            "(e.g. --status saved, --takeaway, --chapter, --archive)."
         )
 
     ws = backend.load_workspace()
@@ -2993,6 +3085,31 @@ def cmd_note_update(args: argparse.Namespace, backend: WorkspaceBackend) -> dict
     if args.tags is not None:
         updated["tags"] = parse_tags_csv(args.tags)
 
+    # C1.1 soft-archive (OQ-3): archiving pauses an ACTIVE delta and remembers it in
+    # meta.archivedDeltaStatus; unarchiving reactivates it only while under the cap.
+    archive_extras: dict[str, Any] = {}
+    if archive_flag and not is_archived(updated):
+        meta["archivedAt"] = now_iso_utc()
+        if (updated.get("deltaStatus") or "none") == "active" and args.delta_status is None:
+            updated["deltaStatus"] = "paused"
+            meta["archivedDeltaStatus"] = "active"
+            archive_extras["deltaPaused"] = True
+    elif unarchive_flag:
+        wanted = meta.get("archivedDeltaStatus") == "active" and updated.get("deltaStatus") == "paused"
+        meta.pop("archivedAt", None)
+        meta.pop("archivedDeltaStatus", None)
+        if wanted and args.delta_status is None:
+            others = sum(
+                1
+                for n in ws["notes"]
+                if n.get("id") != note["id"] and n.get("deltaStatus") == "active" and not is_archived(n)
+            )
+            if others < ACTIVE_DELTA_CAP:
+                updated["deltaStatus"] = "active"
+                archive_extras["deltaReactivated"] = True
+            else:
+                archive_extras["deltaCapped"] = True
+
     next_delta = updated.get("deltaStatus") or "none"
     delta_flags_passed = (
         args.delta_status is not None or args.trigger is not None or args.action is not None
@@ -3026,7 +3143,9 @@ def cmd_note_update(args: argparse.Namespace, backend: WorkspaceBackend) -> dict
     updated["updatedAt"] = now_iso_utc()
     force = bool(getattr(args, "force", False))
     backend.save_note(updated, expected_base_updated_at=note.get("updatedAt"), force=force)
-    return {"note": updated}
+    result: dict[str, Any] = {"note": updated}
+    result.update(archive_extras)
+    return result
 
 
 def _build_spoiler_safe_questions(book: dict[str, Any]) -> list[str]:
@@ -3207,6 +3326,8 @@ def cmd_recall(args: argparse.Namespace, backend: WorkspaceBackend) -> dict[str,
             b = book_map.get(n.get("bookId", ""))
             if target_book and n.get("bookId") != target_book["id"]:
                 continue
+            if is_archived(n):
+                continue
             if is_note_spoiler(n, b):
                 excluded_spoilers += 1
                 continue
@@ -3285,7 +3406,7 @@ def cmd_recall(args: argparse.Namespace, backend: WorkspaceBackend) -> dict[str,
 
         active = []
         for n in ws["notes"]:
-            if n.get("deltaStatus") == "active":
+            if n.get("deltaStatus") == "active" and not is_archived(n):
                 _, _, when_line, do_line = format_when_do_lines(
                     n.get("deltaTrigger") or "",
                     n.get("deltaAction") or "",
@@ -3441,6 +3562,10 @@ def cmd_ocr_backfill(args: argparse.Namespace, backend: WorkspaceBackend) -> dic
 
 def _needs_md_export(note: dict[str, Any]) -> bool:
     if note.get("status") != "atomic":
+        return False
+    # QA-25 / R1#4: archived notes aren't exported (matches the MD index and doc-sync).
+    # Files already written are left alone (never delete user-visible output).
+    if is_archived(note):
         return False
     exported_raw = (note.get("meta") or {}).get("exportedAt")
     if not exported_raw:
@@ -3687,7 +3812,12 @@ def select_book_timeline_with_shield(
 ) -> tuple[list[dict[str, Any]], int]:
     """(timeline, shieldedCount): see select_book_timeline."""
     statuses = TIMELINE_STATUSES + (DRAFT_STATUSES if include_drafts else ())
-    picked = [n for n in notes if n.get("bookId") == book.get("id") and n.get("status") in statuses]
+    # C1.1: archived notes never enter the Doc / Markdown timeline.
+    picked = [
+        n
+        for n in notes
+        if n.get("bookId") == book.get("id") and n.get("status") in statuses and not is_archived(n)
+    ]
     shielded = 0
     if not include_spoilers:
         visible = [n for n in picked if not _is_timeline_shielded(n, book)]
@@ -4675,6 +4805,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_blist.add_argument("--status", default=None, choices=["reading", "queued", "finished", "paused"], help="Filter by shelf status.")
     p_blist.add_argument("--kind", default=None, choices=["nonfiction", "fiction"], help="Filter by book kind.")
     p_blist.add_argument("--query", default="", help="Case-insensitive title/author/ID filter.")
+    p_blist.add_argument("--include-archived", action="store_true", help="Include soft-archived books (meta.archivedAt).")
 
     # 0b. book-add
     p_badd = sub.add_parser("book-add", parents=[common], help="Add a book to the shelf.")
@@ -4705,6 +4836,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_bupd.add_argument("--cover-url", default=None, help="Updated cover image URL.")
     p_bupd.add_argument("--force-pos", action="store_true", help="Allow lowering currentPos below current bookmark.")
     p_bupd.add_argument("--chapter", default=None, help="Set meta.currentChapter (empty string clears).")
+    g_barch = p_bupd.add_mutually_exclusive_group()
+    g_barch.add_argument("--archive", action="store_true", help="Soft-archive the book (sets meta.archivedAt).")
+    g_barch.add_argument("--unarchive", action="store_true", help="Restore a soft-archived book.")
 
     # 0c2. book-capstone
     p_bcap = sub.add_parser("book-capstone", parents=[common], help="Write the end-of-book capstone (arc, learnings, shift).")
@@ -4763,6 +4897,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_nupd.add_argument("--delta-status", default=None, choices=["none", "active", "paused", "graduated"], help="Behavioral Delta status.")
     p_nupd.add_argument("--chapter", default=None, help="Note chapter (empty clears).")
     p_nupd.add_argument("--tags", default=None, help="Comma-separated #tags (replaces the list; empty clears).")
+    g_narch = p_nupd.add_mutually_exclusive_group()
+    g_narch.add_argument("--archive", action="store_true", help="Soft-archive the note (an active delta is paused).")
+    g_narch.add_argument("--unarchive", action="store_true", help="Restore a soft-archived note (reactivates a delta archiving paused, if under the cap).")
 
     # 2. reflect
     p_ref = sub.add_parser("reflect", parents=[common], help="4-stage Socratic reflection.")

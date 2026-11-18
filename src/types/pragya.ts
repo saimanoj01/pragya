@@ -16,6 +16,8 @@ export interface BookMetaJson {
   finishedAt?: string;
   updatedAt: string;
   currentChapter?: string;
+  /** C1.1 soft-archive timestamp (ISO). Present → hidden from default lists. */
+  archivedAt?: string;
   /** Stored verbatim (agent-owned). Read via `getBookCapstone()` (utils/metaCodecs) for a typed view. */
   capstone?: unknown;
   /** Unknown keys (e.g. written by the CLI/skill) are preserved verbatim on round-trip. */
@@ -83,6 +85,10 @@ export interface NoteMetaJson {
   exportedAt?: string;
   lastReviewedAt?: string;
   chapter?: string;
+  /** C1.1 soft-archive timestamp (ISO). Present → hidden from default lists. */
+  archivedAt?: string;
+  /** C1.1: the delta status paused by archiving (restored on unarchive when under the cap). */
+  archivedDeltaStatus?: unknown;
   /** Agent-owned spar progress marker; passed through verbatim (not validated). */
   sparStage?: unknown;
   /** Unknown keys (e.g. written by the CLI/skill) are preserved verbatim on round-trip. */
