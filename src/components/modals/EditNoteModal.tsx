@@ -34,7 +34,7 @@ import { clampNotePos } from '../../utils/positionClamp';
 import { createUuid } from '../../utils/sessionCoalesce';
 import { parseTagsCsv, serializeTagsCsv } from '../../utils/sheetCodecs';
 import { computeNormalizedPos } from '../../utils/spoilerMath';
-import { generateUniqueSlug } from '../../utils/wikilinks';
+import { normalizeSlugInput, resolveSlugEdit, takenSlugs } from '../../utils/wikilinks';
 import { showToast } from '../../utils/toast';
 import { DriveImage } from '../common/DriveImage';
 import { Modal } from '../common/Modal';
@@ -85,6 +85,7 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
 
   const [title, setTitle] = useState('');
   const [slug, setSlug] = useState('');
+  const [slugError, setSlugError] = useState<string | null>(null);
   const [pos, setPos] = useState('0');
   const [status, setStatus] = useState<NoteStatus>('saved');
   const [quote, setQuote] = useState('');
@@ -331,6 +332,7 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
     setDraftUrl('');
     setDraftTitle('');
     setTakeawayCursor(null);
+    setSlugError(null);
     setContextCursor(null);
     setCritiqueCursor(null);
     setUploadingImage(false);
@@ -579,11 +581,19 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
 
     setSubmitting(true);
     try {
-      const nextSlug = generateUniqueSlug(
-        slug.trim() || title.trim() || note.slug,
-        notes.map(n => n.slug),
-        note.slug
-      );
+      // CD 3 fix-up R2#1: explicit slug edits are validated (no silent -2 suffix).
+      const slugEdit = resolveSlugEdit({
+        rawSlug: slug,
+        title,
+        originalSlug: note.slug,
+        taken: takenSlugs(notes, note.id), // CD C3.2: other notes' aliases are taken too
+      });
+      if (slugEdit.error) {
+        setSlugError(slugEdit.error);
+        setSubmitting(false);
+        return;
+      }
+      const nextSlug = slugEdit.slug;
 
       const saved = await updateNote(
         {
@@ -621,7 +631,13 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
       submittedOrDiscardedRef.current = true;
       clearDraft(getEditNoteDraftKey(note.id));
       setDraftRestored(false);
-      showToast('Note updated', 'success');
+      // CD C3.2 / OQ-6: alias-only rename copy (no link rewrite in this phase).
+      showToast(
+        saved.slug !== note.slug
+          ? `Renamed to [[${saved.slug}]]. [[${note.slug}]] still works.`
+          : 'Note updated',
+        'success'
+      );
       onSaved?.(saved);
       onClose();
     } catch (err) {
@@ -726,9 +742,20 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
               type="text"
               data-testid="edit-note-slug-input"
               value={slug}
-              onChange={e => setSlug(e.target.value)}
+              onChange={e => {
+                setSlug(e.target.value);
+                setSlugError(null);
+              }}
+              onBlur={e => setSlug(normalizeSlugInput(e.target.value))}
+              aria-invalid={Boolean(slugError)}
+              aria-describedby={slugError ? `${slugId}-error` : undefined}
               className="w-full h-10 px-3 rounded-[10px] bg-background border border-input font-mono text-label text-foreground focus:outline-none focus:ring-2 focus:ring-ring/40"
             />
+            {slugError && (
+              <p id={`${slugId}-error`} role="alert" data-testid="edit-note-slug-error" className="text-label text-negative">
+                {slugError}
+              </p>
+            )}
           </div>
         </div>
 

@@ -13,7 +13,12 @@ test.describe('Tier 5 — M4 Accessibility, Guided OAuth, Offline Cloud, Draft A
     await expect(activityGroup).toHaveAttribute('role', 'group');
     await expect(activityGroup).toHaveAttribute('aria-label', /Reading sessions/i);
     await expect(page.getByTestId('activity-dot-29')).toHaveAttribute('role', 'img');
-    await expect(page.getByTestId('activity-dot-29')).toHaveAttribute('aria-label', /\d{4}-\d{2}-\d{2}/);
+    // CD Batch 3 (ux_spec_cd C.2.3): the per-dot label is now human-readable —
+    // `{Weekday, MMM D}: {n} session(s), {progress}` or `{date}: no reading logged`.
+    await expect(page.getByTestId('activity-dot-29')).toHaveAttribute(
+      'aria-label',
+      /^[A-Z][a-z]{2}, [A-Z][a-z]{2} \d{1,2}: (\d+ sessions?|no reading logged)/
+    );
 
     const assertDialogAccessible = async (dialogTestId: string) => {
       const result = await page.evaluate(tid => {

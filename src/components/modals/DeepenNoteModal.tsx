@@ -28,7 +28,7 @@ import {
   type DeepenDraft,
 } from '../../utils/draftStorage';
 import { isSafeHttpUrl } from '../../utils/navigation';
-import { generateUniqueSlug } from '../../utils/wikilinks';
+import { normalizeSlugInput, resolveSlugEdit, takenSlugs } from '../../utils/wikilinks';
 import { showToast } from '../../utils/toast';
 import { DriveImage } from '../common/DriveImage';
 import { Modal } from '../common/Modal';
@@ -71,6 +71,7 @@ export const DeepenNoteModal: React.FC<DeepenNoteModalProps> = ({
 
   const [title, setTitle] = useState('');
   const [slug, setSlug] = useState('');
+  const [slugError, setSlugError] = useState<string | null>(null);
   const [takeaway, setTakeaway] = useState('');
   const [contextMechanism, setContextMechanism] = useState('');
   const [deltaTrigger, setDeltaTrigger] = useState('');
@@ -265,6 +266,7 @@ export const DeepenNoteModal: React.FC<DeepenNoteModalProps> = ({
         (note.deltaStatus || 'none') !== 'none'
     );
     setTakeawayCursor(null);
+    setSlugError(null);
     setContextCursor(null);
     setCritiqueCursor(null);
     setSubmitting(false);
@@ -371,11 +373,19 @@ export const DeepenNoteModal: React.FC<DeepenNoteModalProps> = ({
 
     setSubmitting(true);
     try {
-      const nextSlug = generateUniqueSlug(
-        slug.trim() || title.trim() || note.slug,
-        notes.map(n => n.slug),
-        note.slug
-      );
+      // CD 3 fix-up R2#1: explicit slug edits are validated (no silent -2 suffix).
+      const slugEdit = resolveSlugEdit({
+        rawSlug: slug,
+        title,
+        originalSlug: note.slug,
+        taken: takenSlugs(notes, note.id), // CD C3.2: other notes' aliases are taken too
+      });
+      if (slugEdit.error) {
+        setSlugError(slugEdit.error);
+        setSubmitting(false);
+        return;
+      }
+      const nextSlug = slugEdit.slug;
 
       const saved = await updateNote(
         {
@@ -621,10 +631,21 @@ export const DeepenNoteModal: React.FC<DeepenNoteModalProps> = ({
               type="text"
               data-testid="deepen-slug-input"
               value={slug}
-              onChange={e => setSlug(e.target.value)}
+              onChange={e => {
+                setSlug(e.target.value);
+                setSlugError(null);
+              }}
+              onBlur={e => setSlug(normalizeSlugInput(e.target.value))}
+              aria-invalid={Boolean(slugError)}
+              aria-describedby={slugError ? `${slugId}-error` : undefined}
               placeholder="concept-slug"
               className="w-full h-10 px-3 rounded-[10px] bg-background border border-input font-mono text-label text-foreground placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-ring/40"
             />
+            {slugError && (
+              <p id={`${slugId}-error`} role="alert" data-testid="deepen-slug-error" className="text-label text-negative">
+                {slugError}
+              </p>
+            )}
           </div>
         </div>
 

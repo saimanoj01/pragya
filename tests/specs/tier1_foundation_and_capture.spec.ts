@@ -18,7 +18,7 @@ test.describe('Tier 1 — Foundation, Shelf, Quick Capture & Notes', () => {
     await expect(page.getByTestId('shelf-view')).toBeVisible();
     await expect(page.getByTestId('demo-badge')).toHaveText('Demo');
     await expect(page.getByTestId('now-reading-section')).toBeVisible();
-    await expect(page.getByTestId('activity-count')).toContainText('11 recorded sessions');
+    await expect(page.getByTestId('activity-count')).toContainText('11 sessions in the last 30 days');
     await expect(page.getByTestId('activity-dot-0')).toBeVisible();
     await expect(page.getByTestId('activity-dot-29')).toBeVisible();
 
@@ -93,18 +93,18 @@ test.describe('Tier 1 — Foundation, Shelf, Quick Capture & Notes', () => {
     await page.getByTestId('demo-login-btn').click();
     await expect(page.getByTestId('shelf-view')).toBeVisible();
 
-    await expect(page.getByTestId('activity-count')).toContainText('11 recorded sessions');
+    await expect(page.getByTestId('activity-count')).toContainText('11 sessions in the last 30 days');
 
     // Advance +10p from 142 -> 152 (creates new session #12 for book-systems today)
     await page.getByTestId('advance-10p-btn-book-systems').click();
     await expect(page.getByTestId('book-card-book-systems')).toContainText('p. 152 / 218');
-    await expect(page.getByTestId('activity-count')).toContainText('12 recorded sessions');
+    await expect(page.getByTestId('activity-count')).toContainText('12 sessions in the last 30 days');
 
     // Immediate exact advance 152 -> 160 coalesces into session #12 (count stays 12)
     await page.getByTestId('advance-exact-input-book-systems').fill('160');
     await page.getByTestId('advance-exact-btn-book-systems').click();
     await expect(page.getByTestId('book-card-book-systems')).toContainText('p. 160 / 218');
-    await expect(page.getByTestId('activity-count')).toContainText('12 recorded sessions');
+    await expect(page.getByTestId('activity-count')).toContainText('12 sessions in the last 30 days');
 
     // Attempt backward advance 120 (< 160) -> rejected monotonically
     await page.getByTestId('advance-exact-input-book-systems').fill('120');
@@ -124,12 +124,12 @@ test.describe('Tier 1 — Foundation, Shelf, Quick Capture & Notes', () => {
       btnExact?.click();
     });
     await expect(page.getByTestId('book-card-book-systems')).toContainText('p. 180 / 218');
-    await expect(page.getByTestId('activity-count')).toContainText('12 recorded sessions');
+    await expect(page.getByTestId('activity-count')).toContainText('12 sessions in the last 30 days');
 
     // Persists across reload
     await page.reload();
     await expect(page.getByTestId('book-card-book-systems')).toContainText('p. 180 / 218');
-    await expect(page.getByTestId('activity-count')).toContainText('12 recorded sessions');
+    await expect(page.getByTestId('activity-count')).toContainText('12 sessions in the last 30 days');
   });
 
   test('Quick Capture (N shortcut), Sparring Inbox, Fiction Prediction, paste/upload & max 3 attachments cap', async ({
@@ -376,6 +376,6 @@ test.describe('Tier 1 — Foundation, Shelf, Quick Capture & Notes', () => {
     await expect(page.getByTestId('confirm-dialog')).toContainText('Reset demo data?');
     await page.getByTestId('confirm-dialog-confirm-btn').click();
     await page.getByTestId('nav-item-shelf').click();
-    await expect(page.getByTestId('activity-count')).toContainText('11 recorded sessions');
+    await expect(page.getByTestId('activity-count')).toContainText('11 sessions in the last 30 days');
   });
 });

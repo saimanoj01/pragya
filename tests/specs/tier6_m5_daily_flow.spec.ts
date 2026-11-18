@@ -307,21 +307,21 @@ test.describe('Tier 6 — M5 Daily Flow, Mobile Ergonomics, Undo & Command Palet
     page,
   }) => {
     // 1. ShelfView +10p Undo reverts both book position and created session count
-    await expect(page.getByTestId('activity-count')).toContainText('11 recorded sessions');
+    await expect(page.getByTestId('activity-count')).toContainText('11 sessions in the last 30 days');
     await page.getByTestId('advance-10p-btn-book-systems').click();
     await expect(page.getByTestId('book-card-book-systems')).toContainText('p. 152 / 218');
-    await expect(page.getByTestId('activity-count')).toContainText('12 recorded sessions');
+    await expect(page.getByTestId('activity-count')).toContainText('12 sessions in the last 30 days');
     await page
       .getByRole('status')
       .filter({ hasText: 'Updated "Thinking in Systems' })
       .getByTestId('toast-undo-btn')
       .click();
     await expect(page.getByTestId('book-card-book-systems')).toContainText('p. 142 / 218');
-    await expect(page.getByTestId('activity-count')).toContainText('11 recorded sessions');
+    await expect(page.getByTestId('activity-count')).toContainText('11 sessions in the last 30 days');
 
     // 1b. Coalesced ('updated' mode) Bookmark Undo supersedes stale per-book toast and reverts position without deleting session
     await page.getByTestId('advance-10p-btn-book-systems').click();
-    await expect(page.getByTestId('activity-count')).toContainText('12 recorded sessions');
+    await expect(page.getByTestId('activity-count')).toContainText('12 sessions in the last 30 days');
     await page.getByTestId('advance-exact-input-book-systems').fill('165');
     await page.getByTestId('advance-exact-btn-book-systems').click();
     await expect(page.getByTestId('book-card-book-systems')).toContainText('p. 165 / 218');
@@ -332,7 +332,7 @@ test.describe('Tier 6 — M5 Daily Flow, Mobile Ergonomics, Undo & Command Palet
       .getByTestId('toast-undo-btn')
       .click();
     await expect(page.getByTestId('book-card-book-systems')).toContainText('p. 152 / 218');
-    await expect(page.getByTestId('activity-count')).toContainText('12 recorded sessions');
+    await expect(page.getByTestId('activity-count')).toContainText('12 sessions in the last 30 days');
     const latestSessionEndPos = await page.evaluate(() => {
       const raw = JSON.parse(localStorage.getItem('pragya_demo_state_v1') || '{}');
       const sysSessions = (raw.sessions || []).filter(
@@ -591,7 +591,7 @@ test.describe('Tier 6 — M5 Daily Flow, Mobile Ergonomics, Undo & Command Palet
         'The Art of Doing Science and Engineering'
       );
       await expect(page.getByTestId('shelf-view')).toContainText('p. 72 / 360');
-      await expect(page.getByTestId('activity-count')).toContainText('1 recorded session');
+      await expect(page.getByTestId('activity-count')).toContainText('1 session in the last 30 days');
 
       // NoteDetailView & PracticeView render clean single WHEN/DO without duplicate prefixes
       await page.getByTestId('nav-item-notes').click();

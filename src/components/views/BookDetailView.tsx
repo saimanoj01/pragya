@@ -14,6 +14,7 @@ import {
   Link2,
   Lock,
   Plus,
+  RotateCcw,
   Sparkles,
   Unlock,
 } from 'lucide-react';
@@ -27,6 +28,7 @@ import {
   formatPosDisplay,
   getQuickAdvanceSpec,
   isNoteSpoiler,
+  isEverFinished,
   isSealedPrediction,
   isUnlockedPrediction,
 } from '../../utils/spoilerMath';
@@ -59,6 +61,11 @@ import { ConfirmDialog } from '../common/ConfirmDialog';
 import { BTN_TERTIARY_NEGATIVE } from '../common/uiClasses';
 import { archivedDateLabel, isArchived } from '../../utils/archive';
 import { CapstoneModal, CapstonePromptFallbackModal } from '../modals/CapstoneModal';
+import { BookCover, REREADING_BADGE } from '../common/BookCover';
+import { SessionNoteEditor, SessionsTrail } from '../common/SessionsTrail';
+import { WikiText } from '../common/WikiText';
+import { sessionDateLabel } from '../../utils/bookSurfaces';
+import { getLocalDateString } from '../../utils/sessionCoalesce';
 
 const BTN_SECONDARY =
   'h-9 px-3 rounded-[10px] bg-surface2 border border-border text-label font-medium text-foreground hover:bg-secondary inline-flex items-center gap-1.5 whitespace-nowrap disabled:opacity-50';
@@ -77,8 +84,17 @@ export const BookDetailView: React.FC<BookDetailViewProps> = ({
   onEditBook,
   onOpenCaptureForBook,
 }) => {
-  const { books, notes, advanceBookPosition, revertBookmarkAdvance, markBookFinished, restoreBook, updateBook } =
-    usePragya();
+  const {
+    books,
+    notes,
+    sessions,
+    advanceBookPosition,
+    revertBookmarkAdvance,
+    markBookFinished,
+    restoreBook,
+    updateBook,
+    startReread,
+  } = usePragya();
 
   const book = useMemo(() => books.find(b => b.id === bookId) || null, [books, bookId]);
   const bookNotes = useMemo(
@@ -103,6 +119,11 @@ export const BookDetailView: React.FC<BookDetailViewProps> = ({
   const [capstoneOpen, setCapstoneOpen] = useState<boolean>(false);
   const [capstoneHidden, setCapstoneHidden] = useState<boolean>(false);
   const [fallbackPrompt, setFallbackPrompt] = useState<string | null>(null);
+  // CD C2.3: the session the last +N / Advance wrote → "+ Add a note to this session".
+  const [postAdvanceSessionId, setPostAdvanceSessionId] = useState<string | null>(null);
+  const [postAdvanceEditing, setPostAdvanceEditing] = useState(false);
+  const [rereadConfirmOpen, setRereadConfirmOpen] = useState(false);
+  const [rereadBusy, setRereadBusy] = useState(false);
   const capstoneHeadingId = useId();
   const { restoreBookFromArchive } = useArchiveActions();
   const { requestDeleteBook, dialogProps: deleteDialogProps } = useDeleteForever();
@@ -114,6 +135,8 @@ export const BookDetailView: React.FC<BookDetailViewProps> = ({
   useEffect(() => {
     setFocusedIndex(0);
     setEditingChapter(false);
+    setPostAdvanceSessionId(null);
+    setPostAdvanceEditing(false);
     setCapstoneHidden(readHiddenCapstoneBooks().includes(bookId));
   }, [bookId]);
 
@@ -236,6 +259,8 @@ export const BookDetailView: React.FC<BookDetailViewProps> = ({
       const res = await advanceBookPosition(book.id, nextPos);
       if (res.changed) {
         setExactInput(String(res.book.currentPos));
+        setPostAdvanceSessionId(res.sessionId || null);
+        setPostAdvanceEditing(false);
         showToast(
           `Updated "${book.title}" to ${formatPosDisplay(res.book.currentPos, book.posUnit)}`,
           'success',
@@ -284,6 +309,8 @@ export const BookDetailView: React.FC<BookDetailViewProps> = ({
       }
       if (res.changed) {
         setExactInput(String(res.book.currentPos));
+        setPostAdvanceSessionId(res.sessionId || null);
+        setPostAdvanceEditing(false);
         showToast(
           `Updated "${book.title}" to ${formatPosDisplay(res.book.currentPos, book.posUnit)}`,
           'success',
@@ -382,6 +409,22 @@ export const BookDetailView: React.FC<BookDetailViewProps> = ({
   };
 
   const eligibleCapstoneNotes = countCapstoneEligibleNotes(book, notes);
+  const postAdvanceSession = postAdvanceSessionId
+    ? sessions.find(sx => sx.id === postAdvanceSessionId) || null
+    : null;
+
+  const handleStartReread = async () => {
+    setRereadBusy(true);
+    try {
+      await startReread(book.id);
+      setRereadConfirmOpen(false);
+      showToast(`Re-reading "${book.title}".`, 'info');
+    } catch (err) {
+      showToast(describeSyncError(err, 'Failed to start re-read'), 'error');
+    } finally {
+      setRereadBusy(false);
+    }
+  };
 
   const handleCopyCapstonePrompt = async () => {
     const prompt = buildCapstonePrompt(book, notes);
@@ -476,6 +519,11 @@ export const BookDetailView: React.FC<BookDetailViewProps> = ({
       {/* Book Header Card */}
       <section className="bg-card border border-border rounded-[14px] p-5 space-y-5">
         <div className="flex flex-wrap items-start justify-between gap-4">
+          <div className="flex items-start gap-3 min-w-0">
+          <BookCover
+            book={book}
+            className="w-14 h-20 rounded-[8px] object-cover border border-border shrink-0"
+          />
           <div className="space-y-1.5 min-w-0">
             <div className="flex flex-wrap items-center gap-1.5">
               <span className="px-2 py-0.5 text-[10px] font-semibold uppercase rounded-md bg-surface2 border border-border text-muted-foreground">
@@ -487,9 +535,15 @@ export const BookDetailView: React.FC<BookDetailViewProps> = ({
               <span className="px-2 py-0.5 text-[10px] font-semibold uppercase rounded-md bg-surface2 border border-border text-foreground">
                 {book.status}
               </span>
+              {isEverFinished(book) && (
+                <span data-testid="rereading-badge" className={REREADING_BADGE}>
+                  Re-reading
+                </span>
+              )}
             </div>
             <h1 className="text-display-l text-foreground tracking-tight">{book.title}</h1>
             <p className="text-body text-muted-foreground">by {book.author}</p>
+          </div>
           </div>
 
           <div className="flex flex-wrap items-center gap-2 shrink-0">
@@ -662,6 +716,29 @@ export const BookDetailView: React.FC<BookDetailViewProps> = ({
               />
               <span>Manual Bookmark Reset / Override</span>
             </label>
+
+            {/* CD C2.3: one quiet tertiary action after an advance (no auto-focus, no toast). */}
+            {postAdvanceSession &&
+              (postAdvanceEditing ? (
+                <SessionNoteEditor
+                  session={postAdvanceSession}
+                  dateLabel={sessionDateLabel(postAdvanceSession.date, getLocalDateString())}
+                  onDone={() => {
+                    setPostAdvanceEditing(false);
+                    setPostAdvanceSessionId(null);
+                  }}
+                />
+              ) : (
+                <button
+                  type="button"
+                  data-testid="post-advance-session-note-btn"
+                  onClick={() => setPostAdvanceEditing(true)}
+                  className={BTN_TERTIARY}
+                >
+                  <Plus className="w-3.5 h-3.5" aria-hidden="true" />
+                  <span>Add a note to this session</span>
+                </button>
+              ))}
           </div>
 
           {book.status !== 'finished' ? (
@@ -680,6 +757,17 @@ export const BookDetailView: React.FC<BookDetailViewProps> = ({
                 <CheckCircle2 className="w-4 h-4" />
                 <span>Finished{book.meta.finishedAt ? ` · ${book.meta.finishedAt.slice(0, 10)}` : ''}</span>
               </div>
+              {!isArchived(book) && (
+                <button
+                  type="button"
+                  data-testid="read-again-btn"
+                  onClick={() => setRereadConfirmOpen(true)}
+                  className={BTN_TERTIARY}
+                >
+                  <RotateCcw className="w-3.5 h-3.5" aria-hidden="true" />
+                  <span>Read Again</span>
+                </button>
+              )}
               {!capstone && capstoneHidden && (
                 <button
                   type="button"
@@ -794,6 +882,9 @@ export const BookDetailView: React.FC<BookDetailViewProps> = ({
         </section>
       ) : null}
 
+      {/* CD C2.3: Recent Reading Sessions (between the Whole-Book Picture and the notes). */}
+      <SessionsTrail book={book} />
+
       {/* Book Notes */}
       <section className="space-y-3">
         <h2 className="text-heading text-foreground num">
@@ -882,7 +973,11 @@ export const BookDetailView: React.FC<BookDetailViewProps> = ({
                           &ldquo;{note.quote}&rdquo;
                         </blockquote>
                       )}
-                      {note.takeaway && <p className="text-body text-foreground">{note.takeaway}</p>}
+                      {note.takeaway && (
+                        <p className="text-body text-foreground">
+                          <WikiText text={note.takeaway} notes={notes} books={books} />
+                        </p>
+                      )}
                       {attachments.length > 0 && (
                         <div className="flex flex-wrap items-center gap-2 pt-1">
                           {attachments.map(att =>
@@ -930,6 +1025,16 @@ export const BookDetailView: React.FC<BookDetailViewProps> = ({
       </section>
 
       <ConfirmDialog {...deleteDialogProps} />
+      <ConfirmDialog
+        isOpen={rereadConfirmOpen}
+        tone="default"
+        title={`Start "${book.title}" again?`}
+        body="Your bookmark moves back to the start. Your notes, Whole-Book Picture, and finish date are kept."
+        confirmLabel="Start Re-read"
+        busy={rereadBusy}
+        onCancel={() => setRereadConfirmOpen(false)}
+        onConfirm={() => void handleStartReread()}
+      />
       <CapstoneModal isOpen={capstoneOpen} onClose={() => setCapstoneOpen(false)} book={book} />
       <CapstonePromptFallbackModal
         isOpen={fallbackPrompt !== null}

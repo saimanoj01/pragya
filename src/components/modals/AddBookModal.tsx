@@ -3,6 +3,7 @@ import { X } from 'lucide-react';
 import type { BookFormat, BookKind, BookStatus, PosUnit } from '../../types/pragya';
 import { usePragya } from '../../context/PragyaContext';
 import { showToast } from '../../utils/toast';
+import { coverUrlError } from '../../utils/bookSurfaces';
 import { Modal } from '../common/Modal';
 import { describeSyncError } from '../../utils/apiErrors';
 
@@ -25,6 +26,7 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({ isOpen, onClose }) =
   const [totalPos, setTotalPos] = useState('');
   const [posUnit, setPosUnit] = useState<PosUnit>('page');
   const [docUrl, setDocUrl] = useState('');
+  const [coverUrl, setCoverUrl] = useState('');
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
@@ -38,6 +40,7 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({ isOpen, onClose }) =
     setTotalPos('');
     setPosUnit('page');
     setDocUrl('');
+    setCoverUrl('');
     setSubmitting(false);
   }, [isOpen]);
 
@@ -52,6 +55,10 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({ isOpen, onClose }) =
     e.preventDefault();
     if (!title.trim()) {
       showToast('Please enter a book title', 'error');
+      return;
+    }
+    if (coverUrlError(coverUrl)) {
+      showToast(coverUrlError(coverUrl) || '', 'error');
       return;
     }
     setSubmitting(true);
@@ -71,6 +78,7 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({ isOpen, onClose }) =
         totalPos: parsedTotal,
         posUnit,
         docUrl,
+        coverUrl: coverUrl.trim() || undefined,
       });
       showToast(`Added "${title.trim()}"`, 'success');
       onClose();
@@ -234,6 +242,33 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({ isOpen, onClose }) =
             placeholder="https://docs.google.com/document/d/..."
             className="w-full h-10 px-3 rounded-[10px] bg-background border border-input text-body text-foreground placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-ring/40"
           />
+        </div>
+
+
+        <div className="space-y-1.5">
+          <label htmlFor={fid('cover')} className="block text-eyebrow uppercase text-muted-foreground">
+            Cover Image URL (Optional)
+          </label>
+          <input
+            id={fid('cover')}
+            type="url"
+            data-testid="add-book-cover-input"
+            value={coverUrl}
+            onChange={e => setCoverUrl(e.target.value)}
+            placeholder="https://…"
+            aria-describedby={fid('cover-help')}
+            aria-invalid={Boolean(coverUrlError(coverUrl))}
+            className="w-full h-10 px-3 rounded-[10px] bg-background border border-input text-body text-foreground placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-ring/40"
+          />
+          {coverUrlError(coverUrl) ? (
+            <p id={fid('cover-help')} role="alert" className="text-label text-negative">
+              {coverUrlError(coverUrl)}
+            </p>
+          ) : (
+            <p id={fid('cover-help')} className="text-label text-faint">
+              Shown small on your Shelf and book page.
+            </p>
+          )}
         </div>
 
         <div className="flex items-center justify-end gap-2 pt-2">

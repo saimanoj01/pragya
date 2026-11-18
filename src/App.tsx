@@ -47,6 +47,7 @@ function PragyaShell() {
   const [showCaptureModal, setShowCaptureModal] = useState(false);
   const [captureBookId, setCaptureBookId] = useState<string | null>(null);
   const [captureBookSource, setCaptureBookSource] = useState<'explicit' | 'route'>('explicit');
+  const [capturePrefill, setCapturePrefill] = useState<{ initialTitle: string; initialSlug: string } | null>(null);
   const [showAddBookModal, setShowAddBookModal] = useState(false);
   const [editingBook, setEditingBook] = useState<Book | null>(null);
   const [deepeningNote, setDeepeningNote] = useState<Note | null>(null);
@@ -92,9 +93,13 @@ function PragyaShell() {
     onSyncNow: () => void syncNow(true),
   });
 
-  const openQuickCapture = (bookId: string | null = null) => {
+  const openQuickCapture = (
+    bookId: string | null = null,
+    prefill: { initialTitle: string; initialSlug: string } | null = null
+  ) => {
     setCaptureBookId(bookId);
     setCaptureBookSource('explicit');
+    setCapturePrefill(prefill);
     setShowCaptureModal(true);
   };
 
@@ -104,6 +109,7 @@ function PragyaShell() {
     const bookId = resolveCaptureBookId(route, notes, books);
     setCaptureBookId(bookId);
     setCaptureBookSource('route');
+    setCapturePrefill(null);
     setShowCaptureModal(true);
   }
 
@@ -144,7 +150,7 @@ function PragyaShell() {
         noteSlug={route.noteSlug}
         onOpenEdit={n => setEditingNote(n)}
         onOpenDeepen={n => setDeepeningNote(n)}
-        onOpenCapture={() => openQuickCapture(null)}
+        onOpenCapture={req => openQuickCapture(null, req || null)}
       />
     );
   } else if (route.view === 'practice') {
@@ -230,6 +236,8 @@ function PragyaShell() {
             isOpen={showCaptureModal}
             initialBookId={captureBookId}
             initialBookSource={captureBookSource}
+            initialTitle={capturePrefill?.initialTitle}
+            initialSlug={capturePrefill?.initialSlug}
             onClose={() => setShowCaptureModal(false)}
             onOpenAddBook={() => setShowAddBookModal(true)}
           />

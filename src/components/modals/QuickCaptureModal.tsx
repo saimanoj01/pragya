@@ -41,6 +41,9 @@ export interface QuickCaptureModalProps {
    * button, which only restores a draft for that book.
    */
   initialBookSource?: 'explicit' | 'route';
+  /** CD C3.3: capture for a missing `[[slug]]` — title pre-filled, the note takes this slug. */
+  initialTitle?: string;
+  initialSlug?: string;
   onClose: () => void;
   onOpenAddBook?: () => void;
 }
@@ -52,6 +55,8 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
   isOpen,
   initialBookId,
   initialBookSource = 'explicit',
+  initialTitle,
+  initialSlug,
   onClose,
   onOpenAddBook,
 }) => {
@@ -157,9 +162,11 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
     },
   };
 
+  // C3.3: a capture-for-[[slug]] session never overwrites the saved capture draft.
+  const slugSessionRef = useRef(false);
   useEffect(() => {
     if (!isOpen) {
-      if (wasOpenRef.current && !submittedOrDiscardedRef.current) {
+      if (wasOpenRef.current && !submittedOrDiscardedRef.current && !slugSessionRef.current) {
         if (draftSnapshotRef.current.isDirty) {
           writeDraft(CAPTURE_DRAFT_KEY, draftSnapshotRef.current.payload);
         } else {
@@ -175,6 +182,7 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
     }
     wasOpenRef.current = true;
     submittedOrDiscardedRef.current = false;
+    slugSessionRef.current = Boolean(initialSlug);
 
     const chosenId = defaultBookId;
     const chosenBook = books.find(b => b.id === chosenId);
@@ -191,7 +199,21 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
         Boolean(savedDraft.chapterTouched && (savedDraft.chapter || '').trim())) &&
       (!initialBookId || initialBookSource === 'route' || savedDraft.bookId === initialBookId);
 
-    if (canRestoreDraft && savedDraft) {
+    if (initialSlug) {
+      // C3.3: a capture-for-[[slug]] starts fresh (the saved draft is left untouched).
+      setBookId(chosenId);
+      setPos(chosenBook ? String(chosenBook.currentPos) : '0');
+      setQuote('');
+      setTakeaway('');
+      setTagsRaw('');
+      setSparLater(false);
+      setIsPrediction(false);
+      setChapterInput('');
+      setChapterTouched(false);
+      setTitle(initialTitle || '');
+      setAttachments([]);
+      setDraftRestored(false);
+    } else if (canRestoreDraft && savedDraft) {
       const resolvedBookId = books.some(b => b.id === savedDraft.bookId)
         ? savedDraft.bookId
         : chosenId;
@@ -234,7 +256,7 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
     setKindleClean(null);
     setTakeawayCursor(null);
     dismissedHintRef.current = null;
-  }, [isOpen, defaultBookId, books, initialBookId, initialBookSource]);
+  }, [isOpen, defaultBookId, books, initialBookId, initialBookSource, initialSlug, initialTitle]);
 
   useEffect(() => {
     if (isOpen && !bookId && defaultBookId) {
@@ -248,7 +270,7 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
 
   // Debounced (250ms) silent draft autosave
   useEffect(() => {
-    if (!isOpen || !wasOpenRef.current) return;
+    if (!isOpen || !wasOpenRef.current || slugSessionRef.current) return;
     if (isDirty) {
       submittedOrDiscardedRef.current = false;
     }
@@ -530,6 +552,7 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
         quote,
         takeaway,
         title: title.trim() || undefined,
+        slug: initialSlug || undefined,
         tags: parseTagsCsv(tagsRaw),
         sparLater,
         isPrediction: selectedBook?.kind === 'fiction' ? isPrediction : false,
@@ -843,8 +866,14 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
                 value={title}
                 onChange={e => setTitle(e.target.value)}
                 placeholder="A few words you'll recognize later"
+                aria-describedby={initialSlug ? `${titleFieldId}-slug` : undefined}
                 className="w-full h-10 px-3 rounded-[10px] bg-background border border-input text-body text-foreground placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-ring/40"
               />
+              {initialSlug && (
+                <p id={`${titleFieldId}-slug`} data-testid="capture-slug-hint" className="text-label text-muted-foreground">
+                  This note will become <span className="font-mono">[[{initialSlug}]]</span>.
+                </p>
+              )}
             </div>
 
             <div className="space-y-1.5">

@@ -155,10 +155,18 @@ export const WikilinkAutocomplete: React.FC<WikilinkAutocompleteProps> = ({
             key={n.id}
             type="button"
             data-testid={`wikilink-option-${n.slug}`}
+            // CD C3.5: select on pointerdown (touch + mouse) before the textarea can blur;
+            // onClick then only handles keyboard activation (detail === 0) to avoid a double pick.
+            onPointerDown={e => {
+              e.preventDefault();
+              applySelection(n.slug);
+            }}
             onMouseDown={e => {
               e.preventDefault();
             }}
-            onClick={() => applySelection(n.slug)}
+            onClick={e => {
+              if (e.detail === 0) applySelection(n.slug);
+            }}
             onMouseEnter={() => setSelectedIdx(idx)}
             className={`w-full text-left px-2.5 py-1.5 rounded-[8px] flex items-center justify-between gap-2 text-label transition-colors ${
               active

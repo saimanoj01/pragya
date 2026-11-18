@@ -76,6 +76,8 @@ export interface StorageAdapter {
   saveBook(book: Book, options?: SaveOptions): Promise<Book>;
   saveNote(note: Note, options?: SaveOptions): Promise<Note>;
   saveSession(session: ReadingSession): Promise<ReadingSession>;
+  /** CD 3 fix-up R1#1: a fresh read of every Sessions row (one `Sessions!A:G` GET in Cloud). */
+  loadSessions?(): Promise<ReadingSession[]>;
   deleteSession?(sessionId: string): Promise<void>;
   /**
    * CD C1.2 permanent delete (atomic): resolves every id from one consistent read and

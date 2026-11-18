@@ -13,10 +13,13 @@ import type { Book } from '../../types/pragya';
 import { usePragya } from '../../context/PragyaContext';
 import { isSafeHttpUrl, navigateTo } from '../../utils/navigation';
 import { getLocalDateString } from '../../utils/sessionCoalesce';
+import { ACTIVITY_LEVEL_CLASSES, activityCountLabel, buildActivityDays } from '../../utils/bookSurfaces';
+import { BookCover, REREADING_BADGE } from '../common/BookCover';
 import {
   computePercentDisplay,
   formatPosDisplay,
   getQuickAdvanceSpec,
+  isEverFinished,
   isNoteSpoiler,
 } from '../../utils/spoilerMath';
 import { showToast } from '../../utils/toast';
@@ -53,22 +56,11 @@ export const ShelfView: React.FC<ShelfViewProps> = ({
   const finishedBooks = useMemo(() => shelfBooks.filter(b => b.status === 'finished'), [shelfBooks]);
   const pausedBooks = useMemo(() => shelfBooks.filter(b => b.status === 'paused'), [shelfBooks]);
 
-  // Build 30-day activity array (index 0 = 29 days ago, index 29 = today)
-  const activityDays = useMemo(() => {
-    const countsByDate = new Map<string, number>();
-    for (const s of sessions) {
-      countsByDate.set(s.date, (countsByDate.get(s.date) || 0) + 1);
-    }
-    const today = new Date();
-    const list: Array<{ date: string; count: number }> = [];
-    for (let offset = 29; offset >= 0; offset -= 1) {
-      const d = new Date(today);
-      d.setDate(d.getDate() - offset);
-      const dateStr = getLocalDateString(d);
-      list.push({ date: dateStr, count: countsByDate.get(dateStr) || 0 });
-    }
-    return list;
-  }, [sessions]);
+  // C2.2: 30 local days (index 0 = 29 days ago, index 29 = today), weighted by progress.
+  const activityDays = useMemo(
+    () => buildActivityDays(sessions, books, getLocalDateString()),
+    [books, sessions]
+  );
 
   const getReEntryContext = (book: Book) => {
     const bookSessions = sessions
@@ -228,14 +220,14 @@ export const ShelfView: React.FC<ShelfViewProps> = ({
             data-testid="activity-count"
             className="text-label text-muted-foreground num shrink-0"
           >
-            {sessions.length} recorded session{sessions.length === 1 ? '' : 's'}
+            {activityCountLabel(activityDays)}
           </span>
         </div>
 
         <div
           data-testid="activity-dots"
           role="group"
-          aria-label="Reading sessions over the last 30 days"
+          aria-label={`Reading sessions over the last 30 days: ${activityCountLabel(activityDays)}`}
           className="grid grid-cols-15 sm:grid-cols-30 gap-1.5 w-full"
         >
           {activityDays.map((day, idx) => (
@@ -243,15 +235,9 @@ export const ShelfView: React.FC<ShelfViewProps> = ({
               key={day.date}
               data-testid={`activity-dot-${idx}`}
               role="img"
-              aria-label={`${day.date}: ${day.count} session${day.count === 1 ? '' : 's'}`}
-              title={`${day.date}: ${day.count} session${day.count === 1 ? '' : 's'}`}
-              className={`w-full max-w-[14px] aspect-square rounded-full mx-auto transition-colors ${
-                day.count >= 2
-                  ? 'bg-foreground/90'
-                  : day.count === 1
-                    ? 'bg-foreground/50'
-                    : 'bg-surface2 border border-border/70'
-              }`}
+              aria-label={day.label}
+              data-level={day.level}
+              className={`w-full max-w-[14px] aspect-square rounded-full mx-auto transition-colors ${ACTIVITY_LEVEL_CLASSES[day.level]}`}
             />
           ))}
         </div>
@@ -330,15 +316,26 @@ export const ShelfView: React.FC<ShelfViewProps> = ({
                       </button>
                     </div>
 
-                    <div>
-                      <button
-                        type="button"
-                        onClick={() => navigateTo(`#/book/${encodeURIComponent(book.id)}`)}
-                        className="text-left text-title text-foreground hover:underline decoration-border underline-offset-4"
-                      >
-                        {book.title}
-                      </button>
-                      <p className="text-body text-muted-foreground mt-0.5">{book.author}</p>
+                    <div className="flex items-start gap-3">
+                      <BookCover
+                        book={book}
+                        className="w-10 h-14 rounded-[6px] object-cover border border-border shrink-0"
+                      />
+                      <div className="min-w-0">
+                        <button
+                          type="button"
+                          onClick={() => navigateTo(`#/book/${encodeURIComponent(book.id)}`)}
+                          className="text-left text-title text-foreground hover:underline decoration-border underline-offset-4"
+                        >
+                          {book.title}
+                        </button>
+                        <p className="text-body text-muted-foreground mt-0.5">{book.author}</p>
+                        {isEverFinished(book) && (
+                          <span data-testid="rereading-badge" className={`${REREADING_BADGE} inline-block mt-1`}>
+                            Re-reading
+                          </span>
+                        )}
+                      </div>
                     </div>
 
                     {/* Progress */}

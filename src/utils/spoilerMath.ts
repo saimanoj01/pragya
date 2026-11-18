@@ -39,10 +39,17 @@ export function effectiveNoteNorm(note: Note, book?: Book | null): number {
  */
 export const SPOILER_NORM_EPSILON = 1e-6;
 
+/** CD C2.4 / OQ-7: the book was read to the end at least once (`meta.everFinished`). */
+export function isEverFinished(book?: Book | null): boolean {
+  return Boolean(book && book.meta && (book.meta as { everFinished?: unknown }).everFinished === true);
+}
+
 export function isNoteSpoiler(note: Note, book?: Book | null): boolean {
   if (!book || book.status === 'finished') {
     return false;
   }
+  // OQ-7 / ux Q.4: re-reads show every note (Python mirror: is_ever_finished).
+  if (isEverFinished(book)) return false;
   if (book.totalPos > 0 || book.posUnit === 'percent') {
     return effectiveNoteNorm(note, book) > book.normalizedPos + SPOILER_NORM_EPSILON;
   }
@@ -54,7 +61,8 @@ export function isSealedPrediction(note: Note, book?: Book | null): boolean {
     note.meta?.isPrediction &&
       book &&
       book.kind === 'fiction' &&
-      book.status !== 'finished'
+      book.status !== 'finished' &&
+      !isEverFinished(book)
   );
 }
 
@@ -63,7 +71,7 @@ export function isUnlockedPrediction(note: Note, book?: Book | null): boolean {
     note.meta?.isPrediction &&
       book &&
       book.kind === 'fiction' &&
-      book.status === 'finished'
+      (book.status === 'finished' || isEverFinished(book))
   );
 }
 

@@ -1193,6 +1193,16 @@ export class GoogleSheetsAdapter implements StorageAdapter {
     return result;
   }
 
+  /** CD 3 fix-up (R1#1): one fresh `Sessions!A:G` read (UNFORMATTED, codec-decoded). */
+  async loadSessions(): Promise<ReadingSession[]> {
+    const spreadsheetId = await this.getActiveSpreadsheetId();
+    const read = await this.batchReadColumns(spreadsheetId, ['Sessions!A:G']);
+    return (read.get('Sessions!A:G') || [])
+      .slice(1)
+      .map(rowToSession)
+      .filter((x): x is ReadingSession => x !== null);
+  }
+
   /** CD 2 fix-up (R1#1/#2): one fresh `DeltaLogs!A:E` read (UNFORMATTED, codec-decoded). */
   async loadDeltaLogs(): Promise<DeltaLog[]> {
     const spreadsheetId = await this.getActiveSpreadsheetId();

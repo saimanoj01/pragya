@@ -3,6 +3,7 @@ import { Archive, X } from 'lucide-react';
 import type { Book, BookFormat, BookKind, BookStatus, PosUnit } from '../../types/pragya';
 import { usePragya } from '../../context/PragyaContext';
 import { showToast } from '../../utils/toast';
+import { coverUrlError } from '../../utils/bookSurfaces';
 import { Modal } from '../common/Modal';
 import { describeSyncError } from '../../utils/apiErrors';
 import { BOOK_CHAPTER_EDITOR_OWNED_META_KEYS } from '../../utils/metaCodecs';
@@ -46,6 +47,7 @@ export const EditBookModal: React.FC<EditBookModalProps> = ({ book, onClose }) =
   const [totalPos, setTotalPos] = useState('0');
   const [posUnit, setPosUnit] = useState<PosUnit>('page');
   const [docUrl, setDocUrl] = useState('');
+  const [coverUrl, setCoverUrl] = useState('');
   const [currentChapter, setCurrentChapter] = useState('');
   const [submitting, setSubmitting] = useState(false);
 
@@ -60,6 +62,7 @@ export const EditBookModal: React.FC<EditBookModalProps> = ({ book, onClose }) =
     setTotalPos(String(book.totalPos));
     setPosUnit(book.posUnit);
     setDocUrl(book.docUrl || '');
+    setCoverUrl(typeof book.meta?.coverUrl === 'string' ? book.meta.coverUrl : '');
     setCurrentChapter(typeof book.meta?.currentChapter === 'string' ? book.meta.currentChapter : '');
     setSubmitting(false);
   }, [book]);
@@ -69,6 +72,10 @@ export const EditBookModal: React.FC<EditBookModalProps> = ({ book, onClose }) =
     if (!book) return;
     if (!title.trim()) {
       showToast('Title cannot be empty', 'error');
+      return;
+    }
+    if (coverUrlError(coverUrl)) {
+      showToast(coverUrlError(coverUrl) || '', 'error');
       return;
     }
     setSubmitting(true);
@@ -93,6 +100,8 @@ export const EditBookModal: React.FC<EditBookModalProps> = ({ book, onClose }) =
             ...withChapterKey(book.meta, 'currentChapter', currentChapter),
             ...(status === 'reading' && !book.meta.startedAt ? { startedAt: nowIso } : {}),
             ...(status === 'finished' && !book.meta.finishedAt ? { finishedAt: nowIso } : {}),
+            // CD C2.6: https-only cover (coverUrl is an editor-owned key; empty → removed).
+            coverUrl: coverUrl.trim() || undefined,
             updatedAt: nowIso,
           },
         },
@@ -277,6 +286,33 @@ export const EditBookModal: React.FC<EditBookModalProps> = ({ book, onClose }) =
             placeholder="https://docs.google.com/document/d/..."
             className="w-full h-10 px-3 rounded-[10px] bg-background border border-input text-body text-foreground focus:outline-none focus:ring-2 focus:ring-ring/40"
           />
+        </div>
+
+
+        <div className="space-y-1.5">
+          <label htmlFor={fid('cover')} className="block text-eyebrow uppercase text-muted-foreground">
+            Cover Image URL (Optional)
+          </label>
+          <input
+            id={fid('cover')}
+            type="url"
+            data-testid="edit-book-cover-input"
+            value={coverUrl}
+            onChange={e => setCoverUrl(e.target.value)}
+            placeholder="https://…"
+            aria-describedby={fid('cover-help')}
+            aria-invalid={Boolean(coverUrlError(coverUrl))}
+            className="w-full h-10 px-3 rounded-[10px] bg-background border border-input text-body text-foreground placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-ring/40"
+          />
+          {coverUrlError(coverUrl) ? (
+            <p id={fid('cover-help')} role="alert" className="text-label text-negative">
+              {coverUrlError(coverUrl)}
+            </p>
+          ) : (
+            <p id={fid('cover-help')} className="text-label text-faint">
+              Shown small on your Shelf and book page.
+            </p>
+          )}
         </div>
 
         <div className="flex items-center justify-between gap-2 pt-2">

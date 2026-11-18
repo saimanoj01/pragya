@@ -25,7 +25,15 @@ import {
   isSealedPrediction,
   isUnlockedPrediction,
 } from '../../utils/spoilerMath';
-import { computeBacklinks, extractNoteWikilinks } from '../../utils/wikilinks';
+import {
+  computeNoteBacklinks,
+  deslugify,
+  extractNoteWikilinkTexts,
+  resolveWikilinkTarget,
+  slugify,
+} from '../../utils/wikilinks';
+import { linkChipLabel, standaloneNoteLinks } from '../../utils/bookSurfaces';
+import { WikiText } from '../common/WikiText';
 import {
   NOTE_REVEALED_ANNOUNCEMENT,
   getNoteDetailVisibility,
@@ -63,11 +71,17 @@ import {
 } from '../../utils/archive';
 import { ImageLightbox } from '../modals/ImageLightbox';
 
+export interface CaptureForSlugRequest {
+  initialTitle: string;
+  initialSlug: string;
+}
+
 export interface NoteDetailViewProps {
   noteSlug: string;
   onOpenEdit: (note: Note) => void;
   onOpenDeepen: (note: Note) => void;
-  onOpenCapture: () => void;
+  /** CD C3.3: "Capture Note for [[slug]]" pre-seeds the title and the exact slug. */
+  onOpenCapture: (request?: CaptureForSlugRequest) => void;
 }
 
 export const NoteDetailView: React.FC<NoteDetailViewProps> = ({
@@ -118,11 +132,19 @@ export const NoteDetailView: React.FC<NoteDetailViewProps> = ({
     setAnnouncement('');
   }, [noteSlug]);
 
-  const existingSlugSet = useMemo(() => new Set(notes.map(n => n.slug)), [notes]);
-  const wikilinks = useMemo(() => (note ? extractNoteWikilinks(note) : []), [note]);
+  // CD 3 fix-up: a shielded note opened via an OLD slug (alias) swaps to its uuid URL, so the
+  // alias (which is a former title-derived slug) doesn't sit in the address bar.
+  useEffect(() => {
+    if (!note || !shielded) return;
+    if (noteSlug !== note.slug && noteSlug !== note.id) replaceHash(`#/note/${encodeURIComponent(note.id)}`);
+  }, [note, noteSlug, shielded]);
+
+
+  const wikilinks = useMemo(() => (note ? extractNoteWikilinkTexts(note) : []), [note]);
   // C1.1: archived notes don't appear as backlinks.
   const backlinks = useMemo(
-    () => (note ? computeBacklinks(note.slug, withoutArchived(notes)) : []),
+    // CD C3.2: links to an old slug (alias) count as backlinks too.
+    () => (note ? computeNoteBacklinks(note, withoutArchived(notes)) : []),
     [note, notes]
   );
   const { archiveNote, restoreNoteFromArchive } = useArchiveActions();
@@ -257,7 +279,10 @@ export const NoteDetailView: React.FC<NoteDetailViewProps> = ({
           </div>
           <button
             type="button"
-            onClick={onOpenCapture}
+            data-testid="capture-for-slug-btn"
+            onClick={() =>
+              onOpenCapture({ initialTitle: deslugify(slugify(noteSlug)), initialSlug: slugify(noteSlug) })
+            }
             className="h-9 px-4 rounded-[10px] bg-primary text-primary-foreground text-label font-semibold hover:opacity-90 inline-flex items-center gap-1.5"
           >
             <Plus className="w-3.5 h-3.5" />
@@ -269,6 +294,7 @@ export const NoteDetailView: React.FC<NoteDetailViewProps> = ({
   }
 
   const visibility = getNoteDetailVisibility(note, book, revealed);
+  const standaloneLinks = standaloneNoteLinks(note);
   const deltaDisplay = formatWhenDoDisplay(note.deltaTrigger, note.deltaAction);
   const sealedPrediction = isSealedPrediction(note, book || undefined);
   const unlockedPrediction = isUnlockedPrediction(note, book || undefined);
@@ -518,7 +544,9 @@ export const NoteDetailView: React.FC<NoteDetailViewProps> = ({
             <div className="text-eyebrow uppercase text-muted-foreground">
               Core Takeaway / Why I Liked It
             </div>
-            <p className="text-body text-foreground whitespace-pre-wrap">{note.takeaway}</p>
+            <p className="text-body text-foreground whitespace-pre-wrap">
+              <WikiText text={note.takeaway} notes={notes} books={books} />
+            </p>
           </div>
         )}
 
@@ -544,14 +572,16 @@ export const NoteDetailView: React.FC<NoteDetailViewProps> = ({
         {wikilinks.length > 0 && (
           <div className="flex flex-wrap items-center gap-2">
             <span className="text-eyebrow uppercase text-muted-foreground">Related Concepts:</span>
-            {wikilinks.map(slug => {
-              const exists = existingSlugSet.has(slug);
+            {wikilinks.map(({ slug, text }) => {
+              // R2-a: resolve from the typed text so legacy ASCII slugs still match.
+              const target = resolveWikilinkTarget(notes, text);
+              const exists = Boolean(target);
               return (
                 <button
                   key={slug}
                   type="button"
                   data-testid={`wikilink-chip-${slug}`}
-                  onClick={() => navigateTo(`#/note/${encodeURIComponent(slug)}`)}
+                  onClick={() => navigateTo(`#/note/${encodeURIComponent(target ? target.slug : slug)}`)}
                   className={`px-2.5 py-1 rounded-[8px] border text-label font-mono transition-colors ${
                     exists
                       ? 'bg-surface2 border-border text-foreground hover:bg-secondary'
@@ -571,7 +601,7 @@ export const NoteDetailView: React.FC<NoteDetailViewProps> = ({
               Context &amp; Mechanism
             </div>
             <p className="text-body text-foreground whitespace-pre-wrap">
-              {note.contextMechanism}
+              <WikiText text={note.contextMechanism} notes={notes} books={books} />
             </p>
           </div>
         )}
@@ -602,7 +632,9 @@ export const NoteDetailView: React.FC<NoteDetailViewProps> = ({
             <div className="text-eyebrow uppercase text-muted-foreground">
               Socratic Critique &amp; Boundary Conditions
             </div>
-            <p className="text-body text-foreground whitespace-pre-wrap">{note.critique}</p>
+            <p className="text-body text-foreground whitespace-pre-wrap">
+              <WikiText text={note.critique} notes={notes} books={books} />
+            </p>
           </div>
         )}
 
@@ -626,9 +658,11 @@ export const NoteDetailView: React.FC<NoteDetailViewProps> = ({
             </details>
           )}
 
-        {getRenderableAttachments(note.meta).length > 0 && (
+        {(getRenderableAttachments(note.meta).length > 0 || standaloneLinks.length > 0) && (
           <div className="space-y-2 pt-2 border-t border-border/60">
-            <div className="text-eyebrow uppercase text-muted-foreground">Attachments</div>
+            <div className="text-eyebrow uppercase text-muted-foreground">
+              {standaloneLinks.length > 0 ? 'Attachments & Links' : 'Attachments'}
+            </div>
             <div className="flex flex-wrap gap-3">
               {getRenderableAttachments(note.meta).map(att =>
                 att.type === 'image' ? (
@@ -661,6 +695,32 @@ export const NoteDetailView: React.FC<NoteDetailViewProps> = ({
                   >
                     <Link2 className="w-4 h-4" />
                     <span>{att.title}</span>
+                  </span>
+                )
+              )}
+              {/* CD C2.5: standalone meta.links (deduped against attachment URLs). */}
+              {standaloneLinks.map((url, idx) =>
+                isSafeHttpUrl(url) ? (
+                  <a
+                    key={url}
+                    href={url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    data-testid={`note-link-chip-${idx}`}
+                    aria-label={`Open link ${url}`}
+                    className="inline-flex items-center gap-2 px-3 py-2 rounded-[10px] bg-surface2 border border-border text-label text-foreground hover:bg-secondary"
+                  >
+                    <Link2 className="w-4 h-4 text-muted-foreground" aria-hidden="true" />
+                    <span>{linkChipLabel(url)}</span>
+                  </a>
+                ) : (
+                  <span
+                    key={url}
+                    data-testid={`note-link-chip-${idx}`}
+                    className="inline-flex items-center gap-2 px-3 py-2 rounded-[10px] bg-surface2 border border-border text-label text-muted-foreground"
+                  >
+                    <Link2 className="w-4 h-4" aria-hidden="true" />
+                    <span>{linkChipLabel(url)}</span>
                   </span>
                 )
               )}

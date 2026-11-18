@@ -31,6 +31,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import unicodedata
 import urllib.parse
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -132,7 +133,9 @@ ACTIVE_DELTA_CAP = 5
 DOC_URL_RE = re.compile(r"https?://docs\.google\.com/document/d/([a-zA-Z0-9_-]+)")
 WHEN_PREFIX_RE = re.compile(r"^(?:when(?:\s+|:\s*|$))+", re.IGNORECASE)
 DO_PREFIX_RE = re.compile(r"^(?:do(?:\s+|:\s*|$))+", re.IGNORECASE)
-WIKILINK_RE = re.compile(r"\[\[([^\]]+)\]\]")
+# QA-37: ONE wikilink shape everywhere (TS mirror WIKILINK_SOURCE in src/utils/wikilinks.ts):
+# no "[", "]" or newline inside the brackets.
+WIKILINK_RE = re.compile(r"\[\[([^\[\]\n]+)\]\]")
 
 
 class CliError(Exception):
@@ -218,8 +221,17 @@ def is_archived(entity: dict[str, Any] | None) -> bool:
     return isinstance(value, str) and value.strip() != ""
 
 
+def is_ever_finished(book: dict[str, Any] | None) -> bool:
+    """CD C2.4 / OQ-7: a book read to the end at least once (``meta.everFinished``)."""
+    meta = (book or {}).get("meta") or {}
+    return isinstance(meta, dict) and meta.get("everFinished") is True
+
+
 def is_note_spoiler(note: dict[str, Any], book: dict[str, Any] | None) -> bool:
     if not book or book.get("status") == "finished":
+        return False
+    # OQ-7 / ux Q.4: a re-read (everFinished) shows every note — the reader knows the story.
+    if is_ever_finished(book):
         return False
     total_pos = _safe_float(book.get("totalPos"), 0.0)
     if total_pos > 0 or book.get("posUnit") == "percent":
@@ -237,6 +249,7 @@ def is_sealed_prediction(note: dict[str, Any], book: dict[str, Any] | None) -> b
         and book
         and book.get("kind") == "fiction"
         and book.get("status") != "finished"
+        and not is_ever_finished(book)
     )
 
 
@@ -246,7 +259,7 @@ def is_unlocked_prediction(note: dict[str, Any], book: dict[str, Any] | None) ->
         meta.get("isPrediction")
         and book
         and book.get("kind") == "fiction"
-        and book.get("status") == "finished"
+        and (book.get("status") == "finished" or is_ever_finished(book))
     )
 
 
@@ -298,11 +311,45 @@ def format_when_do_lines(trigger: str, action: str) -> tuple[str, str, str, str]
     return trig_body, act_body, when_line, do_line
 
 
+def slugify_or_none(text: str) -> str | None:
+    """QA-36 Unicode-aware slug (mirror of slugifyOrNull in src/utils/wikilinks.ts).
+
+    NFKD, drop combining marks (category M), lower-case, drop apostrophes, every run of
+    non letter/number characters -> "-". ``None`` when no letter or number is left
+    (e.g. "🔥", "!!!"). "Über" -> "uber", "日本" -> "日本". Stored slugs are never rewritten.
+    """
+    decomposed = unicodedata.normalize("NFKD", text or "")
+    stripped = "".join(ch for ch in decomposed if not unicodedata.category(ch).startswith("M"))
+    lowered = stripped.lower().strip().replace("'", "").replace("\u2019", "")
+    out: list[str] = []
+    for ch in lowered:
+        out.append(ch if ch.isalnum() else "-")
+    cleaned = re.sub(r"-+", "-", "".join(out)).strip("-")
+    return cleaned or None
+
+
 def slugify(text: str) -> str:
-    cleaned = (text or "").lower().strip()
-    cleaned = cleaned.replace("'", "").replace("\u2019", "")
-    cleaned = re.sub(r"[^a-z0-9]+", "-", cleaned).strip("-")
-    return cleaned or "note"
+    return slugify_or_none(text) or "note"
+
+
+def legacy_slugify(text: str) -> str | None:
+    """R2-a: the pre-QA-36 ASCII-only slug rule ("Café culture" -> "caf-culture").
+
+    Mirror of legacySlugify in src/utils/wikilinks.ts. Never used to mint slugs -- only as
+    a resolution fallback so notes slugged under the old rule keep resolving.
+    """
+    lowered = (text or "").lower().strip().replace("'", "").replace("\u2019", "")
+    cleaned = re.sub(r"[^a-z0-9]+", "-", lowered).strip("-")
+    return cleaned or None
+
+
+def wikilink_keys(text: str) -> list[str]:
+    """Resolution keys for one link text, in order: exact, new slug, legacy slug (R2-a)."""
+    out: list[str] = []
+    for k in ((text or "").strip(), slugify_or_none(text), legacy_slugify(text)):
+        if k and k not in out:
+            out.append(k)
+    return out
 
 
 def generate_unique_slug(
@@ -316,6 +363,45 @@ def generate_unique_slug(
     while f"{base}-{counter}" in taken:
         counter += 1
     return f"{base}-{counter}"
+
+
+NOTE_ALIAS_CAP = 10
+
+
+def note_aliases(note: dict[str, Any]) -> list[str]:
+    """CD C3.2: old slugs kept in ``meta.aliases`` (slugified, de-duplicated)."""
+    raw = ((note.get("meta") or {}).get("aliases")) or []
+    out: list[str] = []
+    if isinstance(raw, list):
+        for a in raw:
+            if isinstance(a, str) and a.strip():
+                s = slugify_or_none(a)
+                if s and s not in out:
+                    out.append(s)
+    return out
+
+
+def add_slug_alias(aliases: Any, old_slug: str, new_slug: str) -> list[str]:
+    """Append ``old_slug`` (mirror of addSlugAlias in src/utils/wikilinks.ts): de-duplicated,
+    never the current slug, newest last, capped at NOTE_ALIAS_CAP (oldest dropped)."""
+    base = note_aliases({"meta": {"aliases": aliases}})
+    old = slugify(old_slug) if old_slug else ""
+    new = slugify(new_slug) if new_slug else ""
+    out = [a for a in base if a != old and a != new]
+    if old and old != new:
+        out.append(old)
+    return out[-NOTE_ALIAS_CAP:]
+
+
+def taken_slugs(notes: list[dict[str, Any]], exclude_note_id: str | None = None) -> list[str]:
+    """Slugs + aliases of every other note (a new/renamed slug may never shadow an alias)."""
+    out: list[str] = []
+    for n in notes:
+        if exclude_note_id and n.get("id") == exclude_note_id:
+            continue
+        out.append(n.get("slug") or "")
+        out.extend(note_aliases(n))
+    return out
 
 
 def normalize_tag_list(tokens: list[str]) -> list[str]:
@@ -353,7 +439,9 @@ def extract_wikilinks(text: str) -> list[str]:
         raw = (match.group(1) or "").strip()
         if not raw:
             continue
-        norm = slugify(raw)
+        norm = slugify_or_none(raw)
+        if norm is None:  # QA-36: symbol-only link text never resolves to a generic slug
+            continue
         if norm not in seen:
             seen.add(norm)
             out.append(norm)
@@ -370,6 +458,32 @@ def extract_note_wikilinks(note: dict[str, Any]) -> list[str]:
         ]
     )
     return extract_wikilinks(combined)
+
+
+def extract_wikilink_keys(text: str) -> set[str]:
+    """R2-a: every resolution key (exact, new slug, legacy slug) of every [[link]] in text.
+
+    Separate from extract_wikilinks, whose output (new-rule slugs) is unchanged.
+    """
+    keys: set[str] = set()
+    for match in WIKILINK_RE.finditer(text or ""):
+        raw = (match.group(1) or "").strip()
+        if not raw or slugify_or_none(raw) is None:
+            continue
+        keys.update(wikilink_keys(raw))
+    return keys
+
+
+def extract_note_wikilink_keys(note: dict[str, Any]) -> set[str]:
+    combined = "\n".join(
+        [
+            note.get("takeaway") or "",
+            note.get("contextMechanism") or "",
+            note.get("critique") or "",
+            note.get("quote") or "",
+        ]
+    )
+    return extract_wikilink_keys(combined)
 
 
 def fnv1a_32(text: str) -> int:
@@ -2167,6 +2281,17 @@ def resolve_note(notes: list[dict[str, Any]], query: str) -> dict[str, Any]:
     for n in notes:
         if n["slug"] == ql:
             return n
+    # R2-a: a note slugged under the old ASCII-only rule ("caf-culture") still resolves.
+    legacy = legacy_slugify(q)
+    if legacy:
+        for n in notes:
+            if n["slug"] == legacy:
+                return n
+    # CD C3.2: a renamed note still answers to its old slug(s).
+    for n in notes:
+        aliases = note_aliases(n)
+        if ql in aliases or (legacy and legacy in aliases):
+            return n
     raise CliError(f"Note not found: {query}")
 
 
@@ -2640,6 +2765,9 @@ def cmd_book_update(args: argparse.Namespace, backend: WorkspaceBackend) -> dict
 
     next_status = args.status or prev_status
     updated["status"] = next_status
+    if prev_status == "finished" and next_status != "finished":
+        # CD 3 fix-up R1#2: leaving "finished" by any path marks a re-read (OQ-7: shields off).
+        meta["everFinished"] = True
     now_iso = now_iso_utc()
     if next_status == "reading" and not meta.get("startedAt"):
         meta["startedAt"] = now_iso
@@ -2876,7 +3004,7 @@ def cmd_capture(args: argparse.Namespace, backend: WorkspaceBackend) -> dict[str
         or " ".join(quote.split()[:6])
         or f"{book['title']} p{clean_num(incoming_pos)}"
     )
-    slug = generate_unique_slug(slug_seed, [n["slug"] for n in ws["notes"]])
+    slug = generate_unique_slug(slug_seed, taken_slugs(ws["notes"]))
 
     meta: dict[str, Any] = {
         "attachments": attachments,
@@ -3278,9 +3406,13 @@ def cmd_reflect(args: argparse.Namespace, backend: WorkspaceBackend) -> dict[str
         if slug_input:
             updated["slug"] = generate_unique_slug(
                 slug_input,
-                [n["slug"] for n in ws["notes"]],
-                exclude_self_slug=note["slug"],
+                taken_slugs(ws["notes"], note["id"]),
             )
+            if updated["slug"] != note["slug"]:
+                # CD C3.2 / OQ-6 alias-only: the old slug keeps resolving; no link rewrite.
+                updated.setdefault("meta", {})["aliases"] = add_slug_alias(
+                    (note.get("meta") or {}).get("aliases"), note["slug"], updated["slug"]
+                )
 
         if args.takeaway is not None:
             updated["takeaway"] = args.takeaway.strip()

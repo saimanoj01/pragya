@@ -20,6 +20,8 @@ export interface BookMetaJson {
   archivedAt?: string;
   /** Stored verbatim (agent-owned). Read via `getBookCapstone()` (utils/metaCodecs) for a typed view. */
   capstone?: unknown;
+  /** CD C2.4: read to the end at least once → re-reads show every note (OQ-7). */
+  everFinished?: boolean;
   /** Unknown keys (e.g. written by the CLI/skill) are preserved verbatim on round-trip. */
   [extraKey: string]: unknown;
 }
@@ -91,6 +93,8 @@ export interface NoteMetaJson {
   archivedDeltaStatus?: unknown;
   /** Agent-owned spar progress marker; passed through verbatim (not validated). */
   sparStage?: unknown;
+  /** CD C3.2: previous slugs (≤ 10, newest last) — `[[old]]` links and `#/note/old` keep resolving. */
+  aliases?: string[];
   /** CD C4.2: reflection on an unlocked fiction prediction (`{ text, at }`, ISO `at`). */
   predictionOutcome?: { text: string; at: string };
   /** Unknown keys (e.g. written by the CLI/skill) are preserved verbatim on round-trip. */

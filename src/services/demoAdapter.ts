@@ -174,6 +174,10 @@ export class DemoStorageAdapter implements StorageAdapter {
     return result;
   }
 
+  async loadSessions(): Promise<ReadingSession[]> {
+    return [...this.ensureState().sessions];
+  }
+
   async loadDeltaLogs(): Promise<DeltaLog[]> {
     return [...this.ensureState().deltaLogs];
   }

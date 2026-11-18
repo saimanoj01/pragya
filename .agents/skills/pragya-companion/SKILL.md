@@ -231,6 +231,8 @@ python3 scripts/pragya_cli.py recall --mode checkin \
   --note delays-in-feedback-loops --outcome missed \
   --trigger "dashboard latency spikes post-deploy" \
   --reflection "Tweaked TTL within 5 minutes."
+# Renamed notes keep answering to their old slug (`meta.aliases`): `--note old-slug` still
+# resolves, and `reflect --slug` adds the previous slug to the aliases automatically.
 # One check-in per note per local day: a second same-day check-in UPDATES that row's
 # outcome (and reflection, if you pass one) — `"checkin": "append" | "update" | "unchanged"`.
 

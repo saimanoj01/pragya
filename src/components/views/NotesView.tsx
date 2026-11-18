@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   Archive,
@@ -10,19 +10,36 @@ import {
   Plus,
   Search,
   Sparkles,
+  X,
 } from 'lucide-react';
 import type { Book, Note } from '../../types/pragya';
 import { usePragya } from '../../context/PragyaContext';
 import { getRenderableAttachments } from '../../utils/metaCodecs';
-import { isSafeHttpUrl, navigateTo } from '../../utils/navigation';
+import { isSafeHttpUrl, navigateTo, replaceHash } from '../../utils/navigation';
 import { isNoteSpoiler, isSealedPrediction } from '../../utils/spoilerMath';
 import {
   SPOILER_SEARCH_FOOTNOTE,
-  buildNoteSearchHaystack,
   isShielded,
   noteHref,
 } from '../../utils/noteVisibility';
-import { extractNoteWikilinks } from '../../utils/wikilinks';
+import { extractNoteWikilinkKeys, extractNoteWikilinks, noteAliases, slugify } from '../../utils/wikilinks';
+import {
+  NOTES_SORT_LABELS,
+  NOTES_SORTS,
+  buildNotesHash,
+  hasActiveNotesFilters,
+  matchesNoteQuery,
+  matchesTagFilters,
+  normalizeTagToken,
+  parseNotesQuery,
+  sortNotesForView,
+  type NotesFilter,
+  type NotesQueryState,
+  type NotesSort,
+} from '../../utils/notesQuery';
+import { linkChipLabel, standaloneNoteLinks } from '../../utils/bookSurfaces';
+import { WikiText } from '../common/WikiText';
+import { BTN_TERTIARY, FIELD_LABEL } from '../common/uiClasses';
 import { DriveImage } from '../common/DriveImage';
 import { ArchivedBanner } from '../common/ArchivedBanner';
 import { useArchiveActions } from '../../hooks/useArchiveActions';
@@ -32,7 +49,12 @@ import { BTN_TERTIARY_NEGATIVE } from '../common/uiClasses';
 import { archivedDateLabel, onlyArchived, withoutArchived } from '../../utils/archive';
 import { ChapterPosChip } from '../common/ChapterPosChip';
 
-type NotesFilter = 'all' | 'to-spar' | 'atomic' | 'media' | 'concepts' | 'archived';
+/** CD C3.4: scroll + focused card per notes hash, restored on Back (sessionStorage). */
+const NOTES_SCROLL_PREFIX = 'pragya_notes_scroll:';
+
+function readHashState(): NotesQueryState {
+  return parseNotesQuery(typeof window === 'undefined' ? '' : window.location.hash);
+}
 
 export interface NotesViewProps {
   onOpenCapture: () => void;
@@ -52,8 +74,18 @@ export const NotesView: React.FC<NotesViewProps> = ({
   const notes = useMemo(() => withoutArchived(allNotes), [allNotes]);
   const archivedNotes = useMemo(() => onlyArchived(allNotes), [allNotes]);
 
-  const [query, setQuery] = useState('');
-  const [filter, setFilter] = useState<NotesFilter>('all');
+  // CD C3.4: state lives in the hash query (`#/notes?q=…&tag=…&book=…&filter=…&sort=…`).
+  const [qs, setQs] = useState<NotesQueryState>(readHashState);
+  const query = qs.q;
+  const filter = qs.filter;
+  const setQuery = (q: string) => setQs(prev => ({ ...prev, q }));
+  const setFilter = (f: NotesFilter) => setQs(prev => ({ ...prev, filter: f }));
+  const toggleTag = (tag: string) => {
+    const t = normalizeTagToken(tag);
+    if (!t) return;
+    setQs(prev => ({ ...prev, tags: prev.tags.includes(t) ? prev.tags.filter(x => x !== t) : [...prev.tags, t] }));
+  };
+  const clearAll = () => setQs({ q: '', tags: [], book: '', filter: 'all', sort: 'recent' });
   const [revealedSlugs, setRevealedSlugs] = useState<Set<string>>(new Set());
   const [focusedIndex, setFocusedIndex] = useState<number>(0);
 
@@ -62,6 +94,49 @@ export const NotesView: React.FC<NotesViewProps> = ({
     books.forEach(b => map.set(b.id, b));
     return map;
   }, [books]);
+
+  // Typing: replaceState debounced 300 ms; pills/selects: immediately. Never a history entry.
+  const lastWrittenRef = useRef<string>('');
+  useEffect(() => {
+    const hash = buildNotesHash(qs);
+    const write = () => {
+      lastWrittenRef.current = hash;
+      if (window.location.hash.startsWith('#/notes')) replaceHash(hash);
+    };
+    const prev = parseNotesQuery(window.location.hash);
+    if (prev.q !== qs.q) {
+      const t = window.setTimeout(write, 300);
+      return () => window.clearTimeout(t);
+    }
+    write();
+    return undefined;
+  }, [qs]);
+  // A real hash change (e.g. a link to #/notes?tag=…) re-hydrates the controls.
+  useEffect(() => {
+    const onHash = () => {
+      if (!window.location.hash.startsWith('#/notes')) return;
+      if (window.location.hash === lastWrittenRef.current) return;
+      setQs(readHashState());
+    };
+    window.addEventListener('hashchange', onHash);
+    return () => window.removeEventListener('hashchange', onHash);
+  }, []);
+
+  // C3.3/C3.4 hub notes: linked TO (slug or alias) by any live note, or linking out.
+  const linkedSlugs = useMemo(() => {
+    const set = new Set<string>();
+    // R2-a: exact, new-slug and legacy-slug keys, so old ASCII slugs still count as hubs.
+    for (const n of notes) for (const l of extractNoteWikilinkKeys(n)) set.add(l);
+    return set;
+  }, [notes]);
+  const isConcept = useCallback(
+    (n: Note) =>
+      extractNoteWikilinks(n).length > 0 ||
+      linkedSlugs.has(n.slug) ||
+      linkedSlugs.has(slugify(n.slug)) ||
+      noteAliases(n).some(a => linkedSlugs.has(a)),
+    [linkedSlugs]
+  );
 
   const counts = useMemo(() => {
     let toSpar = 0;
@@ -73,7 +148,7 @@ export const NotesView: React.FC<NotesViewProps> = ({
       if (n.status === 'inbox' || n.status === 'in-reflection') toSpar += 1;
       if (n.status === 'atomic') atomic += 1;
       if (getRenderableAttachments(n.meta).length > 0 || (n.meta?.links?.length || 0) > 0) media += 1;
-      if (extractNoteWikilinks(n).length > 0) concepts += 1;
+      if (isConcept(n)) concepts += 1;
     }
 
     return {
@@ -83,11 +158,11 @@ export const NotesView: React.FC<NotesViewProps> = ({
       media,
       concepts,
     };
-  }, [notes]);
+  }, [isConcept, notes]);
 
   const filteredNotes = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    return (filter === 'archived' ? archivedNotes : notes)
+    const q = query.trim();
+    const matched = (filter === 'archived' ? archivedNotes : notes)
       .filter(n => {
         if (filter === 'to-spar' && n.status !== 'inbox' && n.status !== 'in-reflection') {
           return false;
@@ -102,26 +177,46 @@ export const NotesView: React.FC<NotesViewProps> = ({
         ) {
           return false;
         }
-        if (filter === 'concepts' && extractNoteWikilinks(n).length === 0) {
+        if (filter === 'concepts' && !isConcept(n)) {
           return false;
         }
+        if (qs.book && n.bookId !== qs.book) return false;
+        if (!matchesTagFilters(n, qs.tags)) return false;
 
         if (!q) return true;
         // B2.2: an unrevealed spoiler is searchable by tags + book title/author only.
-        const haystack = buildNoteSearchHaystack(n, bookMap.get(n.bookId), {
-          revealed: revealedSlugs.has(n.slug),
-        });
-        return haystack.includes(q);
-      })
-      .sort((a, b) =>
-        // QA-35 / ux Q.11: To Spar lists oldest createdAt first (id tie-break) — the same
-        // order Save & Next walks (`nextInboxNote`). Every other filter: newest update first.
-        filter === 'to-spar'
-          ? String(a.createdAt || '').localeCompare(String(b.createdAt || '')) ||
-            (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)
-          : b.updatedAt.localeCompare(a.updatedAt)
+        // C3.4: AND of tokens, case/diacritic-insensitive, `#tag` exact, "phrases".
+        return matchesNoteQuery(n, bookMap.get(n.bookId), q, { revealed: revealedSlugs.has(n.slug) });
+      });
+    // QA-35 / ux Q.11: To Spar keeps oldest-first under the default sort (Save & Next order).
+    return sortNotesForView(matched, qs.sort, filter, bookMap);
+  }, [archivedNotes, bookMap, filter, isConcept, notes, qs.book, qs.sort, qs.tags, query, revealedSlugs]);
+
+  // Result count announced politely, debounced 400 ms.
+  const [announcedCount, setAnnouncedCount] = useState(filteredNotes.length);
+  useEffect(() => {
+    const t = window.setTimeout(() => setAnnouncedCount(filteredNotes.length), 400);
+    return () => window.clearTimeout(t);
+  }, [filteredNotes.length]);
+
+  const bookOptions = useMemo(
+    () => withoutArchived(books).slice().sort((a, b) => a.title.localeCompare(b.title)),
+    [books]
+  );
+
+  // C3.4 scroll & focus restoration on Back.
+  const rememberPosition = useCallback(() => {
+    try {
+      const main = document.querySelector('main');
+      sessionStorage.setItem(
+        `${NOTES_SCROLL_PREFIX}${buildNotesHash(qs)}`,
+        JSON.stringify({ scrollTop: main?.scrollTop || 0, focusedIndex })
       );
-  }, [archivedNotes, bookMap, filter, notes, query, revealedSlugs]);
+    } catch {
+      // storage unavailable: nothing to restore later
+    }
+  }, [qs, focusedIndex]);
+  const restoredRef = useRef(false);
 
   const showSpoilerSearchFootnote = useMemo(
     () =>
@@ -138,9 +233,37 @@ export const NotesView: React.FC<NotesViewProps> = ({
     });
   };
 
+  const filterKey = `${filter}|${query}|${qs.book}|${qs.sort}|${qs.tags.join(',')}`;
+  const firstFilterKeyRef = useRef(filterKey);
   React.useEffect(() => {
+    if (filterKey === firstFilterKeyRef.current) return;
+    firstFilterKeyRef.current = filterKey;
     setFocusedIndex(0);
-  }, [filter, query]);
+  }, [filterKey]);
+
+  useEffect(() => {
+    if (restoredRef.current || filteredNotes.length === 0) return;
+    restoredRef.current = true;
+    let saved: { scrollTop?: number; focusedIndex?: number } | null = null;
+    try {
+      const key = `${NOTES_SCROLL_PREFIX}${buildNotesHash(qs)}`;
+      saved = JSON.parse(sessionStorage.getItem(key) || 'null');
+      sessionStorage.removeItem(key); // one-shot: only the return trip restores
+    } catch {
+      saved = null;
+    }
+    if (!saved) return;
+    const idx = Math.min(Math.max(0, Number(saved.focusedIndex) || 0), filteredNotes.length - 1);
+    setFocusedIndex(idx);
+    requestAnimationFrame(() => {
+      const main = document.querySelector('main');
+      if (main) main.scrollTop = Number(saved?.scrollTop) || 0;
+      const card = document.querySelector<HTMLElement>(
+        `[data-testid="note-card-${filteredNotes[idx]?.slug}"] [data-view-note="true"]`
+      );
+      card?.focus({ preventScroll: true });
+    });
+  }, [filteredNotes, qs]);
 
   React.useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -182,6 +305,7 @@ export const NotesView: React.FC<NotesViewProps> = ({
         const active = filteredNotes[focusedIndex];
         if (active) {
           e.preventDefault();
+          rememberPosition();
           navigateTo(noteHref(active, bookMap.get(active.bookId), revealedSlugs.has(active.slug)));
         }
       } else if (key === 'd' && onDeepenNote) {
@@ -214,7 +338,7 @@ export const NotesView: React.FC<NotesViewProps> = ({
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [bookMap, filteredNotes, focusedIndex, onDeepenNote, onEditNote, revealedSlugs]);
+  }, [bookMap, filteredNotes, focusedIndex, onDeepenNote, onEditNote, rememberPosition, revealedSlugs]);
 
   const renderStatusBadge = (note: Note, book?: Book) => {
     if (isSealedPrediction(note, book)) {
@@ -370,12 +494,98 @@ export const NotesView: React.FC<NotesViewProps> = ({
             </button>
           )}
         </div>
+
+        {/* C3.4: book filter, sort, result count */}
+        <div className="flex flex-wrap items-end gap-3">
+          <label className="flex items-center gap-2">
+            <span className={FIELD_LABEL}>Book</span>
+            <select
+              data-testid="notes-book-filter"
+              value={qs.book}
+              onChange={e => setQs(prev => ({ ...prev, book: e.target.value }))}
+              className="h-9 px-2.5 rounded-[10px] bg-background border border-input text-label text-foreground focus:outline-none focus:ring-2 focus:ring-ring/40 max-w-[220px]"
+            >
+              <option value="">All books</option>
+              {bookOptions.map(b => (
+                <option key={b.id} value={b.id}>
+                  {b.title}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="flex items-center gap-2">
+            <span className={FIELD_LABEL}>Sort</span>
+            <select
+              data-testid="notes-sort-select"
+              value={qs.sort}
+              onChange={e => setQs(prev => ({ ...prev, sort: e.target.value as NotesSort }))}
+              className="h-9 px-2.5 rounded-[10px] bg-background border border-input text-label text-foreground focus:outline-none focus:ring-2 focus:ring-ring/40"
+            >
+              {NOTES_SORTS.map(sv => (
+                <option key={sv} value={sv}>
+                  {NOTES_SORT_LABELS[sv]}
+                </option>
+              ))}
+            </select>
+          </label>
+          <span
+            data-testid="notes-result-count"
+            role="status"
+            aria-live="polite"
+            className="ml-auto text-label text-muted-foreground num"
+          >
+            {announcedCount} {announcedCount === 1 ? 'note' : 'notes'}
+          </span>
+        </div>
+
+        {(qs.tags.length > 0 || qs.book) && (
+          <div data-testid="notes-active-filters" className="flex flex-wrap items-center gap-2">
+            <span className="text-label text-muted-foreground">Filtered by:</span>
+            {qs.tags.map(tag => (
+              <span
+                key={tag}
+                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-surface2 border border-border text-label text-foreground"
+              >
+                {tag}
+                <button
+                  type="button"
+                  aria-label={`Remove filter ${tag}`}
+                  onClick={() => toggleTag(tag)}
+                  className="text-muted-foreground hover:text-foreground"
+                >
+                  <X className="w-3 h-3" aria-hidden="true" />
+                </button>
+              </span>
+            ))}
+            {qs.book && (
+              <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-surface2 border border-border text-label text-foreground">
+                {bookMap.get(qs.book)?.title || 'Book'}
+                <button
+                  type="button"
+                  aria-label={`Remove filter ${bookMap.get(qs.book)?.title || 'Book'}`}
+                  onClick={() => setQs(prev => ({ ...prev, book: '' }))}
+                  className="text-muted-foreground hover:text-foreground"
+                >
+                  <X className="w-3 h-3" aria-hidden="true" />
+                </button>
+              </span>
+            )}
+            <button type="button" data-testid="notes-clear-filters-btn" onClick={clearAll} className={BTN_TERTIARY}>
+              Clear all
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Notes Stream */}
       {filteredNotes.length === 0 ? (
-        <div className="bg-card border border-border rounded-[14px] p-8 text-center text-body text-muted-foreground">
-          No notes match this filter yet.
+        <div className="bg-card border border-border rounded-[14px] p-8 text-center text-body text-muted-foreground space-y-3">
+          <p>No notes match these filters.</p>
+          {hasActiveNotesFilters(qs) && (
+            <button type="button" onClick={clearAll} className={BTN_TERTIARY}>
+              Clear all
+            </button>
+          )}
         </div>
       ) : (
         <div className="space-y-4">
@@ -466,7 +676,9 @@ export const NotesView: React.FC<NotesViewProps> = ({
                     )}
 
                     {note.takeaway && (
-                      <p className="text-body text-foreground">{note.takeaway}</p>
+                      <p className="text-body text-foreground">
+                        <WikiText text={note.takeaway} notes={allNotes} books={books} onNavigate={rememberPosition} />
+                      </p>
                     )}
 
                     {attachments.length > 0 && (
@@ -509,25 +721,67 @@ export const NotesView: React.FC<NotesViewProps> = ({
                         )}
                       </div>
                     )}
+
+                    {/* CD C2.5: standalone meta.links chips (deduped vs attachments). */}
+                    {standaloneNoteLinks(note).length > 0 && (
+                      <div className="flex flex-wrap items-center gap-2">
+                        {standaloneNoteLinks(note).map((url, linkIdx) =>
+                          isSafeHttpUrl(url) ? (
+                            <a
+                              key={url}
+                              href={url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              data-testid={`note-link-chip-${linkIdx}`}
+                              aria-label={`Open link ${url}`}
+                              className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-[8px] bg-surface2 border border-border text-label text-foreground hover:bg-secondary transition-colors"
+                            >
+                              <Link2 className="w-3.5 h-3.5 text-muted-foreground" aria-hidden="true" />
+                              <span className="truncate max-w-[220px]">{linkChipLabel(url)}</span>
+                            </a>
+                          ) : (
+                            <span
+                              key={url}
+                              data-testid={`note-link-chip-${linkIdx}`}
+                              className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-[8px] bg-surface2 border border-border text-label text-muted-foreground"
+                            >
+                              <Link2 className="w-3.5 h-3.5" aria-hidden="true" />
+                              <span className="truncate max-w-[220px]">{linkChipLabel(url)}</span>
+                            </span>
+                          )
+                        )}
+                      </div>
+                    )}
                   </div>
                 )}
 
                 {/* Bottom Row: Tags & View Note */}
                 <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-border/50">
                   <div className="flex flex-wrap items-center gap-1.5">
-                    {note.tags.map(tag => (
-                      <span
-                        key={tag}
-                        className="text-label text-muted-foreground"
-                      >
-                        {tag}
-                      </span>
-                    ))}
+                    {note.tags.map(tag => {
+                      const t = normalizeTagToken(tag);
+                      return (
+                        <button
+                          key={tag}
+                          type="button"
+                          data-testid={`tag-pill-${t.slice(1)}`}
+                          aria-pressed={qs.tags.includes(t)}
+                          onClick={() => toggleTag(tag)}
+                          className="text-label text-muted-foreground hover:text-foreground hover:underline"
+                        >
+                          {tag}
+                        </button>
+                      );
+                    })}
                   </div>
 
                   <button
                     type="button"
-                    onClick={() => navigateTo(noteHref(note, book, isRevealed))}
+                    data-view-note="true"
+                    onClick={() => {
+                      rememberPosition();
+                      navigateTo(noteHref(note, book, isRevealed));
+                    }}
                     className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground hover:text-foreground inline-flex items-center gap-1 whitespace-nowrap"
                   >
                     <span>VIEW NOTE</span>

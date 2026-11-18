@@ -1,6 +1,7 @@
 import type { Book, Note } from '../types/pragya';
 import { formatPosDisplay, isNoteSpoiler } from './spoilerMath';
 import { isArchived } from './archive';
+import { noteAliases } from './wikilinks';
 
 export { isArchived };
 
@@ -44,7 +45,12 @@ export function noteHref(note: Note, book: Book | null | undefined, revealed = f
 /** Resolve a `#/note/<ref>` segment: slug first (canonical), then note id. */
 export function resolveNoteRef(notes: Note[], ref: string): Note | undefined {
   if (!ref) return undefined;
-  return notes.find(n => n.slug === ref) || notes.find(n => n.id === ref);
+  // CD C3.2: then an old slug kept in meta.aliases (`#/note/old` still opens the note).
+  return (
+    notes.find(n => n.slug === ref) ||
+    notes.find(n => n.id === ref) ||
+    notes.find(n => noteAliases(n).includes(ref))
+  );
 }
 
 export interface PracticeDeltaLists {
@@ -93,6 +99,10 @@ export function buildNoteSearchHaystack(
         str(note.takeaway),
         str(note.contextMechanism),
         str(note.critique),
+        // CD C3.4: Layer-2 delta fields and old slugs (revealed notes only).
+        str(note.deltaTrigger),
+        str(note.deltaAction),
+        ...noteAliases(note),
         ...safe,
       ];
   return parts.join(' ').toLowerCase();

@@ -42,12 +42,13 @@ import { resolveExpectedBase } from '../utils/conflictGuard';
 import { RATE_LIMIT_TOAST, describeSyncError } from '../utils/apiErrors';
 import { normalizeTagList } from '../utils/sheetCodecs';
 import { computeNormalizedPos } from '../utils/spoilerMath';
-import { generateUniqueSlug } from '../utils/wikilinks';
+import { addSlugAlias, generateUniqueSlug, takenSlugs } from '../utils/wikilinks';
 import { showToast } from '../utils/toast';
 import { buildSnapshot } from '../utils/snapshot';
 import { savePreImportBackup } from '../utils/importSafety';
 import { DEMO_DRAFT_SCOPE, clearAllDrafts } from '../utils/draftStorage';
 import { countOtherActiveDeltas } from '../utils/archive';
+import { SESSION_NOTE_MAX } from '../utils/bookSurfaces';
 import { applyDeltaLogPatch, planDeltaCheckIn, type DeltaCheckInPlan } from '../utils/deltaCheckIn';
 import {
   clearLastDeleteBackup,
@@ -103,6 +104,8 @@ export interface AddBookInput {
   totalPos: number;
   posUnit: PosUnit;
   docUrl?: string;
+  /** CD C2.6: optional https cover (validated by the form). */
+  coverUrl?: string;
 }
 
 export interface QuickCaptureInput {
@@ -117,6 +120,8 @@ export interface QuickCaptureInput {
   attachments?: Attachment[];
   /** A3.3: note chapter / story (trimmed, ≤ 80 chars; empty → key omitted). */
   chapter?: string;
+  /** CD C3.3: capture for a missing `[[slug]]` — the note takes this slug when it's free. */
+  slug?: string;
 }
 
 export interface UpdateNoteOptions {
@@ -172,6 +177,8 @@ export interface BookmarkAdvanceResult {
   changed: boolean;
   rejectedBackward: boolean;
   undo?: BookmarkAdvanceUndo;
+  /** CD C2.3: the (coalesced) session this advance wrote — for "+ Add a note to this session". */
+  sessionId?: string;
 }
 
 export interface PragyaContextValue {
@@ -228,6 +235,16 @@ export interface PragyaContextValue {
   resetDemoWorkspace: () => Promise<void>;
   uploadImageAttachment: (file: File | Blob) => Promise<Attachment>;
   resolveDocTitle: (docId: string) => Promise<string | null>;
+  /**
+   * CD C2.3 (decisions OQ-1 override): set/clear one session's note (Sessions!G, ≤ 280 chars).
+   * `updatedAt` is kept — a note isn't reading progress (keeps the 30-min coalescing window honest).
+   */
+  updateSessionNote: (sessionId: string, note: string) => Promise<ReadingSession>;
+  /**
+   * CD C2.6 Read Again: finished → reading at position 0, `meta.everFinished = true`, new
+   * `startedAt`; `finishedAt` and the capstone are kept (owned keys only).
+   */
+  startReread: (bookId: string) => Promise<Book>;
   /** CD C1.2: permanently delete an ARCHIVED note (+ its delta logs). Resolves to the Undo backup. */
   deleteNotePermanently: (noteId: string) => Promise<PermanentDeleteResult>;
   /** CD C1.2: permanently delete an ARCHIVED book with its notes, their logs and its sessions. */
@@ -449,6 +466,7 @@ export const PragyaProvider: React.FC<{ children: React.ReactNode }> = ({ childr
               ? { startedAt: nowIso }
               : {}),
             ...(input.status === 'finished' ? { finishedAt: nowIso } : {}),
+            ...(input.coverUrl?.trim() ? { coverUrl: input.coverUrl.trim() } : {}),
             updatedAt: nowIso,
           },
         };
@@ -482,6 +500,9 @@ export const PragyaProvider: React.FC<{ children: React.ReactNode }> = ({ childr
               loaded?.meta,
               options.ownedMetaKeys ?? BOOK_EDITOR_OWNED_META_KEYS
             ),
+            // CD 3 fix-up R1#2: leaving "finished" by any edit marks a re-read (OQ-7). Undo
+            // of Mark Finished goes through restoreBook and is NOT a re-read.
+            ...(loaded?.status === 'finished' && book.status !== 'finished' ? { everFinished: true } : {}),
             updatedAt: nowIso,
           },
         };
@@ -557,6 +578,7 @@ export const PragyaProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         book: savedBook,
         changed: true,
         rejectedBackward: false,
+        sessionId: savedSession.id,
         undo: {
           prevBook: existing,
           sessionAction,
@@ -728,9 +750,10 @@ export const PragyaProvider: React.FC<{ children: React.ReactNode }> = ({ childr
           (input.quote || '').trim().split(/\s+/).slice(0, 6).join(' ') ||
           `${book.title} p${pos}`;
 
+        // CD C3.2: other notes' aliases count as taken, so an old [[link]] never retargets.
         const slug = generateUniqueSlug(
-          slugSource,
-          notesRef.current.map(n => n.slug)
+          (input.slug || '').trim() || slugSource,
+          takenSlugs(notesRef.current)
         );
         const chapter = normalizeChapterInput(input.chapter);
 
@@ -835,6 +858,14 @@ export const PragyaProvider: React.FC<{ children: React.ReactNode }> = ({ childr
           },
           updatedAt: options.preserveUpdatedAt ? note.updatedAt : nowIso,
         };
+        // CD C3.2 (decisions OQ-6, alias-only): a slug change keeps the old slug resolving
+        // via meta.aliases (no rewrite of other rows' [[links]]).
+        if (existingNote && existingNote.slug !== updated.slug) {
+          updated.meta = {
+            ...updated.meta,
+            aliases: addSlugAlias(existingNote.meta?.aliases, existingNote.slug, updated.slug),
+          };
+        }
         const saved = await adapter.saveNote(updated, {
           expectedBaseUpdatedAt: resolveExpectedBase(
             options.expectedBaseUpdatedAt,
@@ -921,6 +952,63 @@ export const PragyaProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         const nextLogs = deltaLogsRef.current.filter(l => l.id !== logId);
         deltaLogsRef.current = nextLogs;
         setDeltaLogs(nextLogs);
+      }),
+    [adapter, assertCloudWritable, enqueueMutation]
+  );
+
+  const updateSessionNote = useCallback(
+    (sessionId: string, note: string): Promise<ReadingSession> =>
+      enqueueMutation(async () => {
+        assertCloudWritable();
+        // CD 3 fix-up R1#1: patch only `note` on a FRESH row (never revert endPos/updatedAt
+        // written by the CLI or another device since this view loaded).
+        let fresh = sessionsRef.current;
+        if (adapter.loadSessions) {
+          fresh = await adapter.loadSessions();
+          sessionsRef.current = fresh;
+          setSessions(fresh);
+        }
+        const existing = fresh.find(s => s.id === sessionId);
+        if (!existing) throw new Error('That session was removed on another device.');
+        const saved = await adapter.saveSession({
+          ...existing,
+          note: (note || '').trim().slice(0, SESSION_NOTE_MAX),
+        });
+        const nextSessions = upsertList(sessionsRef.current, saved);
+        sessionsRef.current = nextSessions;
+        setSessions(nextSessions);
+        return saved;
+      }),
+    [adapter, assertCloudWritable, enqueueMutation]
+  );
+
+  const startReread = useCallback(
+    (bookId: string): Promise<Book> =>
+      enqueueMutation(async () => {
+        assertCloudWritable();
+        const loaded = booksRef.current.find(b => b.id === bookId);
+        if (!loaded) throw new Error('Book not found');
+        const nowIso = new Date().toISOString();
+        const owned = ['everFinished', 'startedAt', 'updatedAt'];
+        const next: Book = {
+          ...loaded,
+          status: 'reading',
+          currentPos: 0,
+          normalizedPos: 0,
+          meta: {
+            ...mergeUnknownMetaKeys(
+              { ...loaded.meta, everFinished: true, startedAt: nowIso },
+              loaded.meta,
+              owned
+            ),
+            updatedAt: nowIso,
+          },
+        };
+        const saved = await adapter.saveBook(next, { expectedBaseUpdatedAt: loaded.meta?.updatedAt });
+        const nextBooks = upsertList(booksRef.current, saved);
+        booksRef.current = nextBooks;
+        setBooks(nextBooks);
+        return saved;
       }),
     [adapter, assertCloudWritable, enqueueMutation]
   );
@@ -1137,6 +1225,8 @@ export const PragyaProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         checkInDelta,
         updateDeltaLogFields,
         deleteDeltaLog,
+        updateSessionNote,
+        startReread,
         replaceWorkspaceFromSnapshot,
         resetDemoWorkspace,
         uploadImageAttachment,
