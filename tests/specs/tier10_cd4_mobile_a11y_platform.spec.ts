@@ -164,12 +164,17 @@ test.describe('Tier 10 — CD Batch 4 mobile, accessibility & platform polish (D
     await expect(page.getByTestId('image-lightbox')).toHaveCount(0);
     await expect(bookThumb).toBeFocused();
 
-    // Practice Shuffle: keep only note-delays-feedback as atomic so Shuffle deterministically shows it.
+    // Practice Shuffle: archive other notes and clear lastReviewed on note-delays-feedback so it is
+    // deterministically selected regardless of the date-seeded fnv1a shuffle hash.
     await editState(
       page,
       `
       for (const n of s.notes) {
-        if (n.id !== 'note-delays-feedback' && n.status === 'atomic') n.status = 'saved';
+        if (n.id === 'note-delays-feedback') {
+          n.lastReviewed = '';
+        } else {
+          n.meta = { ...(n.meta || {}), archivedAt: '2026-01-01T00:00:00.000Z' };
+        }
       }
       `
     );
