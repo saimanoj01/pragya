@@ -1,7 +1,7 @@
 import React, { useId, useState } from 'react';
 import { AlertTriangle, Download, FileJson, X } from 'lucide-react';
 import type { PragyaSnapshot } from '../../types/pragya';
-import { usePragya } from '../../context/PragyaContext';
+import { usePragyaData } from '../../context/PragyaContext';
 import { getLocalDateString } from '../../utils/sessionCoalesce';
 import { buildSnapshot } from '../../utils/snapshot';
 import { showToast } from '../../utils/toast';
@@ -20,7 +20,7 @@ export const ImportConfirmModal: React.FC<ImportConfirmModalProps> = ({
   onClose,
   onConfirm,
 }) => {
-  const { books, notes, sessions, deltaLogs } = usePragya();
+  const { books, notes, sessions, deltaLogs } = usePragyaData();
   const [submitting, setSubmitting] = useState(false);
   const headingId = useId();
 

@@ -16,7 +16,7 @@ import {
   Unlock,
 } from 'lucide-react';
 import type { Attachment, Note } from '../../types/pragya';
-import { usePragya } from '../../context/PragyaContext';
+import { usePragyaData } from '../../context/PragyaContext';
 import { isEditableElement } from '../../hooks/useKeyboardShortcuts';
 import { getRenderableAttachments } from '../../utils/metaCodecs';
 import { formatWhenDoDisplay } from '../../utils/deltaFormat';
@@ -90,7 +90,7 @@ export const NoteDetailView: React.FC<NoteDetailViewProps> = ({
   onOpenDeepen,
   onOpenCapture,
 }) => {
-  const { books, notes } = usePragya();
+  const { books, notes } = usePragyaData();
   const [lightboxAttachment, setLightboxAttachment] = useState<
     Extract<Attachment, { type: 'image' }> | null
   >(null);

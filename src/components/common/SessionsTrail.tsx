@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { ChevronRight, Edit3, Plus } from 'lucide-react';
 import type { Book, ReadingSession } from '../../types/pragya';
-import { usePragya } from '../../context/PragyaContext';
+import { usePragyaActions, usePragyaData } from '../../context/PragyaContext';
 import { describeSyncError } from '../../utils/apiErrors';
 import {
   SESSIONS_TRAIL_LIMIT,
@@ -28,7 +28,7 @@ export function SessionNoteEditor({
   dateLabel: string;
   onDone: () => void;
 }) {
-  const { updateSessionNote } = usePragya();
+  const { updateSessionNote } = usePragyaActions();
   const [draft, setDraft] = useState(session.note || '');
   const [saving, setSaving] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -91,7 +91,7 @@ export function SessionNoteEditor({
 
 /** CD C2.3: `<details sessions-trail>` — last 10 sessions, newest first; hidden with 0 sessions. */
 export function SessionsTrail({ book }: { book: Book }) {
-  const { sessions } = usePragya();
+  const { sessions } = usePragyaData();
   const [editingId, setEditingId] = useState<string | null>(null);
   const all = bookSessionsNewestFirst(sessions, book.id);
   if (all.length === 0) return null;

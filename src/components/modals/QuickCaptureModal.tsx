@@ -4,6 +4,7 @@ import type { Attachment } from '../../types/pragya';
 import { usePragya } from '../../context/PragyaContext';
 import { useKindlePaste } from '../../hooks/useKindlePaste';
 import { useModalDraft } from '../../hooks/useModalDraft';
+import { PartialBatchCommitError } from '../../services/storage';
 import { describeSyncError } from '../../utils/apiErrors';
 import { withoutArchived } from '../../utils/archive';
 import {
@@ -305,6 +306,17 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
       showToast(sparLater ? 'Captured to Sparring Inbox' : 'Note captured', 'success');
       onClose();
     } catch (err) {
+      if (err instanceof PartialBatchCommitError && err.committed.notes.length > 0) {
+        // R1#2: the Note already landed in Sheets (only reading-session logging failed).
+        // Close + clear draft so retrying cannot append a duplicate Note row.
+        markSubmitted();
+        showToast(
+          'Note saved, but your reading session could not be logged. Sync later to refresh.',
+          'info'
+        );
+        onClose();
+        return;
+      }
       showToast(describeSyncError(err, 'Failed to save note'), 'error');
     } finally {
       setSubmitting(false);

@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { BookOpen, Plus } from 'lucide-react';
 import type { Book } from '../../types/pragya';
-import { usePragya } from '../../context/PragyaContext';
+import { usePragyaActions } from '../../context/PragyaContext';
 import { describeSyncError } from '../../utils/apiErrors';
 import {
   CHAPTER_MAX_LENGTH,
@@ -21,7 +21,7 @@ export interface BookChapterLineProps {
  * preserving focus return, Escape cancel, and `BOOK_DETAIL_CHAPTER_OWNED_META_KEYS` conflict guard.
  */
 export const BookChapterLine: React.FC<BookChapterLineProps> = ({ book }) => {
-  const { updateBook } = usePragya();
+  const { updateBook } = usePragyaActions();
   const [editingChapter, setEditingChapter] = useState(false);
   const [chapterDraft, setChapterDraft] = useState('');
   const [savingChapter, setSavingChapter] = useState(false);

@@ -10,7 +10,7 @@ import {
   Sparkles,
 } from 'lucide-react';
 import type { Book, Note } from '../../types/pragya';
-import { usePragya } from '../../context/PragyaContext';
+import { usePragyaData } from '../../context/PragyaContext';
 import { getRenderableAttachments } from '../../utils/metaCodecs';
 import { isSafeHttpUrl, navigateTo, replaceHash } from '../../utils/navigation';
 import { formatPosDisplay, isNoteSpoiler, isSealedPrediction } from '../../utils/spoilerMath';
@@ -63,7 +63,7 @@ export const NotesView: React.FC<NotesViewProps> = ({
   onEditNote,
   onDeepenNote,
 }) => {
-  const { books, notes: allNotes } = usePragya();
+  const { books, notes: allNotes } = usePragyaData();
   const { restoreNoteFromArchive } = useArchiveActions();
   const { requestDeleteNote, dialogProps: deleteDialogProps } = useDeleteForever();
   // C1.1: archived notes leave the stream, counts and search; they live behind the pill.

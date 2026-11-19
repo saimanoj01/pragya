@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowLeft, Edit3, ExternalLink, Plus } from 'lucide-react';
 import type { Book, Note } from '../../types/pragya';
-import { usePragya } from '../../context/PragyaContext';
+import { usePragyaData } from '../../context/PragyaContext';
 import { useArchiveActions } from '../../hooks/useArchiveActions';
 import { useDeleteForever } from '../../hooks/useDeleteForever';
 import { isEditableElement } from '../../hooks/useKeyboardShortcuts';
@@ -50,9 +50,9 @@ export const BookDetailView: React.FC<BookDetailViewProps> = ({
   onEditNote,
   onDeepenNote,
 }) => {
-  const { books, notes } = usePragya();
+  const { books, booksById, notes } = usePragyaData();
 
-  const book = useMemo(() => books.find(b => b.id === bookId) || null, [books, bookId]);
+  const book = booksById.get(bookId) || null;
   const bookNotes = useMemo(
     () =>
       notes

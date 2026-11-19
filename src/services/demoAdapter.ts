@@ -10,10 +10,21 @@ import type {
 import { createDemoSeed } from '../data/demoSeed';
 import { createUuid } from '../utils/sessionCoalesce';
 import { clearDemoMedia, saveDemoMediaBlob } from './demoMediaDb';
-import type { StorageAdapter } from './storage';
-import { NotArchivedError, type DeleteCascadeResult, type DeleteRowsPlan, type RestoreRowsResult } from '../utils/deletePlan';
+import type {
+  BatchMutationOp,
+  BatchMutationResult,
+  DeleteCascadeOptions,
+  RestoreRowsInput,
+  StorageAdapter,
+} from './storage';
+import {
+  NotArchivedError,
+  type DeleteCascadeResult,
+  type DeleteRowsPlan,
+  type RestoreRowsResult,
+} from '../utils/deletePlan';
 import { isArchived } from '../utils/archive';
-import type { DeleteCascadeOptions, RestoreRowsInput } from './storage';
+import { normalizeBatchOps } from '../utils/batchPlan';
 
 export const DEMO_STATE_STORAGE_KEY = 'pragya_demo_state_v1';
 
@@ -120,6 +131,30 @@ export class DemoStorageAdapter implements StorageAdapter {
     state.sessions = upsertById(state.sessions, session);
     writeDemoState(state);
     return session;
+  }
+
+  async batchCommitMutations(ops: BatchMutationOp[]): Promise<BatchMutationResult> {
+    const result: BatchMutationResult = { books: [], notes: [], sessions: [], deltaLogs: [] };
+    if (ops.length === 0) return result;
+    const state = this.ensureState();
+    for (const item of normalizeBatchOps(ops)) {
+      const { op } = item;
+      if (op.kind === 'book') {
+        state.books = upsertById(state.books, op.book);
+        result.books.push(op.book);
+      } else if (op.kind === 'note') {
+        state.notes = upsertById(state.notes, op.note);
+        result.notes.push(op.note);
+      } else if (op.kind === 'session') {
+        state.sessions = upsertById(state.sessions, op.session);
+        result.sessions.push(op.session);
+      } else {
+        state.deltaLogs = upsertById(state.deltaLogs, op.deltaLog);
+        result.deltaLogs.push(op.deltaLog);
+      }
+    }
+    writeDemoState(state);
+    return result;
   }
 
   async deleteSession(sessionId: string): Promise<void> {

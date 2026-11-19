@@ -45,7 +45,25 @@ import {
   type RestoreRowsResult,
 } from '../utils/deletePlan';
 import { isArchived } from '../utils/archive';
+import { idbDelete, idbGetWithMigration, idbSet } from '../utils/idbStore';
+import {
+  BATCH_TAB_ORDER,
+  PartialBatchCommitError,
+  columnIndex,
+  findRowIndexInColA,
+  matchBatchValueRanges,
+  normalizeBatchOps,
+  parseAppendedRowIndex,
+  planBatchPreReadRanges,
+  validateGuardTimestamp,
+  type BatchMutationOp,
+  type BatchMutationResult,
+  type BatchTabName,
+  type NormalizedBatchOp,
+} from '../utils/batchPlan';
 import type { DeleteCascadeOptions, RestoreRowsInput } from './storage';
+
+export { PartialBatchCommitError };
 
 /**
  * CD 1b re-review R2-a: did a write fail WITHOUT a server verdict? An HTTP error (ApiError,
@@ -110,9 +128,11 @@ interface ReadSheetsCacheOptions {
   allowStaleCodec?: boolean;
 }
 
-function readSheetsCache(options: ReadSheetsCacheOptions = {}): CachedSheetsPayload | null {
+async function readSheetsCache(
+  options: ReadSheetsCacheOptions = {}
+): Promise<CachedSheetsPayload | null> {
   try {
-    const raw = localStorage.getItem(SHEETS_CACHE_STORAGE_KEY);
+    const raw = await idbGetWithMigration(SHEETS_CACHE_STORAGE_KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw) as Partial<CachedSheetsPayload>;
     if (
@@ -144,15 +164,23 @@ function readSheetsCache(options: ReadSheetsCacheOptions = {}): CachedSheetsPayl
  * `allowStaleCodec: true` — that would promote legacy-decoded data (already missing
  * unknown metaJson keys) to v2 and re-open the A5.3 wipe hazard.
  */
-function writeSheetsCache(payload: CachedSheetsPayload): void {
+async function writeSheetsCache(
+  payload: CachedSheetsPayload,
+  shouldWrite?: () => boolean
+): Promise<void> {
   try {
-    localStorage.setItem(
+    await idbSet(
       SHEETS_CACHE_STORAGE_KEY,
-      JSON.stringify({ ...payload, codecVersion: SHEETS_CACHE_CODEC_VERSION })
+      JSON.stringify({ ...payload, codecVersion: SHEETS_CACHE_CODEC_VERSION }),
+      shouldWrite ? { shouldWrite } : undefined
     );
   } catch {
     // Ignore storage quota errors
   }
+}
+
+async function clearSheetsCache(): Promise<void> {
+  await idbDelete(SHEETS_CACHE_STORAGE_KEY);
 }
 
 function headersEqual(actualRow: unknown[] | undefined, expected: readonly string[]): boolean {
@@ -186,15 +214,6 @@ function defaultSleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-/** Column letters → 0-based index (A → 0, L → 11, AA → 26). */
-function columnIndex(col: string): number {
-  let n = 0;
-  for (const ch of col.toUpperCase()) {
-    n = n * 26 + (ch.charCodeAt(0) - 64);
-  }
-  return n - 1;
-}
-
 export class GoogleSheetsAdapter implements StorageAdapter {
   private getToken: () => string | null;
   private onUnauthorized?: () => void;
@@ -202,6 +221,13 @@ export class GoogleSheetsAdapter implements StorageAdapter {
   private writeQueue: Promise<unknown> = Promise.resolve();
   private spreadsheetId: string | null = null;
   private mediaFolderId: string | null = null;
+  /**
+   * Untrusted soft row-index hints (`tab -> id -> 0-based rowIndex >= 1`), strictly scoped
+   * to `rowHintsSheetId`. Every hinted row is ALWAYS live-verified against `A{row} === id`
+   * on the server before any write; mismatches trigger a full A:A re-resolve.
+   */
+  private rowHints = new Map<BatchTabName, Map<string, number>>();
+  private rowHintsSheetId: string | null = null;
 
   private sleep: (ms: number) => Promise<void>;
 
@@ -215,6 +241,91 @@ export class GoogleSheetsAdapter implements StorageAdapter {
     this.onUnauthorized = onUnauthorized;
     this.accountEmail = accountEmail;
     this.sleep = options.sleep ?? defaultSleep;
+  }
+
+  private syncRowHintsScope(spreadsheetId: string): void {
+    if (this.rowHintsSheetId !== spreadsheetId) {
+      this.rowHints.clear();
+      this.rowHintsSheetId = spreadsheetId;
+    }
+  }
+
+  private clearRowHints(tab?: BatchTabName): void {
+    if (tab) {
+      this.rowHints.delete(tab);
+    } else {
+      this.rowHints.clear();
+    }
+  }
+
+  private recordRowHintsFromRows(
+    spreadsheetId: string,
+    tab: BatchTabName,
+    rows: readonly unknown[][]
+  ): void {
+    this.syncRowHintsScope(spreadsheetId);
+    const tabMap = new Map<string, number>();
+    for (let i = 1; i < rows.length; i += 1) {
+      const cell = String(rows[i]?.[0] ?? '').trim();
+      if (cell && cell !== 'id') {
+        tabMap.set(cell, i);
+      }
+    }
+    this.rowHints.set(tab, tabMap);
+  }
+
+  private setRowHint(
+    spreadsheetId: string,
+    tab: BatchTabName,
+    id: string,
+    rowIndex: number
+  ): void {
+    if (!id || !Number.isInteger(rowIndex) || rowIndex < 1) return;
+    this.syncRowHintsScope(spreadsheetId);
+    let tabMap = this.rowHints.get(tab);
+    if (!tabMap) {
+      tabMap = new Map<string, number>();
+      this.rowHints.set(tab, tabMap);
+    }
+    tabMap.set(id, rowIndex);
+  }
+
+  /**
+   * QA-47 / R1#1: verify this adapter's session is still active before persisting or wiping
+   * shared IndexedDB/localStorage artifacts (prevents an in-flight Account A fetch settling
+   * after logout, Demo switch, or Account A→B switch from resurrecting or clobbering cache).
+   */
+  private isSessionStillActive(): boolean {
+    if (!this.getToken()) return false;
+    try {
+      if (localStorage.getItem('pragya_mock_mode') === 'true') return false;
+    } catch {
+      // Ignore restricted storage
+    }
+    if (this.accountEmail) {
+      const expected = this.accountEmail.trim().toLowerCase();
+      try {
+        const lastEmail = (localStorage.getItem('pragya_last_account_email') || '')
+          .trim()
+          .toLowerCase();
+        if (lastEmail && lastEmail !== expected) return false;
+        const rawUser = localStorage.getItem('pragya_google_user');
+        if (rawUser) {
+          const parsed = JSON.parse(rawUser) as { email?: unknown };
+          const activeEmail =
+            typeof parsed?.email === 'string' ? parsed.email.trim().toLowerCase() : '';
+          if (activeEmail && activeEmail !== expected) return false;
+        }
+      } catch {
+        // Ignore restricted/malformed storage
+      }
+    }
+    return true;
+  }
+
+  private async persistSheetsCache(payload: CachedSheetsPayload): Promise<void> {
+    if (!this.isSessionStillActive()) return;
+    await writeSheetsCache(payload, () => this.isSessionStillActive());
   }
 
   private enqueueWrite<T>(task: () => Promise<T>): Promise<T> {
@@ -256,8 +367,10 @@ export class GoogleSheetsAdapter implements StorageAdapter {
       if (!response.ok) {
         const text = await response.text().catch(() => '');
         const apiError = new ApiError(response.status, text);
-        // B4.7/A5.6: genuine 429 / quota-403 responses were rejected server-side, so a
-        // short backoff + retry is safe (even for writes). Everything else surfaces now.
+        // B4.7/A5.6: genuine 429 / quota-403 responses were rejected server-side before
+        // applying, so a short backoff + retry is safe (even for writes). Ambiguous
+        // failures (network drops, 5xx) are NOT classified as rate_limited and never retry,
+        // preventing duplicate non-idempotent appends.
         if (classifyApiError(apiError) === 'rate_limited' && attempt < RATE_LIMIT_MAX_ATTEMPTS) {
           await this.sleep(RATE_LIMIT_BACKOFF_MS[attempt - 1] ?? 1000);
           continue;
@@ -288,9 +401,12 @@ export class GoogleSheetsAdapter implements StorageAdapter {
           )}?fields=id,name,modifiedTime,trashed`
         );
         if (meta.trashed) {
-          localStorage.removeItem(SHEETS_CACHE_STORAGE_KEY);
-          localStorage.removeItem(SPREADSHEET_ID_STORAGE_KEY);
+          if (this.isSessionStillActive()) {
+            await clearSheetsCache();
+            localStorage.removeItem(SPREADSHEET_ID_STORAGE_KEY);
+          }
           this.spreadsheetId = null;
+          this.clearRowHints();
         } else {
           this.spreadsheetId = overrideId;
           return {
@@ -306,9 +422,12 @@ export class GoogleSheetsAdapter implements StorageAdapter {
         // 403/429 is not "forbidden": keep the ID and cache (B4.7).
         const kind = classifyApiError(err);
         if (kind === 'not_found' || kind === 'forbidden') {
-          localStorage.removeItem(SHEETS_CACHE_STORAGE_KEY);
-          localStorage.removeItem(SPREADSHEET_ID_STORAGE_KEY);
+          if (this.isSessionStillActive()) {
+            await clearSheetsCache();
+            localStorage.removeItem(SPREADSHEET_ID_STORAGE_KEY);
+          }
           this.spreadsheetId = null;
+          this.clearRowHints();
         } else {
           this.spreadsheetId = overrideId;
           return { spreadsheetId: overrideId, modifiedTime: '', createdNew: false };
@@ -328,7 +447,9 @@ export class GoogleSheetsAdapter implements StorageAdapter {
     const existing = searchRes.files?.[0];
     if (existing?.id) {
       this.spreadsheetId = existing.id;
-      localStorage.setItem(SPREADSHEET_ID_STORAGE_KEY, existing.id);
+      if (this.isSessionStillActive()) {
+        localStorage.setItem(SPREADSHEET_ID_STORAGE_KEY, existing.id);
+      }
       return {
         spreadsheetId: existing.id,
         modifiedTime: existing.modifiedTime || '',
@@ -349,7 +470,9 @@ export class GoogleSheetsAdapter implements StorageAdapter {
 
     const spreadsheetId = created.spreadsheetId;
     this.spreadsheetId = spreadsheetId;
-    localStorage.setItem(SPREADSHEET_ID_STORAGE_KEY, spreadsheetId);
+    if (this.isSessionStillActive()) {
+      localStorage.setItem(SPREADSHEET_ID_STORAGE_KEY, spreadsheetId);
+    }
 
     // Populate canonical headers
     await this.fetchApi(
@@ -457,18 +580,21 @@ export class GoogleSheetsAdapter implements StorageAdapter {
     const forceRefresh = Boolean(options.forceRefresh);
     // A stale-codec cache is still read here for the account check and the offline
     // read-only fallback, but it never satisfies the fast-reload hit below (A5.3).
-    let cached = readSheetsCache({ allowStaleCodec: true });
+    let cached = await readSheetsCache({ allowStaleCodec: true });
     if (
       cached &&
       this.accountEmail &&
       cached.accountEmail &&
-      cached.accountEmail !== this.accountEmail
+      cached.accountEmail.trim().toLowerCase() !== this.accountEmail.trim().toLowerCase()
     ) {
-      localStorage.removeItem(SHEETS_CACHE_STORAGE_KEY);
-      localStorage.removeItem(SPREADSHEET_ID_STORAGE_KEY);
-      localStorage.removeItem(MEDIA_FOLDER_ID_STORAGE_KEY);
+      if (this.isSessionStillActive()) {
+        await clearSheetsCache();
+        localStorage.removeItem(SPREADSHEET_ID_STORAGE_KEY);
+        localStorage.removeItem(MEDIA_FOLDER_ID_STORAGE_KEY);
+      }
       this.spreadsheetId = null;
       this.mediaFolderId = null;
+      this.clearRowHints();
       cached = null;
     }
     const knownId =
@@ -508,9 +634,12 @@ export class GoogleSheetsAdapter implements StorageAdapter {
           )}?fields=modifiedTime,trashed`
         );
         if (remoteMeta.trashed) {
-          localStorage.removeItem(SHEETS_CACHE_STORAGE_KEY);
-          localStorage.removeItem(SPREADSHEET_ID_STORAGE_KEY);
+          if (this.isSessionStillActive()) {
+            await clearSheetsCache();
+            localStorage.removeItem(SPREADSHEET_ID_STORAGE_KEY);
+          }
           this.spreadsheetId = null;
+          this.clearRowHints();
           cached = null;
         } else if (remoteMeta.modifiedTime && remoteMeta.modifiedTime === cached.modifiedTime) {
           this.spreadsheetId = knownId;
@@ -527,9 +656,12 @@ export class GoogleSheetsAdapter implements StorageAdapter {
         if (msg.includes('401')) throw err;
         const kind = classifyApiError(err);
         if (kind === 'not_found' || kind === 'forbidden') {
-          localStorage.removeItem(SHEETS_CACHE_STORAGE_KEY);
-          localStorage.removeItem(SPREADSHEET_ID_STORAGE_KEY);
+          if (this.isSessionStillActive()) {
+            await clearSheetsCache();
+            localStorage.removeItem(SPREADSHEET_ID_STORAGE_KEY);
+          }
           this.spreadsheetId = null;
+          this.clearRowHints();
           cached = null;
         } else if (kind === 'rate_limited' && cached) {
           // B4.7: Drive is throttling the modifiedTime check (retries exhausted). The
@@ -587,25 +719,35 @@ export class GoogleSheetsAdapter implements StorageAdapter {
       return vr?.values || [];
     };
 
-    const books = getTabRows('Books', 0)
+    const rawBooks = getTabRows('Books', 0);
+    const rawNotes = getTabRows('Notes', 1);
+    const rawSessions = getTabRows('Sessions', 2);
+    const rawDeltaLogs = getTabRows('DeltaLogs', 3);
+
+    this.recordRowHintsFromRows(spreadsheetId, 'Books', rawBooks);
+    this.recordRowHintsFromRows(spreadsheetId, 'Notes', rawNotes);
+    this.recordRowHintsFromRows(spreadsheetId, 'Sessions', rawSessions);
+    this.recordRowHintsFromRows(spreadsheetId, 'DeltaLogs', rawDeltaLogs);
+
+    const books = rawBooks
       .slice(1)
       .map(rowToBook)
       .filter((b): b is Book => b !== null);
-    const notes = getTabRows('Notes', 1)
+    const notes = rawNotes
       .slice(1)
       .map(rowToNote)
       .filter((n): n is Note => n !== null);
-    const sessions = getTabRows('Sessions', 2)
+    const sessions = rawSessions
       .slice(1)
       .map(rowToSession)
       .filter((s): s is ReadingSession => s !== null);
-    const deltaLogs = getTabRows('DeltaLogs', 3)
+    const deltaLogs = rawDeltaLogs
       .slice(1)
       .map(rowToDeltaLog)
       .filter((d): d is DeltaLog => d !== null);
 
     let resolvedModifiedTime = modifiedTime;
-    if (!resolvedModifiedTime) {
+    if (!resolvedModifiedTime && this.isSessionStillActive()) {
       try {
         const meta = await this.fetchApi<{ modifiedTime?: string }>(
           `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(
@@ -621,7 +763,7 @@ export class GoogleSheetsAdapter implements StorageAdapter {
     const mediaFolderId =
       this.mediaFolderId || localStorage.getItem(MEDIA_FOLDER_ID_STORAGE_KEY) || undefined;
 
-    writeSheetsCache({
+    await this.persistSheetsCache({
       spreadsheetId,
       modifiedTime: resolvedModifiedTime,
       accountEmail: this.accountEmail,
@@ -774,8 +916,9 @@ export class GoogleSheetsAdapter implements StorageAdapter {
           body: JSON.stringify({ values: [rowValues] }),
         }
       );
+      this.setRowHint(spreadsheetId, tab, id, matchIndex);
     } else {
-      await this.fetchApi(
+      const appendRes = await this.fetchApi<{ updates?: { updatedRange?: string } }>(
         `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(
           spreadsheetId
         )}/values/${encodeURIComponent(
@@ -786,16 +929,23 @@ export class GoogleSheetsAdapter implements StorageAdapter {
           body: JSON.stringify({ values: [rowValues] }),
         }
       );
+      const appendedIdx = parseAppendedRowIndex(appendRes.updates?.updatedRange);
+      if (appendedIdx !== null) {
+        this.setRowHint(spreadsheetId, tab, id, appendedIdx);
+      }
     }
   }
 
   private async updateCacheAfterMutation(
     mutator: (state: CachedSheetsPayload['state']) => CachedSheetsPayload['state']
   ): Promise<void> {
+    if (!this.isSessionStillActive()) return;
     const spreadsheetId = await this.getActiveSpreadsheetId();
-    const cached = readSheetsCache();
+    if (!this.isSessionStillActive()) return;
+    const cached = await readSheetsCache();
+    if (!this.isSessionStillActive()) return;
     if (!cached || cached.spreadsheetId !== spreadsheetId) {
-      localStorage.removeItem(SHEETS_CACHE_STORAGE_KEY);
+      await clearSheetsCache();
       return;
     }
 
@@ -812,17 +962,275 @@ export class GoogleSheetsAdapter implements StorageAdapter {
       }
     } catch (err) {
       if (err instanceof Error && err.message.includes('401')) throw err;
-      localStorage.removeItem(SHEETS_CACHE_STORAGE_KEY);
+      if (!this.isSessionStillActive()) return;
+      if (classifyApiError(err) === 'rate_limited') {
+        // B4.7 / CD7: never wipe a valid v2 cache on 429; persist updated state with the
+        // previous modifiedTime so the next online loadWorkspace still detects remote drift.
+        await this.persistSheetsCache({
+          spreadsheetId,
+          modifiedTime: cached.modifiedTime,
+          accountEmail: this.accountEmail,
+          mediaFolderId:
+            this.mediaFolderId || localStorage.getItem(MEDIA_FOLDER_ID_STORAGE_KEY) || undefined,
+          state: nextState,
+        });
+        return;
+      }
+      await clearSheetsCache();
       return;
     }
 
-    writeSheetsCache({
+    await this.persistSheetsCache({
       spreadsheetId,
       modifiedTime: nextModifiedTime,
       accountEmail: this.accountEmail,
       mediaFolderId:
         this.mediaFolderId || localStorage.getItem(MEDIA_FOLDER_ID_STORAGE_KEY) || undefined,
       state: nextState,
+    });
+  }
+
+  /**
+   * CD Batch 7 (OQ-12): commit multiple row mutations across tabs in a single coalesced cycle:
+   *  1. ONE `values:batchGet` pre-read for all touched rows / tabs.
+   *  2. Verify every update's `A{row} === id` (re-resolving once on shift, or throwing
+   *     `RowMovedError`) and validate every conflict guard BEFORE issuing any write.
+   *     Any conflict, missing update target (`QA-46`), or unverified move aborts the entire
+   *     batch with ZERO writes.
+   *  3. ONE `values:batchUpdate` (`valueInputOption=RAW`) for all updates (Books before Sessions).
+   *  4. Grouped `:append` (`valueInputOption=RAW&insertDataOption=INSERT_ROWS`), at most one
+   *     per tab with appends (Books → Notes → Sessions → DeltaLogs). On partial failure after
+   *     earlier writes succeeded (`R1#2`), throws `PartialBatchCommitError` carrying the exact
+   *     `committed` rows so callers can reconcile state without phantom conflicts or duplicate
+   *     notes.
+   *  5. ONE Drive `modifiedTime` check + v2 cache update at the end.
+   */
+  async batchCommitMutations(ops: BatchMutationOp[]): Promise<BatchMutationResult> {
+    return this.enqueueWrite(async () => {
+      const empty: BatchMutationResult = { books: [], notes: [], sessions: [], deltaLogs: [] };
+      const normalized = normalizeBatchOps(ops);
+      if (normalized.length === 0) return empty;
+
+      const spreadsheetId = await this.getActiveSpreadsheetId();
+      this.syncRowHintsScope(spreadsheetId);
+
+      // Step 1: ONE coalesced pre-read for every touched row / tab.
+      const preRead = planBatchPreReadRanges(normalized, this.rowHints);
+      const readMap = await this.batchReadColumns(spreadsheetId, preRead.ranges);
+
+      for (const tab of preRead.colATabs) {
+        this.recordRowHintsFromRows(spreadsheetId, tab, readMap.get(`${tab}!A:A`) || []);
+      }
+
+      // Step 2: Validate every row-ID and conflict guard BEFORE any write.
+      const updates: Array<{ item: NormalizedBatchOp; rowIndex: number }> = [];
+      const appends: NormalizedBatchOp[] = [];
+      const mismatchedHints: NormalizedBatchOp[] = [];
+
+      for (const plan of preRead.opPlans) {
+        const { item, hintIndex, hintRange } = plan;
+        if (hintIndex !== null && hintRange !== null) {
+          const cells = readMap.get(hintRange)?.[0] || [];
+          if (String(cells[0] ?? '').trim() !== item.id) {
+            mismatchedHints.push(item);
+            continue;
+          }
+          if (item.expectedBaseUpdatedAt && item.timestampCol) {
+            validateGuardTimestamp(
+              item.timestampCol,
+              cells[columnIndex(item.timestampCol)],
+              item.expectedBaseUpdatedAt
+            );
+          }
+          updates.push({ item, rowIndex: hintIndex });
+        } else {
+          const colA = readMap.get(`${item.tab}!A:A`) || [];
+          const matchIdx = findRowIndexInColA(colA, item.id);
+          if (matchIdx >= 1) {
+            // Confirm id cell matches in the same atomic batchGet snapshot.
+            if (String(colA[matchIdx]?.[0] ?? '').trim() !== item.id) {
+              throw new RowMovedError();
+            }
+            if (item.expectedBaseUpdatedAt && item.timestampCol) {
+              const colTs = readMap.get(`${item.tab}!${item.timestampCol}:${item.timestampCol}`) || [];
+              validateGuardTimestamp(
+                item.timestampCol,
+                colTs[matchIdx]?.[0],
+                item.expectedBaseUpdatedAt
+              );
+            }
+            updates.push({ item, rowIndex: matchIdx });
+          } else {
+            // QA-46: on a cold fast-reload cache hit (empty rowHints), a guarded or
+            // update-only op whose row was deleted remotely MUST abort with RowMovedError
+            // rather than appending and resurrecting the deleted row.
+            if (item.expectedBaseUpdatedAt || item.mode === 'update') {
+              throw new RowMovedError();
+            }
+            appends.push(item);
+          }
+        }
+      }
+
+      // Step 2b: Relocate & re-verify any shifted hinted rows (still ZERO writes).
+      if (mismatchedHints.length > 0) {
+        const relocateTabs = Array.from(new Set(mismatchedHints.map(m => m.tab)));
+        const colAMap = await this.batchReadColumns(
+          spreadsheetId,
+          relocateTabs.map(t => `${t}!A:A`)
+        );
+        for (const tab of relocateTabs) {
+          this.recordRowHintsFromRows(spreadsheetId, tab, colAMap.get(`${tab}!A:A`) || []);
+        }
+
+        const verifySpecs: Array<{ item: NormalizedBatchOp; rowIndex: number; verifyRange: string }> = [];
+        for (const item of mismatchedHints) {
+          const relocated = findRowIndexInColA(colAMap.get(`${item.tab}!A:A`) || [], item.id);
+          if (relocated < 1) {
+            throw new RowMovedError();
+          }
+          const sheetRow = relocated + 1;
+          const verifyRange =
+            item.expectedBaseUpdatedAt && item.timestampCol
+              ? `${item.tab}!A${sheetRow}:${item.timestampCol}${sheetRow}`
+              : `${item.tab}!A${sheetRow}`;
+          verifySpecs.push({ item, rowIndex: relocated, verifyRange });
+        }
+
+        const verifyRanges = Array.from(new Set(verifySpecs.map(s => s.verifyRange)));
+        const verifyMap = await this.batchReadColumns(spreadsheetId, verifyRanges);
+
+        for (const spec of verifySpecs) {
+          const cells = verifyMap.get(spec.verifyRange)?.[0] || [];
+          if (String(cells[0] ?? '').trim() !== spec.item.id) {
+            throw new RowMovedError();
+          }
+          if (spec.item.expectedBaseUpdatedAt && spec.item.timestampCol) {
+            validateGuardTimestamp(
+              spec.item.timestampCol,
+              cells[columnIndex(spec.item.timestampCol)],
+              spec.item.expectedBaseUpdatedAt
+            );
+          }
+          updates.push({ item: spec.item, rowIndex: spec.rowIndex });
+        }
+      }
+
+      // Enforce canonical tab order (Books before Sessions) even after relocation.
+      const tabRank = (tab: BatchTabName) => BATCH_TAB_ORDER.indexOf(tab);
+      updates.sort((a, b) => tabRank(a.item.tab) - tabRank(b.item.tab));
+
+      const committed: BatchMutationResult = { books: [], notes: [], sessions: [], deltaLogs: [] };
+      const recordCommitted = (item: NormalizedBatchOp) => {
+        const { op } = item;
+        if (op.kind === 'book') committed.books.push(op.book);
+        else if (op.kind === 'note') committed.notes.push(op.note);
+        else if (op.kind === 'session') committed.sessions.push(op.session);
+        else committed.deltaLogs.push(op.deltaLog);
+      };
+      const applyBatchResultToState = (
+        st: CachedSheetsPayload['state'],
+        res: BatchMutationResult
+      ): CachedSheetsPayload['state'] => ({
+        ...st,
+        books: res.books.reduce((acc, b) => upsertInArray(acc, b), st.books),
+        notes: res.notes.reduce((acc, n) => upsertInArray(acc, n), st.notes),
+        sessions: res.sessions.reduce((acc, s) => upsertInArray(acc, s), st.sessions),
+        deltaLogs: res.deltaLogs.reduce((acc, d) => upsertInArray(acc, d), st.deltaLogs),
+      });
+
+      // Step 3: ONE values:batchUpdate for all row updates (`valueInputOption=RAW`).
+      try {
+        if (updates.length > 0) {
+          await this.fetchApi(
+            `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(
+              spreadsheetId
+            )}/values:batchUpdate`,
+            {
+              method: 'POST',
+              body: JSON.stringify({
+                valueInputOption: 'RAW',
+                data: updates.map(({ item, rowIndex }) => {
+                  const sheetRow = rowIndex + 1;
+                  return {
+                    range: `${item.tab}!A${sheetRow}:${item.lastCol}${sheetRow}`,
+                    values: [item.rowValues],
+                  };
+                }),
+              }),
+            }
+          );
+          for (const { item, rowIndex } of updates) {
+            recordCommitted(item);
+            this.setRowHint(spreadsheetId, item.tab, item.id, rowIndex);
+          }
+        }
+
+        // Step 4: Grouped appends (at most one :append call per tab, Books before Sessions).
+        for (const tab of BATCH_TAB_ORDER) {
+          const tabAppends = appends.filter(a => a.tab === tab);
+          if (tabAppends.length === 0) continue;
+          const appendRes = await this.fetchApi<{ updates?: { updatedRange?: string } }>(
+            `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(
+              spreadsheetId
+            )}/values/${encodeURIComponent(
+              `${tab}!A1`
+            )}:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS`,
+            {
+              method: 'POST',
+              body: JSON.stringify({ values: tabAppends.map(a => a.rowValues) }),
+            }
+          );
+          for (const a of tabAppends) {
+            recordCommitted(a);
+          }
+          if (tabAppends.length === 1) {
+            const appendedIdx = parseAppendedRowIndex(appendRes.updates?.updatedRange);
+            if (appendedIdx !== null) {
+              this.setRowHint(spreadsheetId, tab, tabAppends[0].id, appendedIdx);
+            }
+          }
+        }
+      } catch (err) {
+        const hasCommitted =
+          committed.books.length +
+            committed.notes.length +
+            committed.sessions.length +
+            committed.deltaLogs.length >
+          0;
+        if (hasCommitted) {
+          this.clearRowHints();
+          if (this.isSessionStillActive()) {
+            // R1#2: preserve 429 non-cache-wipe rule AND patch committed rows into v2 cache
+            // (keeping prior modifiedTime so next online sync still reconciles the failed op);
+            // for non-429 partial failures clear cache so next sync fetches authoritative state.
+            if (classifyApiError(err) === 'rate_limited') {
+              const cached = await readSheetsCache();
+              if (cached && cached.spreadsheetId === spreadsheetId) {
+                await this.persistSheetsCache({
+                  spreadsheetId,
+                  modifiedTime: cached.modifiedTime,
+                  accountEmail: this.accountEmail,
+                  mediaFolderId:
+                    this.mediaFolderId ||
+                    localStorage.getItem(MEDIA_FOLDER_ID_STORAGE_KEY) ||
+                    undefined,
+                  state: applyBatchResultToState(cached.state, committed),
+                });
+              }
+            } else {
+              await clearSheetsCache();
+            }
+          }
+          throw new PartialBatchCommitError(committed, err);
+        }
+        throw err;
+      }
+
+      // Step 5: ONE Drive modifiedTime refresh + v2 cache update.
+      await this.updateCacheAfterMutation(st => applyBatchResultToState(st, committed));
+
+      return committed;
     });
   }
 
@@ -933,6 +1341,7 @@ export class GoogleSheetsAdapter implements StorageAdapter {
         }),
       }
     );
+    this.clearRowHints(tab);
     return true;
   }
 
@@ -947,8 +1356,8 @@ export class GoogleSheetsAdapter implements StorageAdapter {
   }
 
   /**
-   * One consistent read of the id column of each tab (+ optional extra ranges), from a
-   * SINGLE values:batchGet. Returns `tab → rows` (header row included, as returned).
+   * One consistent read of the requested ranges from a SINGLE `values:batchGet`.
+   * Safely distinguishes multiple ranges on the same tab (`Books!A:A` + `Books!L:L`, etc.).
    */
   private async batchReadColumns(
     spreadsheetId: string,
@@ -960,15 +1369,7 @@ export class GoogleSheetsAdapter implements StorageAdapter {
         spreadsheetId
       )}/values:batchGet?${query}&valueRenderOption=UNFORMATTED_VALUE`
     );
-    const out = new Map<string, unknown[][]>();
-    const vrs = res.valueRanges || [];
-    ranges.forEach((range, idx) => {
-      // Sheets echoes e.g. `Books!A1:A120` (sometimes quoted); match by tab name, then order.
-      const tab = range.split('!')[0];
-      const vr = vrs.find(v => (v.range || '').replace(/'/g, '').startsWith(`${tab}!`)) || vrs[idx];
-      out.set(range, vr?.values || []);
-    });
-    return out;
+    return matchBatchValueRanges(ranges, res.valueRanges || []);
   }
 
   private async sheetIdsByTitle(spreadsheetId: string): Promise<Map<string, number>> {
@@ -1099,6 +1500,8 @@ export class GoogleSheetsAdapter implements StorageAdapter {
         if (!isAmbiguousWriteError(err)) throw err;
         ambiguous = err;
       }
+
+      this.clearRowHints();
 
       let after: Map<string, unknown[][]>;
       try {
@@ -1326,7 +1729,8 @@ export class GoogleSheetsAdapter implements StorageAdapter {
         modifiedTime,
       };
 
-      writeSheetsCache({
+      this.clearRowHints();
+      await this.persistSheetsCache({
         spreadsheetId,
         modifiedTime,
         accountEmail: this.accountEmail,
@@ -1344,12 +1748,14 @@ export class GoogleSheetsAdapter implements StorageAdapter {
     });
   }
 
-  private clearCachedMediaFolderId(): void {
+  private async clearCachedMediaFolderId(): Promise<void> {
     this.mediaFolderId = null;
+    if (!this.isSessionStillActive()) return;
     localStorage.removeItem(MEDIA_FOLDER_ID_STORAGE_KEY);
-    const cached = readSheetsCache();
+    const cached = await readSheetsCache();
+    if (!this.isSessionStillActive()) return;
     if (cached && cached.mediaFolderId) {
-      writeSheetsCache({
+      await this.persistSheetsCache({
         ...cached,
         mediaFolderId: undefined,
       });
@@ -1367,16 +1773,18 @@ export class GoogleSheetsAdapter implements StorageAdapter {
         );
         if (!meta.trashed) {
           this.mediaFolderId = candidateId;
-          localStorage.setItem(MEDIA_FOLDER_ID_STORAGE_KEY, candidateId);
+          if (this.isSessionStillActive()) {
+            localStorage.setItem(MEDIA_FOLDER_ID_STORAGE_KEY, candidateId);
+          }
           return candidateId;
         }
-        this.clearCachedMediaFolderId();
+        await this.clearCachedMediaFolderId();
       } catch (err) {
         const msg = err instanceof Error ? err.message : '';
         if (msg.includes('401')) throw err;
         const kind = classifyApiError(err);
         if (kind === 'not_found' || kind === 'forbidden') {
-          this.clearCachedMediaFolderId();
+          await this.clearCachedMediaFolderId();
         } else {
           this.mediaFolderId = candidateId;
           return candidateId;
@@ -1393,7 +1801,9 @@ export class GoogleSheetsAdapter implements StorageAdapter {
 
     if (searchRes.files?.[0]?.id) {
       this.mediaFolderId = searchRes.files[0].id;
-      localStorage.setItem(MEDIA_FOLDER_ID_STORAGE_KEY, this.mediaFolderId);
+      if (this.isSessionStillActive()) {
+        localStorage.setItem(MEDIA_FOLDER_ID_STORAGE_KEY, this.mediaFolderId);
+      }
       return this.mediaFolderId;
     }
 
@@ -1409,7 +1819,9 @@ export class GoogleSheetsAdapter implements StorageAdapter {
     );
 
     this.mediaFolderId = created.id;
-    localStorage.setItem(MEDIA_FOLDER_ID_STORAGE_KEY, created.id);
+    if (this.isSessionStillActive()) {
+      localStorage.setItem(MEDIA_FOLDER_ID_STORAGE_KEY, created.id);
+    }
     return created.id;
   }
 
@@ -1458,7 +1870,7 @@ export class GoogleSheetsAdapter implements StorageAdapter {
     } catch (err) {
       const msg = err instanceof Error ? err.message : '';
       if (msg.includes('404')) {
-        this.clearCachedMediaFolderId();
+        await this.clearCachedMediaFolderId();
         folderId = await this.ensureMediaFolder();
         uploaded = await this.uploadMultipartImage(folderId, blob, fileName, mimeType);
       } else {

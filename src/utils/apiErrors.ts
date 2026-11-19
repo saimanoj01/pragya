@@ -78,8 +78,12 @@ export function extractErrorReason(body: string): string {
 }
 
 function statusAndBody(err: unknown): { status: number | null; reason: string; body: string } {
-  if (err instanceof ApiError) return { status: err.status, reason: err.reason, body: err.body };
-  const msg = err instanceof Error ? err.message : typeof err === 'string' ? err : '';
+  const target =
+    err && typeof err === 'object' && 'cause' in err && (err as { cause?: unknown }).cause instanceof Error
+      ? (err as { cause: unknown }).cause
+      : err;
+  if (target instanceof ApiError) return { status: target.status, reason: target.reason, body: target.body };
+  const msg = target instanceof Error ? target.message : typeof target === 'string' ? target : '';
   const m = /^API Error (\d{3}):\s?([\s\S]*)$/.exec(msg);
   if (!m) return { status: null, reason: '', body: msg };
   return { status: Number(m[1]), reason: extractErrorReason(m[2]), body: m[2] };

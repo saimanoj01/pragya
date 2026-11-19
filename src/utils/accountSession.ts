@@ -6,6 +6,7 @@ import {
 import { adoptLegacyDrafts, clearAllDrafts, dropLegacyDrafts } from './draftStorage';
 import { CAPSTONE_HIDDEN_KEY } from './capstonePrompt';
 import { LAST_DELETE_BACKUP_KEY } from './deletePlan';
+import { flushIdbQueue, idbClear, idbDelete } from './idbStore';
 import { clearPreImportBackup } from './importSafety';
 
 /** Persisted Google profile (also read by AuthContext). */
@@ -17,13 +18,15 @@ export const GOOGLE_USER_STORAGE_KEY = 'pragya_google_user';
  */
 export const LAST_ACCOUNT_EMAIL_KEY = 'pragya_last_account_email';
 
-/** B4.11: per-account local artifacts that must never leak to another account. */
+/** B4.11 / CD7: per-account local & IndexedDB artifacts that must never leak to another account. */
 export function clearPerAccountLocalData(): void {
-  localStorage.removeItem(SHEETS_CACHE_STORAGE_KEY);
+  void idbDelete(SHEETS_CACHE_STORAGE_KEY);
   localStorage.removeItem(MEDIA_FOLDER_ID_STORAGE_KEY);
   localStorage.removeItem(SPREADSHEET_ID_STORAGE_KEY);
   clearAllDrafts();
   clearPreImportBackup();
+  // CD7: also clear the entire IndexedDB cache kv store so no per-account cache/backup lingers.
+  void idbClear();
   // CD C1.2: the previous account's last-deleted rows never outlive an account switch.
   localStorage.removeItem(LAST_DELETE_BACKUP_KEY);
   // R1 nit: the per-device capstone Hide list belongs to the previous account's books.
@@ -31,6 +34,12 @@ export function clearPerAccountLocalData(): void {
   if (typeof caches !== 'undefined') {
     caches.delete('pragya-media-v1').catch(() => {});
   }
+}
+
+/** Async wrapper that awaits all queued IndexedDB deletions triggered by clearPerAccountLocalData. */
+export async function clearPerAccountLocalDataAsync(): Promise<void> {
+  clearPerAccountLocalData();
+  await flushIdbQueue();
 }
 
 /** The previous account's email: the durable marker first, then the profile key. */

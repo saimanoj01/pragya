@@ -10,44 +10,26 @@ import React, {
 import type {
   Attachment,
   Book,
-  BookFormat,
-  BookKind,
-  BookStatus,
   DeltaLog,
   DeltaOutcome,
   Note,
-  PosUnit,
   PragyaSnapshot,
   ReadingSession,
 } from '../types/pragya';
 import { DemoStorageAdapter } from '../services/demoAdapter';
 import { GoogleSheetsAdapter } from '../services/googleSheetsAdapter';
-import type { StorageAdapter } from '../services/storage';
+import {
+  PartialBatchCommitError,
+  type BatchMutationResult,
+  type StorageAdapter,
+} from '../services/storage';
 import { compressImageToWebp } from '../utils/imageCompress';
-import {
-  applyBookmarkAdvance,
-  createUuid,
-  getLocalDateString,
-  upsertCoalescedSession,
-} from '../utils/sessionCoalesce';
-import { normalizeDeltaAction, normalizeDeltaTrigger } from '../utils/deltaFormat';
-import {
-  BOOK_EDITOR_OWNED_META_KEYS,
-  NOTE_EDITOR_OWNED_META_KEYS,
-  getRenderableAttachments,
-  findOverriddenMetaKeys,
-  mergeUnknownMetaKeys,
-} from '../utils/metaCodecs';
-import { resolveExpectedBase } from '../utils/conflictGuard';
+import { createUuid, getLocalDateString } from '../utils/sessionCoalesce';
 import { RATE_LIMIT_TOAST, describeSyncError } from '../utils/apiErrors';
-import { normalizeTagList } from '../utils/sheetCodecs';
-import { computeNormalizedPos } from '../utils/spoilerMath';
-import { addSlugAlias, generateUniqueSlug, takenSlugs } from '../utils/wikilinks';
 import { showToast } from '../utils/toast';
 import { buildSnapshot } from '../utils/snapshot';
-import { savePreImportBackup } from '../utils/importSafety';
+import { savePreImportBackupAsync } from '../utils/importSafety';
 import { DEMO_DRAFT_SCOPE, clearAllDrafts } from '../utils/draftStorage';
-import { countOtherActiveDeltas } from '../utils/archive';
 import { SESSION_NOTE_MAX } from '../utils/bookSurfaces';
 import { applyDeltaLogPatch, planDeltaCheckIn, type DeltaCheckInPlan } from '../utils/deltaCheckIn';
 import {
@@ -67,8 +49,6 @@ import {
   type RestoreRowsResult,
   type WorkspaceRows,
 } from '../utils/deletePlan';
-import { clampNotePos } from '../utils/positionClamp';
-import { normalizeChapterInput } from '../utils/chapterFormat';
 import {
   OfflineReadOnlyError,
   STILL_OFFLINE_TOAST,
@@ -76,116 +56,54 @@ import {
   shouldBlockCloudWrite,
 } from '../utils/offline';
 import { useAuth } from './AuthContext';
+import {
+  planBookmarkAdvance,
+  planCaptureWithAdvance,
+  planMarkBookFinished,
+  planNewBook,
+  planRestoredBook,
+  planStartReadingBook,
+  planStartReread,
+  planUpdatedBook,
+  planUpdatedNote,
+  upsertList,
+  type AddBookInput,
+  type BookWriteOptions,
+  type BookmarkAdvanceResult,
+  type BookmarkAdvanceUndo,
+  type BookmarkSessionUndoAction,
+  type QuickCaptureInput,
+  type ReplaceWorkspaceOptions,
+  type UpdateNoteOptions,
+} from './pragyaMutations';
+
+export type {
+  AddBookInput,
+  BookWriteOptions,
+  BookmarkAdvanceResult,
+  BookmarkAdvanceUndo,
+  BookmarkSessionUndoAction,
+  QuickCaptureInput,
+  ReplaceWorkspaceOptions,
+  UpdateNoteOptions,
+};
 
 /** R2 N1 (dev only): an editor changed a meta key it doesn't own; the latest value wins. */
-function warnOverriddenMetaKeys(
-  entity: string,
-  edited: object,
-  base: object | null | undefined,
-  latest: object | null | undefined,
-  owned: readonly string[]
-): void {
-  if (!import.meta.env.DEV || !base) return;
-  const keys = findOverriddenMetaKeys(edited, base, latest, owned);
-  if (keys.length) {
-    console.warn(
-      `[pragya] ${entity} edit changed non-owned meta key(s) ${keys.join(', ')}; the latest loaded value was kept. Pass ownedMetaKeys at this call site if the change is intended.`
-    );
-  }
+function warnOverriddenMetaKeys(entity: string, keys: readonly string[]): void {
+  if (!import.meta.env.DEV || keys.length === 0) return;
+  console.warn(
+    `[pragya] ${entity} edit changed non-owned meta key(s) ${keys.join(', ')}; the latest loaded value was kept. Pass ownedMetaKeys at this call site if the change is intended.`
+  );
 }
 
-export interface AddBookInput {
-  title: string;
-  author: string;
-  format: BookFormat;
-  kind: BookKind;
-  status: BookStatus;
-  currentPos: number;
-  totalPos: number;
-  posUnit: PosUnit;
-  docUrl?: string;
-  /** CD C2.6: optional https cover (validated by the form). */
-  coverUrl?: string;
-}
-
-export interface QuickCaptureInput {
-  bookId: string;
-  pos: number;
-  title?: string;
-  quote?: string;
-  takeaway: string;
-  tags: string[];
-  sparLater?: boolean;
-  isPrediction?: boolean;
-  attachments?: Attachment[];
-  /** A3.3: note chapter / story (trimmed, ≤ 80 chars; empty → key omitted). */
-  chapter?: string;
-  /** CD C3.3: capture for a missing `[[slug]]` — the note takes this slug when it's free. */
-  slug?: string;
-}
-
-export interface UpdateNoteOptions {
-  /** Keep `note.updatedAt` as-is (e.g. Mark Reviewed only touches meta.lastReviewedAt). */
-  preserveUpdatedAt?: boolean;
-  /** Override the conflict-guard base; defaults to the loaded note's updatedAt. */
-  expectedBaseUpdatedAt?: string;
-  /** Meta keys this call site may set/delete (default NOTE_EDITOR_OWNED_META_KEYS). */
-  ownedMetaKeys?: readonly string[];
-  /**
-   * R2 N1 (dev warning only): the meta snapshot this edit started from. A non-owned key
-   * is reported only when the editor changed it relative to this base; no base → no
-   * warning (a key another device changed is never reported).
-   */
-  baseMeta?: object;
-}
-
-export interface ReplaceWorkspaceOptions {
-  /** Save current workspace to pragya_pre_import_backup_v1 first (default true). */
-  backup?: boolean;
-}
-
-export type BookmarkSessionUndoAction =
-  | { mode: 'created'; sessionId: string }
-  | { mode: 'updated'; prevSession: ReadingSession };
-
-export interface BookmarkAdvanceUndo {
-  prevBook: Book;
-  sessionAction: BookmarkSessionUndoAction;
-  /** B4.1: `meta.updatedAt` of the book this advance saved — the undo's conflict base. */
-  appliedUpdatedAt?: string;
-}
-
-export interface BookWriteOptions {
-  /**
-   * B4.1: conflict-guard base captured when the edit started (modal open / undo
-   * payload). Wins over the currently loaded book — even `""` — so a background sync
-   * can't silently advance the base and let a stale edit overwrite a newer row.
-   */
-  expectedBaseUpdatedAt?: string;
-  /** Meta keys this call site may set/delete (default BOOK_EDITOR_OWNED_META_KEYS). */
-  ownedMetaKeys?: readonly string[];
-  /**
-   * R2 N1 (dev warning only): the meta snapshot this edit started from. A non-owned key
-   * is reported only when the editor changed it relative to this base; no base → no
-   * warning (a key another device changed is never reported).
-   */
-  baseMeta?: object;
-}
-
-export interface BookmarkAdvanceResult {
-  book: Book;
-  changed: boolean;
-  rejectedBackward: boolean;
-  undo?: BookmarkAdvanceUndo;
-  /** CD C2.3: the (coalesced) session this advance wrote — for "+ Add a note to this session". */
-  sessionId?: string;
-}
-
-export interface PragyaContextValue {
+export interface PragyaDataContextValue {
   books: Book[];
   notes: Note[];
   sessions: ReadingSession[];
   deltaLogs: DeltaLog[];
+  /** Derived memoized lookup maps for O(1) reads across views & cards. */
+  booksById: ReadonlyMap<string, Book>;
+  notesById: ReadonlyMap<string, Note>;
   isLoading: boolean;
   isSyncing: boolean;
   lastSyncedAt: string | null;
@@ -193,6 +111,9 @@ export interface PragyaContextValue {
   mediaFolderId: string | null;
   /** Cloud Mode only: true while serving cached data because the network is unavailable. */
   isOfflineReadOnly: boolean;
+}
+
+export interface PragyaActionsContextValue {
   syncNow: (force?: boolean) => Promise<void>;
   addBook: (input: AddBookInput) => Promise<Book>;
   updateBook: (book: Book, options?: BookWriteOptions) => Promise<Book>;
@@ -253,17 +174,10 @@ export interface PragyaContextValue {
   restoreDeletedRows: (backup: DeleteBackup) => Promise<RestoreRowsResult>;
 }
 
-const PragyaContext = createContext<PragyaContextValue | undefined>(undefined);
+export type PragyaContextValue = PragyaDataContextValue & PragyaActionsContextValue;
 
-function upsertList<T extends { id: string }>(items: T[], item: T): T[] {
-  const idx = items.findIndex(x => x.id === item.id);
-  if (idx >= 0) {
-    const next = [...items];
-    next[idx] = item;
-    return next;
-  }
-  return [...items, item];
-}
+const PragyaDataContext = createContext<PragyaDataContextValue | undefined>(undefined);
+const PragyaActionsContext = createContext<PragyaActionsContextValue | undefined>(undefined);
 
 export const PragyaProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { isAuthenticated, isMockMode, user, getGoogleToken, triggerSessionExpired } = useAuth();
@@ -287,6 +201,8 @@ export const PragyaProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   const [mediaFolderId, setMediaFolderId] = useState<string | null>(null);
   const [isOfflineReadOnly, setIsOfflineReadOnly] = useState<boolean>(false);
 
+  const adapterRef = useRef<StorageAdapter>(adapter);
+  adapterRef.current = adapter;
   const booksRef = useRef<Book[]>(books);
   const notesRef = useRef<Note[]>(notes);
   const sessionsRef = useRef<ReadingSession[]>(sessions);
@@ -297,14 +213,62 @@ export const PragyaProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   const isMockModeRef = useRef<boolean>(isMockMode);
   isMockModeRef.current = isMockMode;
 
+  // R1#1: monotonic session epoch incremented synchronously whenever auth/mode/account/adapter
+  // changes so in-flight syncs or queued mutations from a prior session can never execute against
+  // a new session's adapter or write stale rows into the new session's React state.
+  const sessionEpochRef = useRef<number>(0);
+  const lastSessionKeyRef = useRef<{
+    adapter: StorageAdapter;
+    isAuthenticated: boolean;
+    isMockMode: boolean;
+    userEmail: string | undefined;
+  }>({
+    adapter,
+    isAuthenticated,
+    isMockMode,
+    userEmail,
+  });
+  if (
+    lastSessionKeyRef.current.adapter !== adapter ||
+    lastSessionKeyRef.current.isAuthenticated !== isAuthenticated ||
+    lastSessionKeyRef.current.isMockMode !== isMockMode ||
+    lastSessionKeyRef.current.userEmail !== userEmail
+  ) {
+    sessionEpochRef.current += 1;
+    lastSessionKeyRef.current = { adapter, isAuthenticated, isMockMode, userEmail };
+  }
+
   const mutationQueueRef = useRef<Promise<unknown>>(Promise.resolve());
   const lastRateLimitToastRef = useRef<number>(0);
 
-  const enqueueMutation = useCallback(<T,>(task: () => Promise<T>): Promise<T> => {
-    const next = mutationQueueRef.current.catch(() => {}).then(task);
-    mutationQueueRef.current = next;
-    return next;
-  }, []);
+  interface MutationSessionContext {
+    adapter: StorageAdapter;
+    isCurrentSession: () => boolean;
+  }
+
+  const enqueueMutation = useCallback(
+    <T,>(
+      task: (ctx: MutationSessionContext) => Promise<T>,
+      options: { allowStaleSkip?: boolean } = {}
+    ): Promise<T> => {
+      const originEpoch = sessionEpochRef.current;
+      const originAdapter = adapterRef.current;
+      const isCurrentSession = () =>
+        sessionEpochRef.current === originEpoch &&
+        adapterRef.current === originAdapter &&
+        isAuthenticatedRef.current;
+      const next = mutationQueueRef.current.catch(() => {}).then(async () => {
+        if (!isCurrentSession()) {
+          if (options.allowStaleSkip) return undefined as T;
+          throw new Error('Session changed before this action could complete. Please try again.');
+        }
+        return task({ adapter: originAdapter, isCurrentSession });
+      });
+      mutationQueueRef.current = next;
+      return next;
+    },
+    []
+  );
 
   const setOfflineReadOnly = useCallback((value: boolean) => {
     isOfflineReadOnlyRef.current = value;
@@ -318,38 +282,102 @@ export const PragyaProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     }
   }, []);
 
+  const applyRows = useCallback((rows: WorkspaceRows) => {
+    booksRef.current = rows.books;
+    notesRef.current = rows.notes;
+    sessionsRef.current = rows.sessions;
+    deltaLogsRef.current = rows.deltaLogs;
+    setBooks(rows.books);
+    setNotes(rows.notes);
+    setSessions(rows.sessions);
+    setDeltaLogs(rows.deltaLogs);
+  }, []);
+
+  const currentRows = useCallback(
+    (): WorkspaceRows => ({
+      books: booksRef.current,
+      notes: notesRef.current,
+      sessions: sessionsRef.current,
+      deltaLogs: deltaLogsRef.current,
+    }),
+    []
+  );
+
+  /** R1#2: merge committed rows from a batch (or partial batch failure) into React state. */
+  const reconcileCommitted = useCallback(
+    (committed: BatchMutationResult, isCurrentSession: () => boolean) => {
+      if (!isCurrentSession()) return;
+      if (committed.books.length > 0) {
+        const nextBooks = committed.books.reduce((acc, b) => upsertList(acc, b), booksRef.current);
+        booksRef.current = nextBooks;
+        setBooks(nextBooks);
+      }
+      if (committed.notes.length > 0) {
+        const existingIds = new Set(notesRef.current.map(n => n.id));
+        const nextNotes = committed.notes.reduce(
+          (acc, n) => (existingIds.has(n.id) ? upsertList(acc, n) : [n, ...acc]),
+          notesRef.current
+        );
+        notesRef.current = nextNotes;
+        setNotes(nextNotes);
+      }
+      if (committed.sessions.length > 0) {
+        const nextSessions = committed.sessions.reduce(
+          (acc, s) => upsertList(acc, s),
+          sessionsRef.current
+        );
+        sessionsRef.current = nextSessions;
+        setSessions(nextSessions);
+      }
+      if (committed.deltaLogs.length > 0) {
+        const nextLogs = committed.deltaLogs.reduce(
+          (acc, l) => upsertList(acc, l),
+          deltaLogsRef.current
+        );
+        deltaLogsRef.current = nextLogs;
+        setDeltaLogs(nextLogs);
+      }
+    },
+    []
+  );
+
   const syncNow = useCallback(
     async (force = false) => {
-      if (!isAuthenticated) return;
+      if (!isAuthenticatedRef.current) return;
+      const callEpoch = sessionEpochRef.current;
       setIsSyncing(true);
       let servedOffline = false;
       let servedRateLimitedCache = false;
       try {
-        await enqueueMutation(async () => {
-          if (!isAuthenticatedRef.current) return;
-          const ws = await adapter.loadWorkspace({ forceRefresh: force });
-          if (!isAuthenticatedRef.current) return;
-          booksRef.current = ws.books;
-          notesRef.current = ws.notes;
-          sessionsRef.current = ws.sessions;
-          deltaLogsRef.current = ws.deltaLogs;
-          setBooks(ws.books);
-          setNotes(ws.notes);
-          setSessions(ws.sessions);
-          setDeltaLogs(ws.deltaLogs);
-          setSpreadsheetId(ws.spreadsheetId || null);
-          setMediaFolderId(ws.mediaFolderId || null);
-          servedOffline = Boolean(ws.isOfflineReadOnly) && !isMockModeRef.current;
-          if (ws.servedFromCacheDueToRateLimit) servedRateLimitedCache = true;
-          setOfflineReadOnly(servedOffline);
-          // N2: cached data served because Google throttled us is not a fresh sync.
-          if (!servedOffline && !ws.servedFromCacheDueToRateLimit) {
-            setLastSyncedAt(new Date().toISOString());
-            // CD C1.2: the local copy of the last permanently deleted rows lives only until
-            // the next successful sync after the delete was CONFIRMED (support-only net).
-            if (readLastDeleteBackup()?.confirmed) clearLastDeleteBackup();
-          }
-        });
+        await enqueueMutation(
+          async ({ adapter: activeAdapter, isCurrentSession }) => {
+            if (!isCurrentSession()) return;
+            const ws = await activeAdapter.loadWorkspace({ forceRefresh: force });
+            if (!isCurrentSession()) return;
+            booksRef.current = ws.books;
+            notesRef.current = ws.notes;
+            sessionsRef.current = ws.sessions;
+            deltaLogsRef.current = ws.deltaLogs;
+            setBooks(ws.books);
+            setNotes(ws.notes);
+            setSessions(ws.sessions);
+            setDeltaLogs(ws.deltaLogs);
+            setSpreadsheetId(ws.spreadsheetId || null);
+            setMediaFolderId(ws.mediaFolderId || null);
+            servedOffline = Boolean(ws.isOfflineReadOnly) && !isMockModeRef.current;
+            if (ws.servedFromCacheDueToRateLimit) servedRateLimitedCache = true;
+            setOfflineReadOnly(servedOffline);
+            // N2: cached data served because Google throttled us is not a fresh sync.
+            if (!servedOffline && !ws.servedFromCacheDueToRateLimit) {
+              setLastSyncedAt(new Date().toISOString());
+              // CD C1.2: the local copy of the last permanently deleted rows lives only until
+              // the next successful sync after the delete was CONFIRMED (support-only net).
+              if (readLastDeleteBackup()?.confirmed) clearLastDeleteBackup();
+            }
+          },
+          { allowStaleSkip: true }
+        );
+        if (sessionEpochRef.current !== callEpoch || !isAuthenticatedRef.current) return;
         if (servedRateLimitedCache) {
           // R2#3: tell the user (at most once a minute) that cached data is shown
           // because Google is throttling (ux_spec D.2 copy).
@@ -366,6 +394,7 @@ export const PragyaProvider: React.FC<{ children: React.ReactNode }> = ({ childr
           }
         }
       } catch (err) {
+        if (sessionEpochRef.current !== callEpoch || !isAuthenticatedRef.current) return;
         const msg = err instanceof Error ? err.message : 'Failed to sync workspace';
         if (
           isNetworkError(err) &&
@@ -380,11 +409,13 @@ export const PragyaProvider: React.FC<{ children: React.ReactNode }> = ({ childr
           showToast(describeSyncError(err), 'error');
         }
       } finally {
-        setIsSyncing(false);
-        setIsLoading(false);
+        if (sessionEpochRef.current === callEpoch) {
+          setIsSyncing(false);
+          setIsLoading(false);
+        }
       }
     },
-    [adapter, enqueueMutation, isAuthenticated, setOfflineReadOnly]
+    [enqueueMutation, setOfflineReadOnly]
   );
 
   useEffect(() => {
@@ -401,6 +432,8 @@ export const PragyaProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       setMediaFolderId(null);
       setLastSyncedAt(null);
       setOfflineReadOnly(false);
+      setIsSyncing(false);
+      setIsLoading(false);
       return;
     }
     if (isMockMode) {
@@ -408,7 +441,7 @@ export const PragyaProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     }
     setIsLoading(true);
     void syncNow(false);
-  }, [isAuthenticated, isMockMode, syncNow, setOfflineReadOnly]);
+  }, [adapter, isAuthenticated, isMockMode, syncNow, setOfflineReadOnly]);
 
   // M4.5: foreground sync — refresh on reconnect / tab visible (Cloud Mode only).
   useEffect(() => {
@@ -437,142 +470,102 @@ export const PragyaProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     };
   }, [isAuthenticated, isMockMode, syncNow, setOfflineReadOnly]);
 
+  // R1 nit 6: a support-only delete backup never lingers past its TTL.
+  useEffect(() => {
+    expireStaleDeleteBackup();
+  }, []);
+
   const addBook = useCallback(
     (input: AddBookInput): Promise<Book> =>
-      enqueueMutation(async () => {
+      enqueueMutation(async ({ adapter: activeAdapter, isCurrentSession }) => {
         assertCloudWritable();
-        const nowIso = new Date().toISOString();
-        const totalPos = Math.max(0, Number(input.totalPos) || 0);
-        const currentPos = Math.max(0, Number(input.currentPos) || 0);
-        const normalizedPos =
-          input.status === 'finished'
-            ? 1
-            : computeNormalizedPos(currentPos, totalPos, input.posUnit);
-
-        const newBook: Book = {
-          id: createUuid(),
-          title: input.title.trim(),
-          author: input.author.trim(),
-          format: input.format,
-          kind: input.kind,
-          status: input.status,
-          currentPos,
-          totalPos,
-          posUnit: input.posUnit,
-          normalizedPos,
-          docUrl: (input.docUrl || '').trim(),
-          meta: {
-            ...(input.status === 'reading' || input.status === 'finished'
-              ? { startedAt: nowIso }
-              : {}),
-            ...(input.status === 'finished' ? { finishedAt: nowIso } : {}),
-            ...(input.coverUrl?.trim() ? { coverUrl: input.coverUrl.trim() } : {}),
-            updatedAt: nowIso,
-          },
-        };
-
-        const saved = await adapter.saveBook(newBook);
+        const newBook = planNewBook(input);
+        const saved = await activeAdapter.saveBook(newBook);
+        if (!isCurrentSession()) return saved;
         const nextBooks = upsertList(booksRef.current, saved);
         booksRef.current = nextBooks;
         setBooks(nextBooks);
         return saved;
       }),
-    [adapter, assertCloudWritable, enqueueMutation]
+    [assertCloudWritable, enqueueMutation]
   );
 
   const updateBook = useCallback(
     (book: Book, options: BookWriteOptions = {}): Promise<Book> =>
-      enqueueMutation(async () => {
+      enqueueMutation(async ({ adapter: activeAdapter, isCurrentSession }) => {
         assertCloudWritable();
-        const nowIso = new Date().toISOString();
         const loaded = booksRef.current.find(b => b.id === book.id);
-        warnOverriddenMetaKeys('Book', book.meta, options.baseMeta, loaded?.meta, options.ownedMetaKeys ?? BOOK_EDITOR_OWNED_META_KEYS);
-        const nextBook: Book = {
-          ...book,
-          normalizedPos:
-            book.status === 'finished'
-              ? 1
-              : computeNormalizedPos(book.currentPos, book.totalPos, book.posUnit),
-          meta: {
-            // R2#1: re-merge non-editor keys a stale modal snapshot may lack.
-            ...mergeUnknownMetaKeys(
-              book.meta,
-              loaded?.meta,
-              options.ownedMetaKeys ?? BOOK_EDITOR_OWNED_META_KEYS
-            ),
-            // CD 3 fix-up R1#2: leaving "finished" by any edit marks a re-read (OQ-7). Undo
-            // of Mark Finished goes through restoreBook and is NOT a re-read.
-            ...(loaded?.status === 'finished' && book.status !== 'finished' ? { everFinished: true } : {}),
-            updatedAt: nowIso,
-          },
-        };
-        const saved = await adapter.saveBook(nextBook, {
-          expectedBaseUpdatedAt: resolveExpectedBase(
-            options.expectedBaseUpdatedAt,
-            loaded?.meta?.updatedAt
-          ),
+        const plan = planUpdatedBook(book, loaded, options);
+        warnOverriddenMetaKeys('Book', plan.overriddenMetaKeys);
+        const saved = await activeAdapter.saveBook(plan.nextBook, {
+          expectedBaseUpdatedAt: plan.expectedBaseUpdatedAt,
         });
+        if (!isCurrentSession()) return saved;
         const nextBooks = upsertList(booksRef.current, saved);
         booksRef.current = nextBooks;
         setBooks(nextBooks);
         return saved;
       }),
-    [adapter, assertCloudWritable, enqueueMutation]
+    [assertCloudWritable, enqueueMutation]
   );
 
   const advanceBookPositionInternal = useCallback(
     async (
       bookId: string,
       incomingPos: number,
-      options: { manualOverride?: boolean; sessionNote?: string } = {}
+      options: { manualOverride?: boolean; sessionNote?: string } = {},
+      ctx: MutationSessionContext
     ): Promise<BookmarkAdvanceResult> => {
+      const { adapter: activeAdapter, isCurrentSession } = ctx;
       const existing = booksRef.current.find(b => b.id === bookId);
       if (!existing) {
         throw new Error('Book not found');
       }
       assertCloudWritable();
-      const nowIso = new Date().toISOString();
-      const res = applyBookmarkAdvance(existing, incomingPos, {
-        manualOverride: options.manualOverride,
-        nowIso,
-      });
-
-      if (res.rejectedBackward) {
-        return { book: existing, changed: false, rejectedBackward: true };
+      const plan = planBookmarkAdvance(existing, sessionsRef.current, incomingPos, options);
+      if (!plan.changed) {
+        return { book: existing, changed: false, rejectedBackward: plan.rejectedBackward };
       }
 
-      if (!res.changed) {
-        return { book: existing, changed: false, rejectedBackward: false };
+      let savedBook: Book;
+      let savedSession: ReadingSession;
+      if (activeAdapter.batchCommitMutations) {
+        let res: BatchMutationResult;
+        try {
+          res = await activeAdapter.batchCommitMutations(plan.ops);
+        } catch (err) {
+          if (err instanceof PartialBatchCommitError) {
+            reconcileCommitted(err.committed, isCurrentSession);
+          }
+          throw err;
+        }
+        savedBook = res.books[0] ?? plan.updatedBook;
+        savedSession = res.sessions[0] ?? plan.sessionToSave;
+      } else {
+        savedBook = await activeAdapter.saveBook(plan.updatedBook, {
+          expectedBaseUpdatedAt: plan.expectedBaseUpdatedAt,
+        });
+        if (!isCurrentSession()) {
+          return { book: savedBook, changed: true, rejectedBackward: false };
+        }
+        reconcileCommitted(
+          { books: [savedBook], notes: [], sessions: [], deltaLogs: [] },
+          isCurrentSession
+        );
+        try {
+          savedSession = await activeAdapter.saveSession(plan.sessionToSave);
+        } catch (err) {
+          throw new PartialBatchCommitError(
+            { books: [savedBook], notes: [], sessions: [], deltaLogs: [] },
+            err
+          );
+        }
       }
 
-      const savedBook = await adapter.saveBook(res.updatedBook, {
-        expectedBaseUpdatedAt: existing.meta?.updatedAt,
-      });
-      const nextBooks = upsertList(booksRef.current, savedBook);
-      booksRef.current = nextBooks;
-      setBooks(nextBooks);
-
-      const sessionRes = upsertCoalescedSession(sessionsRef.current, {
-        bookId,
-        prevPos: res.prevPos,
-        nextPos: res.nextPos,
-        nowIso,
-        note: options.sessionNote,
-        manualOverride: options.manualOverride,
-      });
-
-      const prevSession = sessionRes.isNew
-        ? undefined
-        : sessionsRef.current.find(s => s.id === sessionRes.upserted.id);
-      const sessionAction: BookmarkSessionUndoAction =
-        !sessionRes.isNew && prevSession
-          ? { mode: 'updated', prevSession }
-          : { mode: 'created', sessionId: sessionRes.upserted.id };
-
-      const savedSession = await adapter.saveSession(sessionRes.upserted);
-      const nextSessions = upsertList(sessionsRef.current, savedSession);
-      sessionsRef.current = nextSessions;
-      setSessions(nextSessions);
+      reconcileCommitted(
+        { books: [savedBook], notes: [], sessions: [savedSession], deltaLogs: [] },
+        isCurrentSession
+      );
 
       return {
         book: savedBook,
@@ -581,12 +574,12 @@ export const PragyaProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         sessionId: savedSession.id,
         undo: {
           prevBook: existing,
-          sessionAction,
+          sessionAction: plan.sessionAction,
           appliedUpdatedAt: savedBook.meta?.updatedAt,
         },
       };
     },
-    [adapter, assertCloudWritable]
+    [assertCloudWritable, reconcileCommitted]
   );
 
   const advanceBookPosition = useCallback(
@@ -595,294 +588,227 @@ export const PragyaProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       incomingPos: number,
       options: { manualOverride?: boolean; sessionNote?: string } = {}
     ): Promise<BookmarkAdvanceResult> =>
-      enqueueMutation(() => advanceBookPositionInternal(bookId, incomingPos, options)),
+      enqueueMutation(ctx => advanceBookPositionInternal(bookId, incomingPos, options, ctx)),
     [advanceBookPositionInternal, enqueueMutation]
   );
 
   const revertBookmarkAdvance = useCallback(
     (undo: BookmarkAdvanceUndo): Promise<void> =>
-      enqueueMutation(async () => {
+      enqueueMutation(async ({ adapter: activeAdapter, isCurrentSession }) => {
         assertCloudWritable();
         const loaded = booksRef.current.find(b => b.id === undo.prevBook.id);
-        const nowIso = new Date().toISOString();
-        const restoredBook: Book = {
-          ...undo.prevBook,
-          meta: {
-            ...mergeUnknownMetaKeys(undo.prevBook.meta, loaded?.meta, BOOK_EDITOR_OWNED_META_KEYS),
-            updatedAt: nowIso,
-          },
-        };
         // B4.1: the base is what the advance wrote; any remote change since → conflict.
-        const savedBook = await adapter.saveBook(restoredBook, {
-          expectedBaseUpdatedAt: resolveExpectedBase(undo.appliedUpdatedAt, loaded?.meta?.updatedAt),
+        const bookPlan = planRestoredBook(undo.prevBook, loaded, {
+          expectedBaseUpdatedAt: undo.appliedUpdatedAt,
         });
+
+        if (undo.sessionAction.mode === 'updated' && activeAdapter.batchCommitMutations) {
+          let res: BatchMutationResult;
+          try {
+            res = await activeAdapter.batchCommitMutations([
+              {
+                kind: 'book',
+                book: bookPlan.nextBook,
+                expectedBaseUpdatedAt: bookPlan.expectedBaseUpdatedAt,
+                mode: 'update',
+              },
+              { kind: 'session', session: undo.sessionAction.prevSession, mode: 'update' },
+            ]);
+          } catch (err) {
+            if (err instanceof PartialBatchCommitError) {
+              reconcileCommitted(err.committed, isCurrentSession);
+            }
+            throw err;
+          }
+          const savedBook = res.books[0] ?? bookPlan.nextBook;
+          const savedSession = res.sessions[0] ?? undo.sessionAction.prevSession;
+          reconcileCommitted(
+            { books: [savedBook], notes: [], sessions: [savedSession], deltaLogs: [] },
+            isCurrentSession
+          );
+          return;
+        }
+
+        const savedBook = await activeAdapter.saveBook(bookPlan.nextBook, {
+          expectedBaseUpdatedAt: bookPlan.expectedBaseUpdatedAt,
+        });
+        if (!isCurrentSession()) return;
         const nextBooks = upsertList(booksRef.current, savedBook);
         booksRef.current = nextBooks;
         setBooks(nextBooks);
 
         if (undo.sessionAction.mode === 'created') {
           const { sessionId } = undo.sessionAction;
-          if (adapter.deleteSession) {
-            await adapter.deleteSession(sessionId);
+          if (activeAdapter.deleteSession) {
+            await activeAdapter.deleteSession(sessionId);
           }
+          if (!isCurrentSession()) return;
           const nextSessions = sessionsRef.current.filter(s => s.id !== sessionId);
           sessionsRef.current = nextSessions;
           setSessions(nextSessions);
         } else {
-          const savedSession = await adapter.saveSession(undo.sessionAction.prevSession);
+          const savedSession = await activeAdapter.saveSession(undo.sessionAction.prevSession);
+          if (!isCurrentSession()) return;
           const nextSessions = upsertList(sessionsRef.current, savedSession);
           sessionsRef.current = nextSessions;
           setSessions(nextSessions);
         }
       }),
-    [adapter, assertCloudWritable, enqueueMutation]
+    [assertCloudWritable, enqueueMutation, reconcileCommitted]
   );
 
   const restoreBook = useCallback(
     (prevBook: Book, options: BookWriteOptions = {}): Promise<Book> =>
-      enqueueMutation(async () => {
+      enqueueMutation(async ({ adapter: activeAdapter, isCurrentSession }) => {
         assertCloudWritable();
         const loaded = booksRef.current.find(b => b.id === prevBook.id);
-        const nowIso = new Date().toISOString();
-        const restored: Book = {
-          ...prevBook,
-          meta: {
-            ...mergeUnknownMetaKeys(
-              prevBook.meta,
-              loaded?.meta,
-              options.ownedMetaKeys ?? BOOK_EDITOR_OWNED_META_KEYS
-            ),
-            updatedAt: nowIso,
-          },
-        };
-        const saved = await adapter.saveBook(restored, {
-          expectedBaseUpdatedAt: resolveExpectedBase(
-            options.expectedBaseUpdatedAt,
-            loaded?.meta?.updatedAt
-          ),
+        const plan = planRestoredBook(prevBook, loaded, options);
+        const saved = await activeAdapter.saveBook(plan.nextBook, {
+          expectedBaseUpdatedAt: plan.expectedBaseUpdatedAt,
         });
+        if (!isCurrentSession()) return saved;
         const nextBooks = upsertList(booksRef.current, saved);
         booksRef.current = nextBooks;
         setBooks(nextBooks);
         return saved;
       }),
-    [adapter, assertCloudWritable, enqueueMutation]
+    [assertCloudWritable, enqueueMutation]
   );
 
   const startReadingBook = useCallback(
     (bookId: string): Promise<Book | null> =>
-      enqueueMutation(async () => {
+      enqueueMutation(async ({ adapter: activeAdapter, isCurrentSession }) => {
         const existing = booksRef.current.find(b => b.id === bookId);
         if (!existing) return null;
         assertCloudWritable();
-        const nowIso = new Date().toISOString();
-        const next: Book = {
-          ...existing,
-          status: 'reading',
-          meta: {
-            ...existing.meta,
-            startedAt: existing.meta.startedAt || nowIso,
-            updatedAt: nowIso,
-          },
-        };
-        const saved = await adapter.saveBook(next, {
-          expectedBaseUpdatedAt: existing.meta?.updatedAt,
+        const plan = planStartReadingBook(existing);
+        const saved = await activeAdapter.saveBook(plan.nextBook, {
+          expectedBaseUpdatedAt: plan.expectedBaseUpdatedAt,
         });
+        if (!isCurrentSession()) return saved;
         const nextBooks = upsertList(booksRef.current, saved);
         booksRef.current = nextBooks;
         setBooks(nextBooks);
         return saved;
       }),
-    [adapter, assertCloudWritable, enqueueMutation]
+    [assertCloudWritable, enqueueMutation]
   );
 
   const markBookFinished = useCallback(
     (bookId: string): Promise<Book | null> =>
-      enqueueMutation(async () => {
+      enqueueMutation(async ({ adapter: activeAdapter, isCurrentSession }) => {
         const existing = booksRef.current.find(b => b.id === bookId);
         if (!existing) return null;
         assertCloudWritable();
-        const nowIso = new Date().toISOString();
-        const finalPos = existing.totalPos > 0 ? existing.totalPos : existing.currentPos;
-        const next: Book = {
-          ...existing,
-          status: 'finished',
-          currentPos: finalPos,
-          normalizedPos: 1,
-          meta: {
-            ...existing.meta,
-            startedAt: existing.meta.startedAt || nowIso,
-            finishedAt: nowIso,
-            updatedAt: nowIso,
-          },
-        };
-        const saved = await adapter.saveBook(next, {
-          expectedBaseUpdatedAt: existing.meta?.updatedAt,
+        const plan = planMarkBookFinished(existing);
+        const saved = await activeAdapter.saveBook(plan.nextBook, {
+          expectedBaseUpdatedAt: plan.expectedBaseUpdatedAt,
         });
+        if (!isCurrentSession()) return saved;
         const nextBooks = upsertList(booksRef.current, saved);
         booksRef.current = nextBooks;
         setBooks(nextBooks);
         return saved;
       }),
-    [adapter, assertCloudWritable, enqueueMutation]
+    [assertCloudWritable, enqueueMutation]
   );
 
   const captureNote = useCallback(
     (input: QuickCaptureInput): Promise<Note> =>
-      enqueueMutation(async () => {
+      enqueueMutation(async ({ adapter: activeAdapter, isCurrentSession }) => {
         const book = booksRef.current.find(b => b.id === input.bookId);
         if (!book) {
           throw new Error('Select a valid book before capturing a note.');
         }
         assertCloudWritable();
-        const nowIso = new Date().toISOString();
-        // M4.9: clamp into [0, totalPos] / [0, 100] for parity with pragya_cli.py
-        const pos = clampNotePos(input.pos, book);
-        const normalizedPos = computeNormalizedPos(pos, book.totalPos, book.posUnit);
-        const attachments = (input.attachments || []).slice(0, 3);
-        const links = attachments
-          .filter((a): a is Extract<Attachment, { type: 'link' | 'doc' }> => a.type !== 'image')
-          .map(a => a.url);
-
-        const slugSource =
-          (input.title || '').trim() ||
-          input.takeaway.trim().split(/\s+/).slice(0, 6).join(' ') ||
-          (input.quote || '').trim().split(/\s+/).slice(0, 6).join(' ') ||
-          `${book.title} p${pos}`;
-
-        // CD C3.2: other notes' aliases count as taken, so an old [[link]] never retargets.
-        const slug = generateUniqueSlug(
-          (input.slug || '').trim() || slugSource,
-          takenSlugs(notesRef.current)
+        const plan = planCaptureWithAdvance(
+          input,
+          book,
+          notesRef.current,
+          sessionsRef.current
         );
-        const chapter = normalizeChapterInput(input.chapter);
 
-        const newNote: Note = {
-          id: createUuid(),
-          slug,
-          bookId: book.id,
-          createdAt: nowIso,
-          updatedAt: nowIso,
-          pos,
-          normalizedPos,
-          status: input.sparLater ? 'inbox' : 'saved',
-          source: 'app',
-          tags: normalizeTagList(input.tags || []),
-          quote: (input.quote || '').trim(),
-          takeaway: input.takeaway.trim(),
-          contextMechanism: '',
-          critique: '',
-          deltaTrigger: '',
-          deltaAction: '',
-          deltaStatus: 'none',
-          meta: {
-            ...(input.title?.trim() ? { title: input.title.trim() } : {}),
-            attachments,
-            links,
-            ...(book.kind === 'fiction' && input.isPrediction ? { isPrediction: true } : {}),
-            ...(chapter ? { chapter } : {}),
-          },
-        };
+        // CD Batch 7 (OQ-12): when capture also advances the book, commit Books + Notes +
+        // Sessions in ONE coalesced batch (conflict-checked BEFORE any write; <= 5 HTTP calls).
+        if (plan.advance && activeAdapter.batchCommitMutations) {
+          let res: BatchMutationResult;
+          try {
+            res = await activeAdapter.batchCommitMutations(plan.ops);
+          } catch (err) {
+            if (err instanceof PartialBatchCommitError) {
+              // R1#2: reconcile any committed rows into React state BEFORE rethrowing so the
+              // caller sees committed Book/Note updates and retries never hit stale guards or
+              // duplicate an already-appended Note.
+              reconcileCommitted(err.committed, isCurrentSession);
+            }
+            throw err;
+          }
+          const savedNote = res.notes[0] ?? plan.newNote;
+          const savedBook = res.books[0] ?? plan.advance.updatedBook;
+          const savedSession = res.sessions[0] ?? plan.advance.sessionToSave;
+          reconcileCommitted(
+            { books: [savedBook], notes: [savedNote], sessions: [savedSession], deltaLogs: [] },
+            isCurrentSession
+          );
+          return savedNote;
+        }
 
-        const savedNote = await adapter.saveNote(newNote);
+        const savedNote = await activeAdapter.saveNote(plan.newNote);
+        if (!isCurrentSession()) return savedNote;
         const nextNotes = [savedNote, ...notesRef.current];
         notesRef.current = nextNotes;
         setNotes(nextNotes);
 
-        if (pos > book.currentPos) {
-          await advanceBookPositionInternal(book.id, pos);
-        }
-
-        return savedNote;
-      }),
-    [adapter, advanceBookPositionInternal, assertCloudWritable, enqueueMutation]
-  );
-
-  const updateNote = useCallback(
-    (note: Note, options: UpdateNoteOptions = {}): Promise<Note> =>
-      enqueueMutation(async () => {
-        assertCloudWritable();
-        if (note.deltaStatus === 'active') {
-          const otherActiveCount = countOtherActiveDeltas(notesRef.current, note.id);
-          if (otherActiveCount >= 5) {
-            throw new Error(
-              'Active Behavioral Delta cap (5/5) reached. Graduate or pause an active delta first.'
+        if (plan.advance) {
+          try {
+            await advanceBookPositionInternal(
+              book.id,
+              plan.newNote.pos,
+              {},
+              { adapter: activeAdapter, isCurrentSession }
+            );
+          } catch (err) {
+            const extra = err instanceof PartialBatchCommitError ? err.committed : null;
+            throw new PartialBatchCommitError(
+              {
+                books: extra?.books ?? [],
+                notes: [savedNote, ...(extra?.notes ?? [])],
+                sessions: extra?.sessions ?? [],
+                deltaLogs: extra?.deltaLogs ?? [],
+              },
+              err instanceof PartialBatchCommitError ? err.cause : err
             );
           }
         }
 
+        return savedNote;
+      }),
+    [advanceBookPositionInternal, assertCloudWritable, enqueueMutation, reconcileCommitted]
+  );
+
+  const updateNote = useCallback(
+    (note: Note, options: UpdateNoteOptions = {}): Promise<Note> =>
+      enqueueMutation(async ({ adapter: activeAdapter, isCurrentSession }) => {
+        assertCloudWritable();
         const existingNote = notesRef.current.find(n => n.id === note.id);
         const book = booksRef.current.find(b => b.id === note.bookId);
-        // Stored attachments round-trip verbatim (unknown entries / beyond 3 included);
-        // the 3-cap is enforced at creation time in the capture/edit UIs.
-        const attachments = Array.isArray(note.meta?.attachments) ? note.meta.attachments : [];
-        const newAttachmentUrls = getRenderableAttachments(note.meta)
-          .filter((a): a is Extract<Attachment, { type: 'link' | 'doc' }> => a.type !== 'image')
-          .map(a => a.url);
-        const oldAttachmentUrls = new Set(
-          getRenderableAttachments(existingNote?.meta)
-            .filter((a): a is Extract<Attachment, { type: 'link' | 'doc' }> => a.type !== 'image')
-            .map(a => a.url)
-        );
-        const newAttachmentUrlSet = new Set(newAttachmentUrls);
-        const preservedStandaloneLinks = (note.meta?.links || []).filter(
-          url => !oldAttachmentUrls.has(url) || newAttachmentUrlSet.has(url)
-        );
-        const mergedLinks = Array.from(new Set([...preservedStandaloneLinks, ...newAttachmentUrls]));
-
-        const nowIso = new Date().toISOString();
-        // M4.9: clamp pos only when it actually changed (never rewrite legacy values silently).
-        const posChanged = !existingNote || Number(existingNote.pos) !== Number(note.pos);
-        const nextPos = posChanged && book ? clampNotePos(note.pos, book) : note.pos;
-        const nextNormalizedPos =
-          posChanged && book
-            ? computeNormalizedPos(nextPos, book.totalPos, book.posUnit)
-            : note.normalizedPos;
-        warnOverriddenMetaKeys('Note', note.meta, options.baseMeta, existingNote?.meta, options.ownedMetaKeys ?? NOTE_EDITOR_OWNED_META_KEYS);
-        const updated: Note = {
-          ...note,
-          pos: nextPos,
-          normalizedPos: nextNormalizedPos,
-          tags: normalizeTagList(note.tags || []),
-          deltaTrigger: normalizeDeltaTrigger(note.deltaTrigger),
-          deltaAction: normalizeDeltaAction(note.deltaAction),
-          meta: {
-            // R2#1: re-merge non-editor keys (e.g. sparStage) a stale modal may lack.
-            ...mergeUnknownMetaKeys(
-              note.meta,
-              existingNote?.meta,
-              options.ownedMetaKeys ?? NOTE_EDITOR_OWNED_META_KEYS
-            ),
-            attachments,
-            links: mergedLinks,
-          },
-          updatedAt: options.preserveUpdatedAt ? note.updatedAt : nowIso,
-        };
-        // CD C3.2 (decisions OQ-6, alias-only): a slug change keeps the old slug resolving
-        // via meta.aliases (no rewrite of other rows' [[links]]).
-        if (existingNote && existingNote.slug !== updated.slug) {
-          updated.meta = {
-            ...updated.meta,
-            aliases: addSlugAlias(existingNote.meta?.aliases, existingNote.slug, updated.slug),
-          };
-        }
-        const saved = await adapter.saveNote(updated, {
-          expectedBaseUpdatedAt: resolveExpectedBase(
-            options.expectedBaseUpdatedAt,
-            existingNote?.updatedAt
-          ),
+        const plan = planUpdatedNote(note, existingNote, book, notesRef.current, options);
+        warnOverriddenMetaKeys('Note', plan.overriddenMetaKeys);
+        const saved = await activeAdapter.saveNote(plan.nextNote, {
+          expectedBaseUpdatedAt: plan.expectedBaseUpdatedAt,
         });
+        if (!isCurrentSession()) return saved;
         const nextNotes = upsertList(notesRef.current, saved);
         notesRef.current = nextNotes;
         setNotes(nextNotes);
         return saved;
       }),
-    [adapter, assertCloudWritable, enqueueMutation]
+    [assertCloudWritable, enqueueMutation]
   );
 
   const logDeltaOutcome = useCallback(
     (noteId: string, outcome: DeltaOutcome, reflection = ''): Promise<DeltaLog> =>
-      enqueueMutation(async () => {
+      enqueueMutation(async ({ adapter: activeAdapter, isCurrentSession }) => {
         assertCloudWritable();
         const log: DeltaLog = {
           id: createUuid(),
@@ -891,135 +817,137 @@ export const PragyaProvider: React.FC<{ children: React.ReactNode }> = ({ childr
           outcome,
           reflection: reflection.trim(),
         };
-        const saved = await adapter.saveDeltaLog(log);
+        const saved = await activeAdapter.saveDeltaLog(log);
+        if (!isCurrentSession()) return saved;
         const nextLogs = upsertList(deltaLogsRef.current, saved);
         deltaLogsRef.current = nextLogs;
         setDeltaLogs(nextLogs);
         return saved;
       }),
-    [adapter, assertCloudWritable, enqueueMutation]
+    [assertCloudWritable, enqueueMutation]
   );
 
   /** R1#1: fresh DeltaLogs (adapter read) adopted into local state before any plan/patch. */
-  const readFreshDeltaLogs = useCallback(async (): Promise<DeltaLog[]> => {
-    if (!adapter.loadDeltaLogs) return deltaLogsRef.current;
-    const fresh = await adapter.loadDeltaLogs();
-    deltaLogsRef.current = fresh;
-    setDeltaLogs(fresh);
-    return fresh;
-  }, [adapter]);
+  const readFreshDeltaLogs = useCallback(
+    async (activeAdapter: StorageAdapter, isCurrentSession: () => boolean): Promise<DeltaLog[]> => {
+      if (!activeAdapter.loadDeltaLogs) return deltaLogsRef.current;
+      const fresh = await activeAdapter.loadDeltaLogs();
+      if (!isCurrentSession()) {
+        throw new Error('Session changed before this action could complete. Please try again.');
+      }
+      deltaLogsRef.current = fresh;
+      setDeltaLogs(fresh);
+      return fresh;
+    },
+    []
+  );
 
   const checkInDelta = useCallback(
     (noteId: string, outcome: DeltaOutcome): Promise<DeltaCheckInPlan> =>
-      enqueueMutation(async () => {
+      enqueueMutation(async ({ adapter: activeAdapter, isCurrentSession }) => {
         assertCloudWritable();
         // R1#1/#2: plan against a fresh read, so a same-day check-in from the CLI or another
         // device is updated (never duplicated) and its reflection is kept (outcome-only patch).
-        const fresh = await readFreshDeltaLogs();
+        const fresh = await readFreshDeltaLogs(activeAdapter, isCurrentSession);
         const plan = planDeltaCheckIn(fresh, noteId, getLocalDateString(), outcome, createUuid());
         if (plan.kind === 'unchanged') return plan;
-        const saved = await adapter.saveDeltaLog(plan.log);
+        const saved = await activeAdapter.saveDeltaLog(plan.log);
+        if (!isCurrentSession()) return { ...plan, log: saved };
         const nextLogs = upsertList(deltaLogsRef.current, saved);
         deltaLogsRef.current = nextLogs;
         setDeltaLogs(nextLogs);
         return { ...plan, log: saved };
       }),
-    [adapter, assertCloudWritable, enqueueMutation, readFreshDeltaLogs]
+    [assertCloudWritable, enqueueMutation, readFreshDeltaLogs]
   );
 
   const updateDeltaLogFields = useCallback(
     (logId: string, patch: { outcome?: DeltaOutcome; reflection?: string }): Promise<DeltaLog> =>
-      enqueueMutation(async () => {
+      enqueueMutation(async ({ adapter: activeAdapter, isCurrentSession }) => {
         assertCloudWritable();
-        const fresh = await readFreshDeltaLogs();
+        const fresh = await readFreshDeltaLogs(activeAdapter, isCurrentSession);
         const row = fresh.find(l => l.id === logId);
         if (!row) throw new Error('That check-in was removed on another device.');
-        const saved = await adapter.saveDeltaLog(applyDeltaLogPatch(row, patch));
+        const saved = await activeAdapter.saveDeltaLog(applyDeltaLogPatch(row, patch));
+        if (!isCurrentSession()) return saved;
         const nextLogs = upsertList(deltaLogsRef.current, saved);
         deltaLogsRef.current = nextLogs;
         setDeltaLogs(nextLogs);
         return saved;
       }),
-    [adapter, assertCloudWritable, enqueueMutation, readFreshDeltaLogs]
+    [assertCloudWritable, enqueueMutation, readFreshDeltaLogs]
   );
 
   const deleteDeltaLog = useCallback(
     (logId: string): Promise<void> =>
-      enqueueMutation(async () => {
+      enqueueMutation(async ({ adapter: activeAdapter, isCurrentSession }) => {
         assertCloudWritable();
-        if (!adapter.deleteDeltaLog) throw new Error('Undo is not supported here.');
-        await adapter.deleteDeltaLog(logId);
+        if (!activeAdapter.deleteDeltaLog) throw new Error('Undo is not supported here.');
+        await activeAdapter.deleteDeltaLog(logId);
+        if (!isCurrentSession()) return;
         const nextLogs = deltaLogsRef.current.filter(l => l.id !== logId);
         deltaLogsRef.current = nextLogs;
         setDeltaLogs(nextLogs);
       }),
-    [adapter, assertCloudWritable, enqueueMutation]
+    [assertCloudWritable, enqueueMutation]
   );
 
   const updateSessionNote = useCallback(
     (sessionId: string, note: string): Promise<ReadingSession> =>
-      enqueueMutation(async () => {
+      enqueueMutation(async ({ adapter: activeAdapter, isCurrentSession }) => {
         assertCloudWritable();
         // CD 3 fix-up R1#1: patch only `note` on a FRESH row (never revert endPos/updatedAt
         // written by the CLI or another device since this view loaded).
         let fresh = sessionsRef.current;
-        if (adapter.loadSessions) {
-          fresh = await adapter.loadSessions();
+        if (activeAdapter.loadSessions) {
+          fresh = await activeAdapter.loadSessions();
+          if (!isCurrentSession()) {
+            throw new Error('Session changed before this action could complete. Please try again.');
+          }
           sessionsRef.current = fresh;
           setSessions(fresh);
         }
         const existing = fresh.find(s => s.id === sessionId);
         if (!existing) throw new Error('That session was removed on another device.');
-        const saved = await adapter.saveSession({
+        const saved = await activeAdapter.saveSession({
           ...existing,
           note: (note || '').trim().slice(0, SESSION_NOTE_MAX),
         });
+        if (!isCurrentSession()) return saved;
         const nextSessions = upsertList(sessionsRef.current, saved);
         sessionsRef.current = nextSessions;
         setSessions(nextSessions);
         return saved;
       }),
-    [adapter, assertCloudWritable, enqueueMutation]
+    [assertCloudWritable, enqueueMutation]
   );
 
   const startReread = useCallback(
     (bookId: string): Promise<Book> =>
-      enqueueMutation(async () => {
+      enqueueMutation(async ({ adapter: activeAdapter, isCurrentSession }) => {
         assertCloudWritable();
         const loaded = booksRef.current.find(b => b.id === bookId);
         if (!loaded) throw new Error('Book not found');
-        const nowIso = new Date().toISOString();
-        const owned = ['everFinished', 'startedAt', 'updatedAt'];
-        const next: Book = {
-          ...loaded,
-          status: 'reading',
-          currentPos: 0,
-          normalizedPos: 0,
-          meta: {
-            ...mergeUnknownMetaKeys(
-              { ...loaded.meta, everFinished: true, startedAt: nowIso },
-              loaded.meta,
-              owned
-            ),
-            updatedAt: nowIso,
-          },
-        };
-        const saved = await adapter.saveBook(next, { expectedBaseUpdatedAt: loaded.meta?.updatedAt });
+        const plan = planStartReread(loaded);
+        const saved = await activeAdapter.saveBook(plan.nextBook, {
+          expectedBaseUpdatedAt: plan.expectedBaseUpdatedAt,
+        });
+        if (!isCurrentSession()) return saved;
         const nextBooks = upsertList(booksRef.current, saved);
         booksRef.current = nextBooks;
         setBooks(nextBooks);
         return saved;
       }),
-    [adapter, assertCloudWritable, enqueueMutation]
+    [assertCloudWritable, enqueueMutation]
   );
 
   const replaceWorkspaceFromSnapshot = useCallback(
     (snapshot: PragyaSnapshot, options: ReplaceWorkspaceOptions = {}): Promise<void> =>
-      enqueueMutation(async () => {
+      enqueueMutation(async ({ adapter: activeAdapter, isCurrentSession }) => {
         assertCloudWritable();
-        // M4.8: keep a local pre-import backup of the current workspace first.
+        // M4.8 / CD7: keep an IndexedDB pre-import backup of the current workspace first.
         if (options.backup !== false) {
-          savePreImportBackup(
+          await savePreImportBackupAsync(
             buildSnapshot({
               books: booksRef.current,
               notes: notesRef.current,
@@ -1027,8 +955,12 @@ export const PragyaProvider: React.FC<{ children: React.ReactNode }> = ({ childr
               deltaLogs: deltaLogsRef.current,
             })
           );
+          if (!isCurrentSession()) {
+            throw new Error('Session changed before this action could complete. Please try again.');
+          }
         }
-        const ws = await adapter.replaceWorkspace(snapshot);
+        const ws = await activeAdapter.replaceWorkspace(snapshot);
+        if (!isCurrentSession()) return;
         booksRef.current = ws.books;
         notesRef.current = ws.notes;
         sessionsRef.current = ws.sessions;
@@ -1039,16 +971,17 @@ export const PragyaProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         setDeltaLogs(ws.deltaLogs);
         setLastSyncedAt(new Date().toISOString());
       }),
-    [adapter, assertCloudWritable, enqueueMutation]
+    [assertCloudWritable, enqueueMutation]
   );
 
   const resetDemoWorkspace = useCallback(
     () =>
-      enqueueMutation(async () => {
-        if (!adapter.resetDemoData) return;
+      enqueueMutation(async ({ adapter: activeAdapter, isCurrentSession }) => {
+        if (!activeAdapter.resetDemoData) return;
         // CD 1a fix-up: Reset Demo clears only Demo drafts (real-account scopes untouched).
         clearAllDrafts({ scope: DEMO_DRAFT_SCOPE });
-        const fresh = await adapter.resetDemoData();
+        const fresh = await activeAdapter.resetDemoData();
+        if (!isCurrentSession()) return;
         booksRef.current = fresh.books;
         notesRef.current = fresh.notes;
         sessionsRef.current = fresh.sessions;
@@ -1060,15 +993,24 @@ export const PragyaProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         setLastSyncedAt(new Date().toISOString());
         showToast('Demo data reset to defaults', 'success');
       }),
-    [adapter, enqueueMutation]
+    [enqueueMutation]
   );
 
   const uploadImageAttachment = useCallback(
     async (file: File | Blob): Promise<Attachment> => {
       assertCloudWritable();
+      const originEpoch = sessionEpochRef.current;
+      const activeAdapter = adapterRef.current;
       const compressed = await compressImageToWebp(file, 1600, 0.82);
-      if (adapter.uploadImage) {
-        return adapter.uploadImage(
+      if (
+        sessionEpochRef.current !== originEpoch ||
+        adapterRef.current !== activeAdapter ||
+        !isAuthenticatedRef.current
+      ) {
+        throw new Error('Session changed before image upload could complete. Please try again.');
+      }
+      if (activeAdapter.uploadImage) {
+        return activeAdapter.uploadImage(
           compressed.blob,
           compressed.fileName,
           compressed.mimeType,
@@ -1078,33 +1020,7 @@ export const PragyaProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       }
       throw new Error('Image upload unavailable in current adapter');
     },
-    [adapter, assertCloudWritable]
-  );
-
-  // R1 nit 6: a support-only delete backup never lingers past its TTL.
-  useEffect(() => {
-    expireStaleDeleteBackup();
-  }, []);
-
-  const applyRows = useCallback((rows: WorkspaceRows) => {
-    booksRef.current = rows.books;
-    notesRef.current = rows.notes;
-    sessionsRef.current = rows.sessions;
-    deltaLogsRef.current = rows.deltaLogs;
-    setBooks(rows.books);
-    setNotes(rows.notes);
-    setSessions(rows.sessions);
-    setDeltaLogs(rows.deltaLogs);
-  }, []);
-
-  const currentRows = useCallback(
-    (): WorkspaceRows => ({
-      books: booksRef.current,
-      notes: notesRef.current,
-      sessions: sessionsRef.current,
-      deltaLogs: deltaLogsRef.current,
-    }),
-    []
+    [assertCloudWritable]
   );
 
   /**
@@ -1117,12 +1033,17 @@ export const PragyaProvider: React.FC<{ children: React.ReactNode }> = ({ childr
    */
   const runPermanentDelete = useCallback(
     (kind: 'book' | 'note', id: string): Promise<PermanentDeleteResult> =>
-      enqueueMutation(async () => {
+      enqueueMutation(async ({ adapter: activeAdapter, isCurrentSession }) => {
         assertCloudWritable();
-        if (!adapter.deleteRowsCascade) throw new Error('Permanent delete is not supported here.');
+        if (!activeAdapter.deleteRowsCascade) {
+          throw new Error('Permanent delete is not supported here.');
+        }
         // R1#3: plan from a fresh read so rows added elsewhere (CLI / another device) are
         // included and the counts are true; a restore done elsewhere surfaces here (QA-30).
-        const ws = await adapter.loadWorkspace({ forceRefresh: true });
+        const ws = await activeAdapter.loadWorkspace({ forceRefresh: true });
+        if (!isCurrentSession()) {
+          throw new Error('Session changed before this action could complete. Please try again.');
+        }
         applyRows(ws);
         const rows = currentRows();
         const nowIso = new Date().toISOString();
@@ -1139,21 +1060,26 @@ export const PragyaProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         writeLastDeleteBackup(backup);
         let outcome: DeleteCascadeResult;
         try {
-          outcome = (await adapter.deleteRowsCascade(toDeleteRowsPlan(backup), { target: { kind, id } })) || {
+          outcome = (await activeAdapter.deleteRowsCascade(toDeleteRowsPlan(backup), {
+            target: { kind, id },
+          })) || {
             repaired: 0,
             stillPresent: [],
           };
         } catch (err) {
           // Unknown outcome: the rows may be gone, so keep the backup as the safety net.
-          if (!(err instanceof DeleteOutcomeUnknownError)) clearLastDeleteBackup(); // atomic: nothing was deleted
+          if (!(err instanceof DeleteOutcomeUnknownError) && isCurrentSession()) {
+            clearLastDeleteBackup(); // atomic: nothing was deleted
+          }
           throw err;
         }
         const confirmed: DeleteBackup = { ...backup, confirmed: true };
+        if (!isCurrentSession()) return { backup: confirmed, outcome };
         writeLastDeleteBackup(confirmed);
         applyRows(withoutDeleted(currentRows(), withoutIds(backup, outcome.stillPresent)));
         return { backup: confirmed, outcome };
       }),
-    [adapter, applyRows, assertCloudWritable, currentRows, enqueueMutation]
+    [applyRows, assertCloudWritable, currentRows, enqueueMutation]
   );
 
   const deleteNotePermanently = useCallback(
@@ -1168,18 +1094,32 @@ export const PragyaProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
   const restoreDeletedRows = useCallback(
     (backup: DeleteBackup): Promise<RestoreRowsResult> =>
-      enqueueMutation(async () => {
+      enqueueMutation(async ({ adapter: activeAdapter, isCurrentSession }) => {
         assertCloudWritable();
-        if (!adapter.appendRowsIfAbsent) throw new Error('Restore is not supported here.');
+        if (!activeAdapter.appendRowsIfAbsent) throw new Error('Restore is not supported here.');
         // R1#4: append only rows that are absent; never overwrite a row that exists.
-        const result = await adapter.appendRowsIfAbsent(backup);
+        const result = await activeAdapter.appendRowsIfAbsent(backup);
+        if (!isCurrentSession()) return result;
         const rows = currentRows();
-        const pick = <T extends { id: string }>(items: T[], ids: string[]) => items.filter(x => ids.includes(x.id));
+        const pick = <T extends { id: string }>(items: T[], ids: string[]) =>
+          items.filter(x => ids.includes(x.id));
         applyRows({
-          books: pick(backup.books, result.restored.books).reduce((acc, b) => upsertList(acc, b), rows.books),
-          notes: pick(backup.notes, result.restored.notes).reduce((acc, n) => upsertList(acc, n), rows.notes),
-          sessions: pick(backup.sessions, result.restored.sessions).reduce((acc, x) => upsertList(acc, x), rows.sessions),
-          deltaLogs: pick(backup.deltaLogs, result.restored.deltaLogs).reduce((acc, l) => upsertList(acc, l), rows.deltaLogs),
+          books: pick(backup.books, result.restored.books).reduce(
+            (acc, b) => upsertList(acc, b),
+            rows.books
+          ),
+          notes: pick(backup.notes, result.restored.notes).reduce(
+            (acc, n) => upsertList(acc, n),
+            rows.notes
+          ),
+          sessions: pick(backup.sessions, result.restored.sessions).reduce(
+            (acc, x) => upsertList(acc, x),
+            rows.sessions
+          ),
+          deltaLogs: pick(backup.deltaLogs, result.restored.deltaLogs).reduce(
+            (acc, l) => upsertList(acc, l),
+            rows.deltaLogs
+          ),
         });
         const last = readLastDeleteBackup();
         if (last && last.targetId === backup.targetId && last.deletedAt === backup.deletedAt) {
@@ -1187,63 +1127,133 @@ export const PragyaProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         }
         return result;
       }),
-    [adapter, applyRows, assertCloudWritable, currentRows, enqueueMutation]
+    [applyRows, assertCloudWritable, currentRows, enqueueMutation]
   );
 
-  const resolveDocTitle = useCallback(
-    async (docId: string): Promise<string | null> => {
-      if (!adapter.resolveDocTitle) return null;
-      return adapter.resolveDocTitle(docId);
-    },
-    [adapter]
+  const resolveDocTitle = useCallback(async (docId: string): Promise<string | null> => {
+    const activeAdapter = adapterRef.current;
+    if (!activeAdapter.resolveDocTitle) return null;
+    return activeAdapter.resolveDocTitle(docId);
+  }, []);
+
+  const booksById = useMemo<ReadonlyMap<string, Book>>(
+    () => new Map(books.map(b => [b.id, b])),
+    [books]
+  );
+
+  const notesById = useMemo<ReadonlyMap<string, Note>>(
+    () => new Map(notes.map(n => [n.id, n])),
+    [notes]
+  );
+
+  const dataValue = useMemo<PragyaDataContextValue>(
+    () => ({
+      books,
+      notes,
+      sessions,
+      deltaLogs,
+      booksById,
+      notesById,
+      isLoading,
+      isSyncing,
+      lastSyncedAt,
+      spreadsheetId,
+      mediaFolderId,
+      isOfflineReadOnly,
+    }),
+    [
+      books,
+      notes,
+      sessions,
+      deltaLogs,
+      booksById,
+      notesById,
+      isLoading,
+      isSyncing,
+      lastSyncedAt,
+      spreadsheetId,
+      mediaFolderId,
+      isOfflineReadOnly,
+    ]
+  );
+
+  const actionsValue = useMemo<PragyaActionsContextValue>(
+    () => ({
+      syncNow,
+      addBook,
+      updateBook,
+      advanceBookPosition,
+      revertBookmarkAdvance,
+      restoreBook,
+      startReadingBook,
+      markBookFinished,
+      captureNote,
+      updateNote,
+      logDeltaOutcome,
+      checkInDelta,
+      updateDeltaLogFields,
+      deleteDeltaLog,
+      updateSessionNote,
+      startReread,
+      replaceWorkspaceFromSnapshot,
+      resetDemoWorkspace,
+      uploadImageAttachment,
+      resolveDocTitle,
+      deleteNotePermanently,
+      deleteBookPermanently,
+      restoreDeletedRows,
+    }),
+    [
+      syncNow,
+      addBook,
+      updateBook,
+      advanceBookPosition,
+      revertBookmarkAdvance,
+      restoreBook,
+      startReadingBook,
+      markBookFinished,
+      captureNote,
+      updateNote,
+      logDeltaOutcome,
+      checkInDelta,
+      updateDeltaLogFields,
+      deleteDeltaLog,
+      updateSessionNote,
+      startReread,
+      replaceWorkspaceFromSnapshot,
+      resetDemoWorkspace,
+      uploadImageAttachment,
+      resolveDocTitle,
+      deleteNotePermanently,
+      deleteBookPermanently,
+      restoreDeletedRows,
+    ]
   );
 
   return (
-    <PragyaContext.Provider
-      value={{
-        books,
-        notes,
-        sessions,
-        deltaLogs,
-        isLoading,
-        isSyncing,
-        lastSyncedAt,
-        spreadsheetId,
-        mediaFolderId,
-        isOfflineReadOnly,
-        syncNow,
-        addBook,
-        updateBook,
-        advanceBookPosition,
-        revertBookmarkAdvance,
-        restoreBook,
-        startReadingBook,
-        markBookFinished,
-        captureNote,
-        updateNote,
-        logDeltaOutcome,
-        checkInDelta,
-        updateDeltaLogFields,
-        deleteDeltaLog,
-        updateSessionNote,
-        startReread,
-        replaceWorkspaceFromSnapshot,
-        resetDemoWorkspace,
-        uploadImageAttachment,
-        resolveDocTitle,
-        deleteNotePermanently,
-        deleteBookPermanently,
-        restoreDeletedRows,
-      }}
-    >
-      {children}
-    </PragyaContext.Provider>
+    <PragyaActionsContext.Provider value={actionsValue}>
+      <PragyaDataContext.Provider value={dataValue}>{children}</PragyaDataContext.Provider>
+    </PragyaActionsContext.Provider>
   );
 };
 
 // eslint-disable-next-line react-refresh/only-export-components
-export function usePragya(): PragyaContextValue {
-  const ctx = useContext(PragyaContext);
-  if (!ctx) throw new Error('usePragya must be used within PragyaProvider');
+export function usePragyaData(): PragyaDataContextValue {
+  const ctx = useContext(PragyaDataContext);
+  if (!ctx) throw new Error('usePragyaData must be used within PragyaProvider');
   return ctx;
+}
+
+// eslint-disable-next-line react-refresh/only-export-components
+export function usePragyaActions(): PragyaActionsContextValue {
+  const ctx = useContext(PragyaActionsContext);
+  if (!ctx) throw new Error('usePragyaActions must be used within PragyaProvider');
+  return ctx;
+}
+
+// eslint-disable-next-line react-refresh/only-export-components
+export function usePragya(): PragyaContextValue {
+  const data = usePragyaData();
+  const actions = usePragyaActions();
+  return useMemo(() => ({ ...data, ...actions }), [data, actions]);
 }

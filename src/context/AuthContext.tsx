@@ -1,4 +1,4 @@
-import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import {
   MEDIA_FOLDER_ID_STORAGE_KEY,
   SHEETS_CACHE_STORAGE_KEY,
@@ -14,7 +14,8 @@ import { OFFLINE_INFO_TOAST } from '../utils/offline';
 import { DEMO_DRAFT_SCOPE, clearAllDrafts } from '../utils/draftStorage';
 import { CAPSTONE_HIDDEN_KEY } from '../utils/capstonePrompt';
 import { LAST_DELETE_BACKUP_KEY } from '../utils/deletePlan';
-import { clearPreImportBackup } from '../utils/importSafety';
+import { flushIdbQueue, idbClear, idbDelete } from '../utils/idbStore';
+import { clearPreImportBackupAsync } from '../utils/importSafety';
 import {
   adoptLegacyDraftsForAccount,
   applySignedInAccount,
@@ -302,18 +303,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
         clearOAuthHash();
 
-        localStorage.setItem(GOOGLE_TOKEN_KEY, token);
         const expiresAt = computeExpiresAt(params.get('expires_in'));
-        if (expiresAt !== null) {
-          localStorage.setItem(GOOGLE_TOKEN_EXPIRES_AT_KEY, String(expiresAt));
-        } else {
-          localStorage.removeItem(GOOGLE_TOKEN_EXPIRES_AT_KEY);
-        }
-        localStorage.setItem(MOCK_MODE_KEY, 'false');
-        localStorage.removeItem(MOCK_SESSION_KEY);
-        setIsMockMode(false);
-        setShowSessionExpiredModal(false);
-
         let profile: User = { email: 'cloud@example.com', name: 'Google User' };
         try {
           const res = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
@@ -335,9 +325,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           // Network fallback profile
         }
 
-        // R1#1: compare against the durable last-account marker (survives token expiry),
-        // clearing the previous account's drafts/backup/media/cache on a switch.
+        // R1#1 / R1#3 / CD7: compare against the durable last-account marker and finish any
+        // cross-account IndexedDB wipe BEFORE activating Cloud mode (token, MOCK_MODE_KEY,
+        // setIsMockMode(false)) so PragyaProvider never constructs a Cloud adapter with a
+        // stale Demo/previous-account identity or races loadWorkspace() against flushIdbQueue().
         if (applySignedInAccount(profile.email)) {
+          await flushIdbQueue();
           // R2 N3: say so calmly instead of silently dropping drafts.
           showToast(
             'Signed in as a different account. Unsaved drafts from the previous account were cleared on this device.',
@@ -345,9 +338,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           );
         }
 
+        localStorage.setItem(GOOGLE_TOKEN_KEY, token);
+        if (expiresAt !== null) {
+          localStorage.setItem(GOOGLE_TOKEN_EXPIRES_AT_KEY, String(expiresAt));
+        } else {
+          localStorage.removeItem(GOOGLE_TOKEN_EXPIRES_AT_KEY);
+        }
+        localStorage.setItem(MOCK_MODE_KEY, 'false');
+        localStorage.removeItem(MOCK_SESSION_KEY);
         localStorage.setItem(GOOGLE_USER_KEY, JSON.stringify(profile));
         // CD 1a fix-up: legacy unscoped drafts belong to this (same) account.
         adoptLegacyDraftsForAccount(profile.email);
+        setIsMockMode(false);
+        setShowSessionExpiredModal(false);
         setUser(profile);
         setIsAuthenticated(true);
         // M4.4: restore the validated pre-login route (fallback #/shelf).
@@ -460,7 +463,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     // drafts are invisible in Demo by construction — nothing is wiped here.
     clearStoredToken();
     localStorage.removeItem(GOOGLE_USER_KEY);
-    clearPreImportBackup();
+    await clearPreImportBackupAsync();
     localStorage.setItem(MOCK_SESSION_KEY, JSON.stringify(demoUser));
     localStorage.setItem(MOCK_MODE_KEY, 'true');
     setUser(demoUser);
@@ -489,7 +492,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     localStorage.removeItem(GOOGLE_USER_KEY);
     localStorage.removeItem(MOCK_SESSION_KEY);
     localStorage.removeItem(MOCK_MODE_KEY);
-    localStorage.removeItem(SHEETS_CACHE_STORAGE_KEY);
     localStorage.removeItem(MEDIA_FOLDER_ID_STORAGE_KEY);
     localStorage.removeItem(SPREADSHEET_ID_STORAGE_KEY);
     // CD C.1.5 / decisions Q2: unsaved drafts STAY on this device after logout (the
@@ -498,7 +500,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     // Demo drafts are throwaway and never carried into a real account.
     if (options.discardDrafts) clearAllDrafts({ scope: 'all' });
     else if (wasDemo) clearAllDrafts({ scope: DEMO_DRAFT_SCOPE });
-    clearPreImportBackup();
+    await Promise.all([
+      idbDelete(SHEETS_CACHE_STORAGE_KEY),
+      clearPreImportBackupAsync(),
+      idbClear(),
+    ]);
     localStorage.removeItem(CAPSTONE_HIDDEN_KEY);
     localStorage.removeItem(LAST_DELETE_BACKUP_KEY);
     sessionStorage.removeItem(OAUTH_CSRF_STATE_KEY);
@@ -513,28 +519,41 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setIsLoading(false);
   }, []);
 
-  return (
-    <AuthContext.Provider
-      value={{
-        user,
-        isAuthenticated,
-        isLoading,
-        isMockMode,
-        googleClientId,
-        googleClientIdExists,
-        saveGoogleClientId,
-        getGoogleToken,
-        login,
-        loginAsMock,
-        logout,
-        showSessionExpiredModal,
-        setShowSessionExpiredModal,
-        triggerSessionExpired,
-      }}
-    >
-      {children}
-    </AuthContext.Provider>
+  const value = useMemo<AuthContextType>(
+    () => ({
+      user,
+      isAuthenticated,
+      isLoading,
+      isMockMode,
+      googleClientId,
+      googleClientIdExists,
+      saveGoogleClientId,
+      getGoogleToken,
+      login,
+      loginAsMock,
+      logout,
+      showSessionExpiredModal,
+      setShowSessionExpiredModal,
+      triggerSessionExpired,
+    }),
+    [
+      user,
+      isAuthenticated,
+      isLoading,
+      isMockMode,
+      googleClientId,
+      googleClientIdExists,
+      saveGoogleClientId,
+      getGoogleToken,
+      login,
+      loginAsMock,
+      logout,
+      showSessionExpiredModal,
+      triggerSessionExpired,
+    ]
   );
+
+  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 };
 
 // eslint-disable-next-line react-refresh/only-export-components

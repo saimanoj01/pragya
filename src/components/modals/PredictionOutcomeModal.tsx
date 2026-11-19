@@ -1,7 +1,7 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import { X } from 'lucide-react';
 import type { Book, Note } from '../../types/pragya';
-import { usePragya } from '../../context/PragyaContext';
+import { usePragyaActions } from '../../context/PragyaContext';
 import { formatChapterPos } from '../../utils/chapterFormat';
 import { describeSyncError } from '../../utils/apiErrors';
 import { isSubmitShortcut } from '../../utils/keyboard';
@@ -23,7 +23,7 @@ export interface PredictionOutcomeModalProps {
  * owns just that key so concurrent meta (sparStage, chapter, …) is never clobbered.
  */
 export function PredictionOutcomeModal({ note, book, isOpen, onClose }: PredictionOutcomeModalProps) {
-  const { updateNote } = usePragya();
+  const { updateNote } = usePragyaActions();
   const headingId = useId();
   const fieldId = useId();
   const textareaRef = useRef<HTMLTextAreaElement>(null);

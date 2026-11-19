@@ -15,7 +15,7 @@
    - **Non-fiction** emphasizes Application, Logic Friction, and Behavioral Deltas.
    - **Fiction** emphasizes Craft/Resonance, Subtext, and **Sealed Predictions** strictly clamped to the user's current spoiler ceiling until the book is marked `finished`.
 5. **Zero Stopwatches & Zero Overdue Flashcards:** Progress uses 1-tap bookmark advances (`+10p` / exact position, 30-min coalesced); retention uses a strict cap of **≤ 5 Active Behavioral Deltas** and a zero-guilt daily **Takeaway Shuffle**.
-6. **Canonical Naming:** The brand, repo (`saimanoj01/pragya`), Drive folder (`Pragya Media/`), spreadsheet (`Pragya Commonplace`), browser caches (`pragya-media-v1`, `pragya-demo-media`), and skill (`pragya-companion`) use **Pragya** / `pragya` exclusively.
+6. **Canonical Naming:** The brand, repo (`saimanoj01/pragya`), Drive folder (`Pragya Media/`), spreadsheet (`Pragya Commonplace`), browser caches (`pragya-cache`, `pragya-media-v1`, `pragya-demo-media`), and skill (`pragya-companion`) use **Pragya** / `pragya` exclusively.
 
 ---
 
@@ -25,7 +25,7 @@
 flowchart LR
     subgraph PWA["Pragya Web App (GitHub Pages · Zero AI · Zero Voice UI)"]
         UI["React 18 + Vite + Tailwind (Shelf · Notes · Practice · Settings + ⌘K)"]
-        Cache["localStorage + Drive modifiedTime Cache + IndexedDB (pragya-demo-media) + Cache API (pragya-media-v1)"]
+        Cache["IndexedDB (pragya-cache · pragya-demo-media) + Drive modifiedTime Cache + localStorage + Cache API (pragya-media-v1)"]
         Auth["Google OAuth 2.0 (drive.readonly, drive.file, spreadsheets, email, profile) + Demo Mode"]
     end
     subgraph Google["User's Google Account (Canonical Store)"]
@@ -326,11 +326,12 @@ On initial Sheets connection (and after creating a new spreadsheet):
      - Find existing `Sessions` row where `s.bookId === bookId && s.date === today && (nowMs - Date.parse(s.updatedAt)) <= 30 * 60 * 1000`.
      - If found: update that session's `endPos` (using `Math.max(s.endPos, nextPos)` unless manual override) and `updatedAt = nowIso` via UUID-resolved write.
      - Else: append a new `Sessions` row with `startPos = prevPos`, `endPos = nextPos`, `updatedAt = nowIso`.
-4. **Drive `modifiedTime` Fast-Reload Cache:**
-   - Store hydrated workspace state + `spreadsheetId` + `modifiedTime` in `localStorage('pragya_sheets_cache_v1')`.
+4. **Drive `modifiedTime` Fast-Reload Cache & Multi-Tab Batched Writes (CD Batch 7):**
+   - Store hydrated workspace state + `spreadsheetId` + `modifiedTime` under logical key `pragya_sheets_cache_v1` in **IndexedDB** (`db: 'pragya-cache'`, `store: 'kv'`), with automatic one-time migration from legacy `localStorage('pragya_sheets_cache_v1')` (copied verbatim, then removed from `localStorage` on success) and graceful fallback to `localStorage` → in-memory storage when IndexedDB is unavailable or quota-blocked. Pre-import backups (`pragya_pre_import_backup_v1`) use the same IndexedDB `kv` store and migration path. (Offline write outbox remains out of scope.)
    - On app load (when not clicking manual `Sync Now (R)`), first call `GET https://www.googleapis.com/drive/v3/files/{spreadsheetId}?fields=modifiedTime`.
-   - If `remote.modifiedTime === cached.modifiedTime`, hydrate from `pragya_sheets_cache_v1` in `0ms` and skip fetching `Books!A:L`, `Notes!A:R`, `Sessions!A:G`, `DeltaLogs!A:E`.
-   - After any local Sheet mutation, update `pragya_sheets_cache_v1` optimistically and refresh `modifiedTime`.
+   - If `remote.modifiedTime === cached.modifiedTime`, hydrate from `pragya_sheets_cache_v1` and skip fetching `Books!A:L`, `Notes!A:R`, `Sessions!A:G`, `DeltaLogs!A:E`.
+   - After any local Sheet mutation, update `pragya_sheets_cache_v1` optimistically and refresh `modifiedTime` (on `429` rate limit, retain the v2 cache with its previous `modifiedTime` rather than wiping it).
+   - **Multi-tab batched writes (`batchCommitMutations`):** multi-row flows (`captureNote` with bookmark advance, `advanceBookPosition`, `revertBookmarkAdvance` when `mode === 'updated'`) coalesce pre-reads into a single `values:batchGet`, validate all conflict guards and row-ID checks (`A{row} === id`) BEFORE any write (zero writes on any conflict, missing guarded/update row, or unverified row shift), apply updates in one `values:batchUpdate` (`valueInputOption=RAW`, Books before Sessions), group `:append` calls per tab, reconcile partial multi-tab commits safely without duplicating already-saved Notes, and perform a single Drive `modifiedTime` refresh (`<= 5` HTTP calls).
    - **Codec versioning:** every cache write stamps `codecVersion: 2` (`SHEETS_CACHE_CODEC_VERSION`); the key name `pragya_sheets_cache_v1` is unchanged. The `modifiedTime` fast-reload hit requires `codecVersion === 2` — a legacy cache (missing/older `codecVersion`) triggers a full `values:batchGet` re-decode even when `modifiedTime` matches, then is rewritten as v2. A legacy cache is still accepted for the account check and the offline read-only fallback (read-only, so no wipe risk).
 5. **Normalized Spoiler Math (`0.0–1.0`):**
    - `computeNormalizedPos(pos, totalPos, posUnit)`:
@@ -384,7 +385,7 @@ Modeled strictly after `/tmp/expense-ref/src/context/AuthContext.tsx`:
    - `isInvalidOrExpiredToken(token)` checks empty string, `'EXPIRED_TOKEN'`, or expired JWT `exp <= Date.now()` while allowing opaque `ya29...` tokens.
    - **Token expiry (B4.11):** `getGoogleToken()` and the initial auth state treat `pragya_google_token_expires_at <= now + 30 s` as expired — `getGoogleToken()` returns `null`, the adapter calls `onUnauthorized`, and `session-expired-modal` opens (also on mount when the stored token is already expired). The key is cleared on logout, mock login, session-expired, and whenever a new token arrives.
    - Any `401 Unauthorized` response from Sheets/Drive APIs clears `pragya_google_token` and opens `session-expired-modal` with **"Reconnect Google"** and **"Continue in Demo Mode"** actions without discarding the user's current route.
-   - **Account switch:** the last signed-in email is remembered in `pragya_last_account_email` (survives token expiry; cleared only by explicit logout). After a sign-in whose email differs (trimmed, case-insensitive), `clearPerAccountLocalData()` removes the previous account's local data: `pragya_sheets_cache_v1`, the stored spreadsheet / media-folder ids, `pragya_draft_*` drafts, the pre-import backup, and the `pragya-media-v1` cache. Same-account re-login keeps everything.
+   - **Account switch:** the last signed-in email is remembered in `pragya_last_account_email` (retained across token expiry and explicit logout so a subsequent sign-in by a different account still wipes kept per-account drafts). After a sign-in whose email differs (trimmed, case-insensitive), `clearPerAccountLocalData()` removes the previous account's local & IndexedDB data: `pragya_sheets_cache_v1` and `pragya_pre_import_backup_v1` (both IndexedDB `pragya-cache` and legacy `localStorage`), the stored spreadsheet / media-folder ids, `pragya_draft_*` drafts, and the `pragya-media-v1` cache. Same-account re-login keeps everything.
 6. **Demo Mode (`loginAsMock()`):**
    - Works completely offline with zero Client ID required.
    - Seeds deterministic, rich initial data (`Thinking in Systems: A Primer`, `Exhalation: Stories`, `The Lathe of Heaven`, `Finite and Infinite Games`, plus 8 realistic commonplace/atomic/prediction/spoiler notes, 11 reading sessions across recent days, and delta logs) stored in `localStorage('pragya_demo_state_v1')`.

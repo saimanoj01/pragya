@@ -1,7 +1,7 @@
 import React, { useEffect, useId, useState } from 'react';
 import { Archive, X } from 'lucide-react';
 import type { Book, BookFormat, BookKind, BookStatus, PosUnit } from '../../types/pragya';
-import { usePragya } from '../../context/PragyaContext';
+import { usePragyaActions } from '../../context/PragyaContext';
 import { useArchiveActions } from '../../hooks/useArchiveActions';
 import { describeSyncError } from '../../utils/apiErrors';
 import { isArchived } from '../../utils/archive';
@@ -27,7 +27,7 @@ export interface EditBookModalProps {
 }
 
 export const EditBookModal: React.FC<EditBookModalProps> = ({ book, onClose }) => {
-  const { updateBook } = usePragya();
+  const { updateBook } = usePragyaActions();
   const { archiveBook } = useArchiveActions();
   const [archiving, setArchiving] = useState(false);
 

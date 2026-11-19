@@ -1,4 +1,4 @@
-import React, { useId, useRef, useState } from 'react';
+import React, { useEffect, useId, useRef, useState } from 'react';
 import {
   ChevronDown,
   ChevronUp,
@@ -19,7 +19,7 @@ import type { PragyaSnapshot } from '../../types/pragya';
 import { useAuth } from '../../context/AuthContext';
 import { usePragya } from '../../context/PragyaContext';
 import { useTheme } from '../../context/ThemeContext';
-import { readPreImportBackup } from '../../utils/importSafety';
+import { readPreImportBackupAsync, type PreImportBackup } from '../../utils/importSafety';
 import { buildSnapshot, validateSnapshotPayload } from '../../utils/snapshot';
 import { showToast } from '../../utils/toast';
 import { OAuthSetupGuide } from '../common/OAuthSetupGuide';
@@ -55,10 +55,25 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onLogout }) => {
   const [showSetupGuide, setShowSetupGuide] = useState(false);
   const [pendingSnapshot, setPendingSnapshot] = useState<PragyaSnapshot | null>(null);
   const [restoringBackup, setRestoringBackup] = useState(false);
+  const [preImportBackup, setPreImportBackup] = useState<PreImportBackup | null>(null);
   const importInputRef = useRef<HTMLInputElement>(null);
   const clientIdInputId = useId();
+  const lastBackupScopeRef = useRef<string>(`${isMockMode}:${user?.email || ''}`);
 
-  const preImportBackup = readPreImportBackup();
+  useEffect(() => {
+    let active = true;
+    const scope = `${isMockMode}:${user?.email || ''}`;
+    if (lastBackupScopeRef.current !== scope) {
+      lastBackupScopeRef.current = scope;
+      setPreImportBackup(null);
+    }
+    void readPreImportBackupAsync().then(backup => {
+      if (active) setPreImportBackup(backup);
+    });
+    return () => {
+      active = false;
+    };
+  }, [lastSyncedAt, isMockMode, user?.email]);
 
   const handleSaveClientId = (e: React.FormEvent) => {
     e.preventDefault();
@@ -98,8 +113,12 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onLogout }) => {
   };
 
   const handleRestorePreImportBackup = async () => {
-    const backup = readPreImportBackup();
-    if (!backup) return;
+    const backup = await readPreImportBackupAsync();
+    if (!backup) {
+      setPreImportBackup(null);
+      showToast('Pre-import backup is no longer available.', 'error');
+      return;
+    }
     setRestoringBackup(true);
     try {
       await replaceWorkspaceFromSnapshot(backup.snapshot, { backup: false });

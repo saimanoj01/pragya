@@ -1,7 +1,7 @@
 import React, { useEffect, useId, useState } from 'react';
 import { X } from 'lucide-react';
 import type { BookFormat, BookKind, BookStatus, PosUnit } from '../../types/pragya';
-import { usePragya } from '../../context/PragyaContext';
+import { usePragyaActions } from '../../context/PragyaContext';
 import { describeSyncError } from '../../utils/apiErrors';
 import { coverUrlError } from '../../utils/bookSurfaces';
 import { isSubmitShortcut } from '../../utils/keyboard';
@@ -21,7 +21,7 @@ export interface AddBookModalProps {
 }
 
 export const AddBookModal: React.FC<AddBookModalProps> = ({ isOpen, onClose }) => {
-  const { addBook } = usePragya();
+  const { addBook } = usePragyaActions();
   const uid = useId();
   const fid = (name: string) => `${uid}-${name}`;
 

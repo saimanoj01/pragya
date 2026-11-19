@@ -8,6 +8,14 @@ import type {
   WorkspaceState,
 } from '../types/pragya';
 import type { DeleteCascadeResult, DeleteRowsPlan, RestoreRowsResult } from '../utils/deletePlan';
+import {
+  PartialBatchCommitError,
+  type BatchMutationOp,
+  type BatchMutationResult,
+} from '../utils/batchPlan';
+
+export { PartialBatchCommitError };
+export type { BatchMutationOp, BatchMutationResult };
 
 export interface DeleteCascadeOptions {
   /** The book/note the user chose; must still be archived at delete time (QA-30). */
@@ -76,6 +84,12 @@ export interface StorageAdapter {
   saveBook(book: Book, options?: SaveOptions): Promise<Book>;
   saveNote(note: Note, options?: SaveOptions): Promise<Note>;
   saveSession(session: ReadingSession): Promise<ReadingSession>;
+  /**
+   * CD Batch 7 (OQ-12): commit multiple row upserts across tabs in a single coalesced
+   * read/validate/write cycle. Validates every conflict guard and row-ID check BEFORE
+   * writing anything (zero writes on any conflict or row-move failure).
+   */
+  batchCommitMutations?(ops: BatchMutationOp[]): Promise<BatchMutationResult>;
   /** CD 3 fix-up R1#1: a fresh read of every Sessions row (one `Sessions!A:G` GET in Cloud). */
   loadSessions?(): Promise<ReadingSession[]>;
   deleteSession?(sessionId: string): Promise<void>;
