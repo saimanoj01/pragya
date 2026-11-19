@@ -2,17 +2,24 @@ import React, { useEffect, useId, useState } from 'react';
 import { Archive, X } from 'lucide-react';
 import type { Book, BookFormat, BookKind, BookStatus, PosUnit } from '../../types/pragya';
 import { usePragya } from '../../context/PragyaContext';
-import { showToast } from '../../utils/toast';
-import { coverUrlError } from '../../utils/bookSurfaces';
-import { Modal } from '../common/Modal';
-import { describeSyncError } from '../../utils/apiErrors';
-import { BOOK_CHAPTER_EDITOR_OWNED_META_KEYS } from '../../utils/metaCodecs';
-import { CHAPTER_MAX_LENGTH, withChapterKey } from '../../utils/chapterFormat';
-import { isArchived } from '../../utils/archive';
-import { navigateTo } from '../../utils/navigation';
 import { useArchiveActions } from '../../hooks/useArchiveActions';
-import { BTN_TERTIARY } from '../common/uiClasses';
+import { describeSyncError } from '../../utils/apiErrors';
+import { isArchived } from '../../utils/archive';
+import { coverUrlError } from '../../utils/bookSurfaces';
+import { CHAPTER_MAX_LENGTH, withChapterKey } from '../../utils/chapterFormat';
 import { isSubmitShortcut } from '../../utils/keyboard';
+import { BOOK_CHAPTER_EDITOR_OWNED_META_KEYS } from '../../utils/metaCodecs';
+import { navigateTo } from '../../utils/navigation';
+import { showToast } from '../../utils/toast';
+import { Modal } from '../common/Modal';
+import {
+  BTN_GHOST_LG,
+  BTN_TERTIARY,
+  FIELD_LABEL,
+  INPUT,
+  MODAL_CLOSE_BTN,
+  SELECT,
+} from '../common/uiClasses';
 
 export interface EditBookModalProps {
   book: Book | null;
@@ -24,7 +31,6 @@ export const EditBookModal: React.FC<EditBookModalProps> = ({ book, onClose }) =
   const { archiveBook } = useArchiveActions();
   const [archiving, setArchiving] = useState(false);
 
-  // C1.1: archive the book as stored (unsaved form edits are discarded with the modal).
   const handleArchive = async () => {
     if (!book) return;
     setArchiving(true);
@@ -64,7 +70,9 @@ export const EditBookModal: React.FC<EditBookModalProps> = ({ book, onClose }) =
     setPosUnit(book.posUnit);
     setDocUrl(book.docUrl || '');
     setCoverUrl(typeof book.meta?.coverUrl === 'string' ? book.meta.coverUrl : '');
-    setCurrentChapter(typeof book.meta?.currentChapter === 'string' ? book.meta.currentChapter : '');
+    setCurrentChapter(
+      typeof book.meta?.currentChapter === 'string' ? book.meta.currentChapter : ''
+    );
     setSubmitting(false);
   }, [book]);
 
@@ -75,8 +83,9 @@ export const EditBookModal: React.FC<EditBookModalProps> = ({ book, onClose }) =
       showToast('Title cannot be empty', 'error');
       return;
     }
-    if (coverUrlError(coverUrl)) {
-      showToast(coverUrlError(coverUrl) || '', 'error');
+    const coverErr = coverUrlError(coverUrl);
+    if (coverErr) {
+      showToast(coverErr, 'error');
       return;
     }
     setSubmitting(true);
@@ -101,14 +110,11 @@ export const EditBookModal: React.FC<EditBookModalProps> = ({ book, onClose }) =
             ...withChapterKey(book.meta, 'currentChapter', currentChapter),
             ...(status === 'reading' && !book.meta.startedAt ? { startedAt: nowIso } : {}),
             ...(status === 'finished' && !book.meta.finishedAt ? { finishedAt: nowIso } : {}),
-            // CD C2.6: https-only cover (coverUrl is an editor-owned key; empty → removed).
             coverUrl: coverUrl.trim() || undefined,
             updatedAt: nowIso,
           },
         },
         {
-          // B4.1: the base is the snapshot taken when this modal opened, so a background
-          // sync that loaded a newer remote row surfaces a conflict instead of a silent clobber.
           expectedBaseUpdatedAt: book.meta.updatedAt,
           ownedMetaKeys: BOOK_CHAPTER_EDITOR_OWNED_META_KEYS,
           baseMeta: book.meta,
@@ -117,11 +123,13 @@ export const EditBookModal: React.FC<EditBookModalProps> = ({ book, onClose }) =
       showToast(`Updated "${title.trim()}"`, 'success');
       onClose();
     } catch (err) {
-      showToast(err instanceof Error ? describeSyncError(err) : 'Failed to update book', 'error');
+      showToast(describeSyncError(err, 'Failed to update book'), 'error');
     } finally {
       setSubmitting(false);
     }
   };
+
+  const coverErr = coverUrlError(coverUrl);
 
   return (
     <Modal
@@ -135,12 +143,7 @@ export const EditBookModal: React.FC<EditBookModalProps> = ({ book, onClose }) =
         <h2 id={fid('heading')} className="text-title text-foreground">
           Edit Book
         </h2>
-        <button
-          type="button"
-          onClick={onClose}
-          aria-label="Close"
-          className="min-w-11 min-h-11 sm:min-w-0 sm:min-h-0 p-1.5 rounded-[8px] inline-flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-surface2 transition-colors"
-        >
+        <button type="button" onClick={onClose} aria-label="Close" className={MODAL_CLOSE_BTN}>
           <X className="w-4 h-4" />
         </button>
       </div>
@@ -156,38 +159,44 @@ export const EditBookModal: React.FC<EditBookModalProps> = ({ book, onClose }) =
         className="space-y-4"
       >
         <div className="space-y-1.5">
-          <label htmlFor={fid('title')} className="block text-eyebrow uppercase text-muted-foreground">Title *</label>
+          <label htmlFor={fid('title')} className={FIELD_LABEL}>
+            Title *
+          </label>
           <input
             id={fid('title')}
             type="text"
             data-testid="edit-book-title-input"
             value={title}
             onChange={e => setTitle(e.target.value)}
-            className="w-full h-11 sm:h-10 px-3 rounded-[10px] bg-background border border-input text-base sm:text-body text-foreground focus:outline-none focus:ring-2 focus:ring-ring/40"
+            className={INPUT}
             required
           />
         </div>
 
         <div className="space-y-1.5">
-          <label htmlFor={fid('author')} className="block text-eyebrow uppercase text-muted-foreground">Author</label>
+          <label htmlFor={fid('author')} className={FIELD_LABEL}>
+            Author
+          </label>
           <input
             id={fid('author')}
             type="text"
             data-testid="edit-book-author-input"
             value={author}
             onChange={e => setAuthor(e.target.value)}
-            className="w-full h-11 sm:h-10 px-3 rounded-[10px] bg-background border border-input text-base sm:text-body text-foreground focus:outline-none focus:ring-2 focus:ring-ring/40"
+            className={INPUT}
           />
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
           <div className="space-y-1.5">
-            <label htmlFor={fid('format')} className="block text-eyebrow uppercase text-muted-foreground">Format</label>
+            <label htmlFor={fid('format')} className={FIELD_LABEL}>
+              Format
+            </label>
             <select
               id={fid('format')}
               value={format}
               onChange={e => setFormat(e.target.value as BookFormat)}
-              className="w-full h-11 sm:h-10 px-2.5 rounded-[10px] bg-background border border-input text-base sm:text-body text-foreground focus:outline-none focus:ring-2 focus:ring-ring/40"
+              className={SELECT}
             >
               <option value="physical">Physical</option>
               <option value="kindle">Kindle</option>
@@ -195,12 +204,14 @@ export const EditBookModal: React.FC<EditBookModalProps> = ({ book, onClose }) =
           </div>
 
           <div className="space-y-1.5">
-            <label htmlFor={fid('kind')} className="block text-eyebrow uppercase text-muted-foreground">Kind</label>
+            <label htmlFor={fid('kind')} className={FIELD_LABEL}>
+              Kind
+            </label>
             <select
               id={fid('kind')}
               value={kind}
               onChange={e => setKind(e.target.value as BookKind)}
-              className="w-full h-11 sm:h-10 px-2.5 rounded-[10px] bg-background border border-input text-base sm:text-body text-foreground focus:outline-none focus:ring-2 focus:ring-ring/40"
+              className={SELECT}
             >
               <option value="nonfiction">Non-Fiction</option>
               <option value="fiction">Fiction</option>
@@ -208,12 +219,14 @@ export const EditBookModal: React.FC<EditBookModalProps> = ({ book, onClose }) =
           </div>
 
           <div className="space-y-1.5">
-            <label htmlFor={fid('status')} className="block text-eyebrow uppercase text-muted-foreground">Status</label>
+            <label htmlFor={fid('status')} className={FIELD_LABEL}>
+              Status
+            </label>
             <select
               id={fid('status')}
               value={status}
               onChange={e => setStatus(e.target.value as BookStatus)}
-              className="w-full h-11 sm:h-10 px-2.5 rounded-[10px] bg-background border border-input text-base sm:text-body text-foreground focus:outline-none focus:ring-2 focus:ring-ring/40"
+              className={SELECT}
             >
               <option value="reading">Reading</option>
               <option value="queued">Queued</option>
@@ -225,7 +238,9 @@ export const EditBookModal: React.FC<EditBookModalProps> = ({ book, onClose }) =
 
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
           <div className="space-y-1.5">
-            <label htmlFor={fid('pos')} className="block text-eyebrow uppercase text-muted-foreground">Current Pos</label>
+            <label htmlFor={fid('pos')} className={FIELD_LABEL}>
+              Current Pos
+            </label>
             <input
               id={fid('pos')}
               type="number"
@@ -233,12 +248,14 @@ export const EditBookModal: React.FC<EditBookModalProps> = ({ book, onClose }) =
               min="0"
               value={currentPos}
               onChange={e => setCurrentPos(e.target.value)}
-              className="w-full h-11 sm:h-10 px-3 rounded-[10px] bg-background border border-input text-base sm:text-body text-foreground num focus:outline-none focus:ring-2 focus:ring-ring/40"
+              className={`${INPUT} num`}
             />
           </div>
 
           <div className="space-y-1.5">
-            <label htmlFor={fid('total')} className="block text-eyebrow uppercase text-muted-foreground">Total Pos</label>
+            <label htmlFor={fid('total')} className={FIELD_LABEL}>
+              Total Pos
+            </label>
             <input
               id={fid('total')}
               type="number"
@@ -246,17 +263,19 @@ export const EditBookModal: React.FC<EditBookModalProps> = ({ book, onClose }) =
               min="0"
               value={totalPos}
               onChange={e => setTotalPos(e.target.value)}
-              className="w-full h-11 sm:h-10 px-3 rounded-[10px] bg-background border border-input text-base sm:text-body text-foreground num focus:outline-none focus:ring-2 focus:ring-ring/40"
+              className={`${INPUT} num`}
             />
           </div>
 
           <div className="space-y-1.5">
-            <label htmlFor={fid('unit')} className="block text-eyebrow uppercase text-muted-foreground">Unit</label>
+            <label htmlFor={fid('unit')} className={FIELD_LABEL}>
+              Unit
+            </label>
             <select
               id={fid('unit')}
               value={posUnit}
               onChange={e => setPosUnit(e.target.value as PosUnit)}
-              className="w-full h-11 sm:h-10 px-2.5 rounded-[10px] bg-background border border-input text-base sm:text-body text-foreground focus:outline-none focus:ring-2 focus:ring-ring/40"
+              className={SELECT}
             >
               <option value="page">Page</option>
               <option value="percent">Percent (%)</option>
@@ -266,7 +285,7 @@ export const EditBookModal: React.FC<EditBookModalProps> = ({ book, onClose }) =
         </div>
 
         <div className="space-y-1.5">
-          <label htmlFor={fid('chapter')} className="block text-eyebrow uppercase text-muted-foreground">
+          <label htmlFor={fid('chapter')} className={FIELD_LABEL}>
             Current Chapter / Story
           </label>
           <input
@@ -279,7 +298,7 @@ export const EditBookModal: React.FC<EditBookModalProps> = ({ book, onClose }) =
             onChange={e => setCurrentChapter(e.target.value)}
             placeholder="e.g. Ch. 3: Run · or a story title"
             aria-describedby={fid('chapter-help')}
-            className="w-full h-11 sm:h-10 px-3 rounded-[10px] bg-background border border-input text-base sm:text-body text-foreground placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-ring/40"
+            className={INPUT}
           />
           <p id={fid('chapter-help')} className="text-label text-faint">
             Shown on your Shelf and suggested for new notes at your bookmark.
@@ -287,7 +306,7 @@ export const EditBookModal: React.FC<EditBookModalProps> = ({ book, onClose }) =
         </div>
 
         <div className="space-y-1.5">
-          <label htmlFor={fid('docurl')} className="block text-eyebrow uppercase text-muted-foreground">
+          <label htmlFor={fid('docurl')} className={FIELD_LABEL}>
             Companion Google Doc URL
           </label>
           <input
@@ -296,13 +315,12 @@ export const EditBookModal: React.FC<EditBookModalProps> = ({ book, onClose }) =
             value={docUrl}
             onChange={e => setDocUrl(e.target.value)}
             placeholder="https://docs.google.com/document/d/..."
-            className="w-full h-11 sm:h-10 px-3 rounded-[10px] bg-background border border-input text-base sm:text-body text-foreground focus:outline-none focus:ring-2 focus:ring-ring/40"
+            className={INPUT}
           />
         </div>
 
-
         <div className="space-y-1.5">
-          <label htmlFor={fid('cover')} className="block text-eyebrow uppercase text-muted-foreground">
+          <label htmlFor={fid('cover')} className={FIELD_LABEL}>
             Cover Image URL (Optional)
           </label>
           <input
@@ -313,12 +331,12 @@ export const EditBookModal: React.FC<EditBookModalProps> = ({ book, onClose }) =
             onChange={e => setCoverUrl(e.target.value)}
             placeholder="https://…"
             aria-describedby={fid('cover-help')}
-            aria-invalid={Boolean(coverUrlError(coverUrl))}
-            className="w-full h-11 sm:h-10 px-3 rounded-[10px] bg-background border border-input text-base sm:text-body text-foreground placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-ring/40"
+            aria-invalid={Boolean(coverErr)}
+            className={INPUT}
           />
-          {coverUrlError(coverUrl) ? (
+          {coverErr ? (
             <p id={fid('cover-help')} role="alert" className="text-label text-negative">
-              {coverUrlError(coverUrl)}
+              {coverErr}
             </p>
           ) : (
             <p id={fid('cover-help')} className="text-label text-faint">
@@ -343,21 +361,17 @@ export const EditBookModal: React.FC<EditBookModalProps> = ({ book, onClose }) =
             )}
           </div>
           <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={onClose}
-            className="h-11 sm:h-10 px-4 rounded-[10px] text-body font-medium text-muted-foreground hover:text-foreground hover:bg-surface2 transition-colors"
-          >
-            Cancel
-          </button>
-          <button
-            type="submit"
-            disabled={submitting}
-            data-testid="edit-book-submit-btn"
-            className="h-11 sm:h-10 px-5 rounded-[10px] bg-primary text-primary-foreground font-semibold text-body hover:opacity-90 disabled:opacity-50 transition-opacity"
-          >
-            {submitting ? 'Saving…' : 'Save Changes'}
-          </button>
+            <button type="button" onClick={onClose} className={BTN_GHOST_LG}>
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={submitting}
+              data-testid="edit-book-submit-btn"
+              className="h-11 sm:h-10 px-5 rounded-[10px] bg-primary text-primary-foreground font-semibold text-body hover:opacity-90 disabled:opacity-50 transition-opacity"
+            >
+              {submitting ? 'Saving…' : 'Save Changes'}
+            </button>
           </div>
         </div>
       </form>

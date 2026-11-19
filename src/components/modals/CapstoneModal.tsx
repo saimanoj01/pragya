@@ -1,12 +1,10 @@
-import React, { useEffect, useId, useMemo, useRef, useState } from 'react';
-import { ChevronRight, Copy, RotateCcw, X } from 'lucide-react';
+import React, { useId, useMemo, useRef, useState } from 'react';
+import { X } from 'lucide-react';
 import type { Book } from '../../types/pragya';
 import { usePragya } from '../../context/PragyaContext';
-import { Modal } from '../common/Modal';
-import { showToast } from '../../utils/toast';
+import { useCopyPrompt } from '../../hooks/useCopyPrompt';
+import { useModalDraft } from '../../hooks/useModalDraft';
 import { describeSyncError } from '../../utils/apiErrors';
-import { isSubmitShortcut } from '../../utils/keyboard';
-import { CAPSTONE_OWNED_META_KEYS, getBookCapstone } from '../../utils/metaCodecs';
 import {
   CAPSTONE_COPY_SUCCESS_MESSAGE,
   MAX_SOFT_LEARNINGS,
@@ -14,27 +12,24 @@ import {
   buildCapstonePrompt,
   countCapstoneEligibleNotes,
   hasCapstoneContent,
-  parseCapstoneReply,
   parseLearningsInput,
-  tryCopyText,
+  type ParsedCapstoneReply,
 } from '../../utils/capstonePrompt';
+import { getCapstoneDraftKey, type CapstoneDraft } from '../../utils/draftStorage';
+import { isSubmitShortcut } from '../../utils/keyboard';
+import { CAPSTONE_OWNED_META_KEYS, getBookCapstone } from '../../utils/metaCodecs';
+import { showToast } from '../../utils/toast';
+import { CapstonePasteHelper } from '../common/CapstonePasteHelper';
+import { DraftRestoredBanner } from '../common/DraftRestoredBanner';
+import { Modal } from '../common/Modal';
+import { PromptFallbackModal } from '../common/PromptFallbackModal';
 import {
-  clearDraft,
-  getCapstoneDraftKey,
-  isNoteDraftStale,
-  readDraft,
-  writeDraft,
-  type CapstoneDraft,
-} from '../../utils/draftStorage';
-
-const FIELD_LABEL = 'block text-eyebrow uppercase text-muted-foreground';
-const TEXTAREA =
-  'w-full p-3 rounded-[10px] bg-background border border-input text-base sm:text-body text-foreground placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-ring/40 resize-y';
-const BTN_SECONDARY =
-  'h-11 sm:h-9 px-3 rounded-[10px] bg-surface2 border border-border text-label font-medium text-foreground hover:bg-secondary inline-flex items-center gap-1.5 whitespace-nowrap disabled:opacity-50';
-const BTN_TERTIARY =
-  'inline-flex items-center gap-1 text-label font-medium text-muted-foreground hover:text-foreground';
-const HELPER = 'text-label text-muted-foreground';
+  BTN_GHOST_LG,
+  FIELD_LABEL,
+  HELPER,
+  MODAL_CLOSE_BTN,
+  TEXTAREA,
+} from '../common/uiClasses';
 
 interface CapstoneFields {
   arcOrThesis: string;
@@ -62,66 +57,12 @@ function sameFields(a: CapstoneFields, b: CapstoneFields): boolean {
   );
 }
 
-export interface CapstonePromptFallbackModalProps {
-  isOpen: boolean;
-  onClose: () => void;
-  prompt: string;
-  /** CD C4.1: reused by "Copy Sparring Prompt" (defaults keep the capstone copy/test id). */
-  title?: string;
-  dataTestId?: string;
-  promptLabel?: string;
-}
-
-/** ux_spec A.5: clipboard failed → select-and-copy fallback (no network). */
-export function CapstonePromptFallbackModal({
-  isOpen,
-  onClose,
-  prompt,
-  title = 'Copy Capstone Prompt',
-  dataTestId = 'capstone-prompt-fallback-modal',
-  promptLabel = 'Capstone prompt',
-}: CapstonePromptFallbackModalProps) {
-  const headingId = useId();
-  const helperId = useId();
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
-  return (
-    <Modal
-      isOpen={isOpen}
-      onClose={onClose}
-      title={title}
-      headingId={headingId}
-      dataTestId={dataTestId}
-      initialFocusRef={textareaRef}
-    >
-      <div className="space-y-3">
-        <h2 id={headingId} className="text-title text-foreground">
-          {title}
-        </h2>
-        <textarea
-          ref={textareaRef}
-          readOnly
-          rows={12}
-          value={prompt}
-          aria-label={promptLabel}
-          aria-describedby={helperId}
-          onFocus={e => e.currentTarget.select()}
-          className="w-full p-3 rounded-[10px] bg-background border border-input font-mono text-base sm:text-label text-foreground focus:outline-none focus:ring-2 focus:ring-ring/40 resize-y"
-        />
-        <p id={helperId} className={HELPER}>
-          Select all and copy (⌘C / Ctrl+C).
-        </p>
-        <div className="flex justify-end">
-          <button
-            type="button"
-            onClick={onClose}
-            className="h-11 sm:h-10 px-5 rounded-[10px] bg-primary text-primary-foreground font-semibold text-body hover:opacity-90"
-          >
-            Done
-          </button>
-        </div>
-      </div>
-    </Modal>
-  );
+function draftToFields(draft: CapstoneDraft): CapstoneFields {
+  return {
+    arcOrThesis: String(draft.arcOrThesis ?? ''),
+    learningsText: String(draft.learningsText ?? ''),
+    perspectiveShift: String(draft.perspectiveShift ?? ''),
+  };
 }
 
 export interface CapstoneModalProps {
@@ -139,73 +80,55 @@ export function CapstoneModal({ isOpen, onClose, book }: CapstoneModalProps) {
   const shiftId = useId();
 
   const [fields, setFields] = useState<CapstoneFields>(EMPTY_FIELDS);
-  const [draftRestored, setDraftRestored] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-  const [pasteOpen, setPasteOpen] = useState(false);
-  const [pasteText, setPasteText] = useState('');
-  const [pasteStatus, setPasteStatus] = useState('');
-  const [fallbackPrompt, setFallbackPrompt] = useState<string | null>(null);
 
   const arcRef = useRef<HTMLTextAreaElement>(null);
   const learningsRef = useRef<HTMLTextAreaElement>(null);
   const shiftRef = useRef<HTMLTextAreaElement>(null);
   const baseUpdatedAtRef = useRef<string>('');
   const canonicalRef = useRef<CapstoneFields>(EMPTY_FIELDS);
-  const initializedIdRef = useRef<string | null>(null);
-  const savedRef = useRef(false);
 
-  useEffect(() => {
-    if (!isOpen || !book) {
-      initializedIdRef.current = null;
-      return;
-    }
-    if (initializedIdRef.current === book.id) return;
-    initializedIdRef.current = book.id;
-    savedRef.current = false;
-    // B.4 conflict guard: the base is the row as it was when the modal opened.
-    baseUpdatedAtRef.current = book.meta?.updatedAt || '';
-    const canonical = canonicalFields(book);
-    canonicalRef.current = canonical;
-    setPasteOpen(false);
-    setPasteText('');
-    setPasteStatus('');
-
-    const key = getCapstoneDraftKey(book.id);
-    const draft = readDraft<CapstoneDraft>(key);
-    const fresh = draft && !isNoteDraftStale(draft.baseUpdatedAt, book.meta?.updatedAt) ? draft : null;
-    if (draft && !fresh) clearDraft(key);
-    const restored: CapstoneFields | null = fresh
-      ? {
-          arcOrThesis: String(fresh.arcOrThesis ?? ''),
-          learningsText: String(fresh.learningsText ?? ''),
-          perspectiveShift: String(fresh.perspectiveShift ?? ''),
-        }
-      : null;
-    if (restored && !sameFields(restored, canonical)) {
-      setFields(restored);
-      setDraftRestored(true);
-    } else {
-      setFields(canonical);
-      setDraftRestored(false);
-    }
-  }, [book, isOpen]);
+  const { copyPrompt, fallbackModalProps } = useCopyPrompt({
+    successMessage: CAPSTONE_COPY_SUCCESS_MESSAGE,
+  });
 
   const isDirty = !sameFields(fields, canonicalRef.current);
 
-  // Draft autosave on every change while open (cleared once saved or back to canonical).
-  useEffect(() => {
-    if (!isOpen || !book || initializedIdRef.current !== book.id || savedRef.current) return;
-    const key = getCapstoneDraftKey(book.id);
-    if (isDirty) {
-      writeDraft<CapstoneDraft>(key, {
-        baseUpdatedAt: baseUpdatedAtRef.current,
-        ...fields,
-        savedAt: new Date().toISOString(),
-      });
-    } else {
-      clearDraft(key);
-    }
-  }, [book, fields, isDirty, isOpen]);
+  const draftPayload = useMemo<CapstoneDraft>(
+    () => ({
+      baseUpdatedAt: baseUpdatedAtRef.current || book?.meta?.updatedAt || '',
+      ...fields,
+      savedAt: new Date().toISOString(),
+    }),
+    [book?.meta?.updatedAt, fields]
+  );
+
+  const { draftRestored, markSubmitted, discardDraft } = useModalDraft<CapstoneDraft>({
+    isOpen: isOpen && Boolean(book),
+    sessionId: book?.id ?? null,
+    draftKey: book ? getCapstoneDraftKey(book.id) : '',
+    isDirty,
+    payload: draftPayload,
+    currentUpdatedAt: book?.meta?.updatedAt,
+    getBaseUpdatedAt: d => d.baseUpdatedAt,
+    canRestore: d => !sameFields(draftToFields(d), canonicalFields(book)),
+    onRestore: d => {
+      baseUpdatedAtRef.current = book?.meta?.updatedAt || '';
+      canonicalRef.current = canonicalFields(book);
+      setFields(draftToFields(d));
+      setSubmitting(false);
+    },
+    onInitCanonical: () => {
+      baseUpdatedAtRef.current = book?.meta?.updatedAt || '';
+      const canonical = canonicalFields(book);
+      canonicalRef.current = canonical;
+      setFields(canonical);
+      setSubmitting(false);
+    },
+    onDiscard: () => {
+      setFields(canonicalRef.current);
+    },
+  });
 
   const eligibleCount = useMemo(
     () => (book ? countCapstoneEligibleNotes(book, notes) : 0),
@@ -224,14 +147,7 @@ export function CapstoneModal({ isOpen, onClose, book }: CapstoneModalProps) {
   const setField = (key: keyof CapstoneFields, value: string) =>
     setFields(prev => ({ ...prev, [key]: value }));
 
-  const handleDiscardDraft = () => {
-    clearDraft(getCapstoneDraftKey(book.id));
-    setFields(canonicalRef.current);
-    setDraftRestored(false);
-  };
-
-  const handleFill = () => {
-    const parsed = parseCapstoneReply(pasteText);
+  const handleApplyParsed = (parsed: ParsedCapstoneReply): boolean => {
     const next = { ...fields };
     let first: React.RefObject<HTMLTextAreaElement | null> | null = null;
     if (parsed.arcOrThesis !== undefined) {
@@ -246,24 +162,11 @@ export function CapstoneModal({ isOpen, onClose, book }: CapstoneModalProps) {
       next.perspectiveShift = parsed.perspectiveShift;
       first = first || shiftRef;
     }
-    if (!first) {
-      setPasteStatus("Couldn't find the expected headings. You can paste each part into the fields below.");
-      return;
-    }
+    if (!first) return false;
     setFields(next);
-    setPasteOpen(false);
-    setPasteStatus('Filled from the reply. Edit anything you like.');
     const target = first;
     window.setTimeout(() => target.current?.focus(), 0);
-  };
-
-  const handleCopyPrompt = async () => {
-    const prompt = buildCapstonePrompt(book, notes);
-    if (await tryCopyText(prompt)) {
-      showToast(CAPSTONE_COPY_SUCCESS_MESSAGE, 'success');
-    } else {
-      setFallbackPrompt(prompt);
-    }
+    return true;
   };
 
   const handleSubmit = async (e?: React.FormEvent) => {
@@ -280,13 +183,10 @@ export function CapstoneModal({ isOpen, onClose, book }: CapstoneModalProps) {
           baseMeta: book.meta,
         }
       );
-      savedRef.current = true;
-      clearDraft(getCapstoneDraftKey(book.id));
-      setDraftRestored(false);
+      markSubmitted();
       showToast('Saved your Whole-Book Picture.', 'success');
       onClose();
     } catch (err) {
-      // Offline / conflict: modal stays open, the autosaved draft remains.
       showToast(describeSyncError(err, 'Failed to save Whole-Book Picture'), 'error');
     } finally {
       setSubmitting(false);
@@ -319,84 +219,24 @@ export function CapstoneModal({ isOpen, onClose, book }: CapstoneModalProps) {
             </h2>
             <p className="text-label text-muted-foreground truncate">{book.title} · Optional</p>
           </div>
-          <button
-            type="button"
-            onClick={onClose}
-            aria-label="Close"
-            className="min-w-11 min-h-11 sm:min-w-0 sm:min-h-0 p-1.5 rounded-[8px] inline-flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-surface2 shrink-0"
-          >
+          <button type="button" onClick={onClose} aria-label="Close" className={MODAL_CLOSE_BTN}>
             <X className="w-4 h-4" />
           </button>
         </div>
 
-        {draftRestored && (
-          <div
-            data-testid="draft-restored-banner"
-            className="mb-4 px-3 py-2 rounded-[10px] bg-surface2 border border-border flex items-center justify-between gap-2 text-label"
-          >
-            <span className="text-foreground">Draft restored from earlier session</span>
-            <button
-              type="button"
-              data-testid="draft-discard-btn"
-              onClick={handleDiscardDraft}
-              className="min-h-11 sm:min-h-0 px-2 sm:px-0 inline-flex items-center gap-1 font-semibold text-muted-foreground hover:text-foreground"
-            >
-              <RotateCcw className="w-3 h-3" />
-              <span>Discard</span>
-            </button>
-          </div>
-        )}
+        <DraftRestoredBanner visible={draftRestored} onDiscard={discardDraft} />
 
-        <form onSubmit={e => void handleSubmit(e)} onKeyDown={handleFormKeyDown} className="space-y-4">
-          <div className="flex flex-wrap items-start justify-between gap-2">
-            <details
-              open={pasteOpen}
-              onToggle={e => setPasteOpen((e.currentTarget as HTMLDetailsElement).open)}
-              className="flex-1 min-w-0 space-y-2"
-            >
-              <summary className={`${BTN_TERTIARY} cursor-pointer list-none h-11 sm:h-9 [&::-webkit-details-marker]:hidden`}>
-                <ChevronRight
-                  className={`w-3.5 h-3.5 transition-transform ${pasteOpen ? 'rotate-90' : ''}`}
-                  aria-hidden="true"
-                />
-                <span>Paste a reply from your assistant</span>
-              </summary>
-              <textarea
-                rows={5}
-                aria-label="Assistant reply"
-                data-testid="capstone-paste-input"
-                value={pasteText}
-                onChange={e => setPasteText(e.target.value)}
-                placeholder="Paste the reply here…"
-                className={TEXTAREA}
-              />
-              <button
-                type="button"
-                data-testid="capstone-fill-btn"
-                onClick={handleFill}
-                disabled={!pasteText.trim()}
-                className={BTN_SECONDARY}
-              >
-                Fill Fields
-              </button>
-            </details>
-            {eligibleCount > 0 && (
-              <button
-                type="button"
-                data-testid="capstone-modal-copy-prompt-btn"
-                onClick={() => void handleCopyPrompt()}
-                className={BTN_SECONDARY}
-              >
-                <Copy className="w-3.5 h-3.5" />
-                <span>Copy Prompt</span>
-              </button>
-            )}
-          </div>
-          {pasteStatus && (
-            <p role="status" data-testid="capstone-paste-status" className={HELPER}>
-              {pasteStatus}
-            </p>
-          )}
+        <form
+          onSubmit={e => void handleSubmit(e)}
+          onKeyDown={handleFormKeyDown}
+          className="space-y-4"
+        >
+          <CapstonePasteHelper
+            resetKey={`${isOpen}-${book.id}`}
+            eligibleCount={eligibleCount}
+            onCopyPrompt={() => void copyPrompt(buildCapstonePrompt(book, notes))}
+            onApplyParsed={handleApplyParsed}
+          />
 
           <div className="space-y-1.5">
             <label htmlFor={arcId} className={FIELD_LABEL}>
@@ -465,11 +305,7 @@ export function CapstoneModal({ isOpen, onClose, book }: CapstoneModalProps) {
           )}
 
           <div className="flex items-center justify-end gap-2 pt-2">
-            <button
-              type="button"
-              onClick={onClose}
-              className="h-11 sm:h-10 px-4 rounded-[10px] text-body font-medium text-muted-foreground hover:text-foreground hover:bg-surface2"
-            >
+            <button type="button" onClick={onClose} className={BTN_GHOST_LG}>
               Cancel
             </button>
             <button
@@ -483,11 +319,7 @@ export function CapstoneModal({ isOpen, onClose, book }: CapstoneModalProps) {
           </div>
         </form>
       </Modal>
-      <CapstonePromptFallbackModal
-        isOpen={fallbackPrompt !== null}
-        onClose={() => setFallbackPrompt(null)}
-        prompt={fallbackPrompt || ''}
-      />
+      <PromptFallbackModal {...fallbackModalProps} />
     </>
   );
 }

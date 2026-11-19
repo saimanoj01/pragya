@@ -1,51 +1,37 @@
-import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
-import {
-  AlertTriangle,
-  Archive,
-  FileText,
-  Image as ImageIcon,
-  Link2,
-  Loader2,
-  RotateCcw,
-  X,
-} from 'lucide-react';
+import React, { useId, useMemo, useRef, useState } from 'react';
+import { Archive, X } from 'lucide-react';
 import type { Attachment, DeltaStatus, Note, NoteStatus } from '../../types/pragya';
 import { usePragya } from '../../context/PragyaContext';
-import {
-  NOTE_CHAPTER_EDITOR_OWNED_META_KEYS,
-  mergeEditedAttachments,
-  splitAttachments,
-} from '../../utils/metaCodecs';
-import { CHAPTER_MAX_LENGTH, withChapterKey } from '../../utils/chapterFormat';
-import {
-  formatWhenDoDisplay,
-  normalizeDeltaAction,
-  normalizeDeltaTrigger,
-} from '../../utils/deltaFormat';
-import {
-  clearDraft,
-  getEditNoteDraftKey,
-  isNoteDraftStale,
-  readDraft,
-  writeDraft,
-  type EditNoteDraft,
-} from '../../utils/draftStorage';
-import { clampNotePos } from '../../utils/positionClamp';
-import { createUuid } from '../../utils/sessionCoalesce';
-import { parseTagsCsv, serializeTagsCsv } from '../../utils/sheetCodecs';
-import { isSubmitShortcut } from '../../utils/keyboard';
-import { computeNormalizedPos } from '../../utils/spoilerMath';
-import { normalizeSlugInput, resolveSlugEdit, takenSlugs } from '../../utils/wikilinks';
-import { showToast } from '../../utils/toast';
-import { DriveImage } from '../common/DriveImage';
-import { Modal } from '../common/Modal';
-import { WikilinkAutocomplete } from '../common/WikilinkAutocomplete';
+import { useArchiveActions } from '../../hooks/useArchiveActions';
+import { useModalDraft } from '../../hooks/useModalDraft';
 import { describeSyncError } from '../../utils/apiErrors';
 import { ARCHIVE_ACTIVE_DELTA_COPY, countOtherActiveDeltas, isArchived } from '../../utils/archive';
+import { openEditableAttachments, saveEditedAttachments } from '../../utils/attachmentLimits';
+import { CHAPTER_MAX_LENGTH, withChapterKey } from '../../utils/chapterFormat';
+import { formatWhenDoDisplay, validateDeltaForSave } from '../../utils/deltaFormat';
+import { getEditNoteDraftKey, type EditNoteDraft } from '../../utils/draftStorage';
+import { isSubmitShortcut } from '../../utils/keyboard';
+import { NOTE_CHAPTER_EDITOR_OWNED_META_KEYS } from '../../utils/metaCodecs';
 import { navigateTo } from '../../utils/navigation';
-import { useArchiveActions } from '../../hooks/useArchiveActions';
+import { clampNotePos } from '../../utils/positionClamp';
+import { parseTagsCsv, serializeTagsCsv } from '../../utils/sheetCodecs';
+import { computeNormalizedPos } from '../../utils/spoilerMath';
+import { showToast } from '../../utils/toast';
+import { normalizeSlugInput, resolveSlugEdit, takenSlugs } from '../../utils/wikilinks';
+import { AttachmentManager } from '../common/AttachmentManager';
 import { ConfirmDialog } from '../common/ConfirmDialog';
-import { BTN_TERTIARY } from '../common/uiClasses';
+import { DeltaFieldsSection } from '../common/DeltaFieldsSection';
+import { DraftRestoredBanner } from '../common/DraftRestoredBanner';
+import { Modal } from '../common/Modal';
+import {
+  BTN_GHOST_LG,
+  BTN_TERTIARY,
+  FIELD_LABEL,
+  INPUT,
+  MODAL_CLOSE_BTN,
+  SELECT,
+} from '../common/uiClasses';
+import { WikilinkTextarea } from '../common/WikilinkTextarea';
 
 export interface EditNoteModalProps {
   note: Note | null;
@@ -54,8 +40,42 @@ export interface EditNoteModalProps {
   onSaved?: (savedNote: Note) => void;
 }
 
-const DOC_URL_REGEX = /https?:\/\/docs\.google\.com\/document\/d\/([a-zA-Z0-9_-]+)/i;
-const HTTP_URL_REGEX = /^https?:\/\/\S+$/i;
+interface EditNoteCanonical {
+  title: string;
+  slug: string;
+  pos: string;
+  status: NoteStatus;
+  quote: string;
+  takeaway: string;
+  tagsRaw: string;
+  isPrediction: boolean;
+  contextMechanism: string;
+  critique: string;
+  deltaTrigger: string;
+  deltaAction: string;
+  deltaStatus: DeltaStatus;
+  chapter: string;
+}
+
+function buildCanonical(note: Note): EditNoteCanonical {
+  const formattedDelta = formatWhenDoDisplay(note.deltaTrigger, note.deltaAction);
+  return {
+    title: note.meta?.title || '',
+    slug: note.slug,
+    pos: String(note.pos),
+    status: note.status,
+    quote: note.quote || '',
+    takeaway: note.takeaway || '',
+    tagsRaw: serializeTagsCsv(note.tags || []),
+    isPrediction: Boolean(note.meta?.isPrediction),
+    contextMechanism: note.contextMechanism || '',
+    critique: note.critique || '',
+    deltaTrigger: formattedDelta.triggerBody,
+    deltaAction: formattedDelta.actionBody,
+    deltaStatus: (note.deltaStatus || 'none') as DeltaStatus,
+    chapter: typeof note.meta?.chapter === 'string' ? note.meta.chapter : '',
+  };
+}
 
 export const EditNoteModal: React.FC<EditNoteModalProps> = ({
   note,
@@ -67,6 +87,7 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
   const { archiveNote } = useArchiveActions();
   const [archiving, setArchiving] = useState(false);
   const [archiveConfirmOpen, setArchiveConfirmOpen] = useState(false);
+
   const baseId = useId();
   const headingId = `${baseId}-heading`;
   const titleId = `${baseId}-title`;
@@ -78,9 +99,6 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
   const quoteId = `${baseId}-quote`;
   const takeawayId = `${baseId}-takeaway`;
   const contextId = `${baseId}-context`;
-  const triggerId = `${baseId}-trigger`;
-  const actionId = `${baseId}-action`;
-  const deltaStatusId = `${baseId}-delta-status`;
   const critiqueId = `${baseId}-critique`;
   const chapterId = `${baseId}-chapter`;
 
@@ -100,34 +118,18 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
   const [deltaStatus, setDeltaStatus] = useState<DeltaStatus>('none');
   const [chapter, setChapter] = useState('');
   const [attachments, setAttachments] = useState<Attachment[]>([]);
-  const [draftRestored, setDraftRestored] = useState(false);
   const [baseUpdatedAt, setBaseUpdatedAt] = useState('');
-
-  const [attachMode, setAttachMode] = useState<'none' | 'doc' | 'link'>('none');
-  const [draftUrl, setDraftUrl] = useState('');
-  const [draftTitle, setDraftTitle] = useState('');
   const [uploadingImage, setUploadingImage] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [resetTick, setResetTick] = useState(0);
 
-  const [takeawayCursor, setTakeawayCursor] = useState<number | null>(null);
-  const [contextCursor, setContextCursor] = useState<number | null>(null);
-  const [critiqueCursor, setCritiqueCursor] = useState<number | null>(null);
-
-  const takeawayRef = useRef<HTMLTextAreaElement>(null);
-  const contextRef = useRef<HTMLTextAreaElement>(null);
-  const critiqueRef = useRef<HTMLTextAreaElement>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-
-  const wasOpenRef = useRef(false);
-  const initializedIdRef = useRef<string | null>(null);
-  const submittedOrDiscardedRef = useRef(false);
   /** R-4: stored attachments captured when the modal opened (stable merge base on save). */
   const openedAttachmentsRef = useRef<unknown[]>([]);
-  const canonicalRef = useRef({
+  const canonicalRef = useRef<EditNoteCanonical>({
     title: '',
     slug: '',
     pos: '0',
-    status: 'saved' as NoteStatus,
+    status: 'saved',
     quote: '',
     takeaway: '',
     tagsRaw: '',
@@ -136,75 +138,46 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
     critique: '',
     deltaTrigger: '',
     deltaAction: '',
-    deltaStatus: 'none' as DeltaStatus,
+    deltaStatus: 'none',
     chapter: '',
   });
 
-  const isDirty = useMemo(() => {
-    const c = canonicalRef.current;
-    return (
-      title !== c.title ||
-      slug !== c.slug ||
-      pos !== c.pos ||
-      status !== c.status ||
-      quote !== c.quote ||
-      takeaway !== c.takeaway ||
-      tagsRaw !== c.tagsRaw ||
-      isPrediction !== c.isPrediction ||
-      contextMechanism !== c.contextMechanism ||
-      critique !== c.critique ||
-      deltaTrigger !== c.deltaTrigger ||
-      deltaAction !== c.deltaAction ||
-      deltaStatus !== c.deltaStatus ||
-      chapter !== c.chapter
-    );
-  }, [
-    title,
-    slug,
-    pos,
-    status,
-    quote,
-    takeaway,
-    tagsRaw,
-    isPrediction,
-    contextMechanism,
-    critique,
-    deltaTrigger,
-    deltaAction,
-    deltaStatus,
-    chapter,
-  ]);
+  const applyFields = (vals: EditNoteCanonical) => {
+    setTitle(vals.title);
+    setSlug(vals.slug);
+    setPos(vals.pos);
+    setStatus(vals.status);
+    setQuote(vals.quote);
+    setTakeaway(vals.takeaway);
+    setTagsRaw(vals.tagsRaw);
+    setIsPrediction(vals.isPrediction);
+    setContextMechanism(vals.contextMechanism);
+    setCritique(vals.critique);
+    setDeltaTrigger(vals.deltaTrigger);
+    setDeltaAction(vals.deltaAction);
+    setDeltaStatus(vals.deltaStatus);
+    setChapter(vals.chapter);
+  };
 
-  const draftStateRef = useRef<{
-    key: string;
-    isDirty: boolean;
-    payload: EditNoteDraft;
-  }>({
-    key: '',
-    isDirty: false,
-    payload: {
-      baseUpdatedAt: '',
-      title: '',
-      slug: '',
-      pos: '0',
-      status: 'saved',
-      quote: '',
-      takeaway: '',
-      tagsRaw: '',
-      isPrediction: false,
-      contextMechanism: '',
-      critique: '',
-      deltaTrigger: '',
-      deltaAction: '',
-      deltaStatus: 'none',
-      chapter: '',
-      savedAt: '',
-    },
-  });
-  draftStateRef.current = {
-    key: note ? getEditNoteDraftKey(note.id) : '',
-    isDirty,
-    payload: {
+  const c = canonicalRef.current;
+  const isDirty =
+    title !== c.title ||
+    slug !== c.slug ||
+    pos !== c.pos ||
+    status !== c.status ||
+    quote !== c.quote ||
+    takeaway !== c.takeaway ||
+    tagsRaw !== c.tagsRaw ||
+    isPrediction !== c.isPrediction ||
+    contextMechanism !== c.contextMechanism ||
+    critique !== c.critique ||
+    deltaTrigger !== c.deltaTrigger ||
+    deltaAction !== c.deltaAction ||
+    deltaStatus !== c.deltaStatus ||
+    chapter !== c.chapter;
+
+  const draftPayload = useMemo<EditNoteDraft>(
+    () => ({
       baseUpdatedAt: baseUpdatedAt || note?.updatedAt || '',
       title,
       slug,
@@ -221,356 +194,124 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
       deltaStatus,
       chapter,
       savedAt: new Date().toISOString(),
-    },
-  };
+    }),
+    [
+      baseUpdatedAt,
+      chapter,
+      contextMechanism,
+      critique,
+      deltaAction,
+      deltaStatus,
+      deltaTrigger,
+      isPrediction,
+      note?.updatedAt,
+      pos,
+      quote,
+      slug,
+      status,
+      tagsRaw,
+      takeaway,
+      title,
+    ]
+  );
 
-  useEffect(() => {
-    if (!isOpen || !note) {
-      if (wasOpenRef.current && draftStateRef.current.key && !submittedOrDiscardedRef.current) {
-        if (draftStateRef.current.isDirty) {
-          writeDraft(draftStateRef.current.key, draftStateRef.current.payload);
-        } else {
-          clearDraft(draftStateRef.current.key);
-        }
-      }
-      wasOpenRef.current = false;
-      initializedIdRef.current = null;
-      submittedOrDiscardedRef.current = false;
-      return;
-    }
-    if (wasOpenRef.current && initializedIdRef.current === note.id) {
-      return;
-    }
-    wasOpenRef.current = true;
-    initializedIdRef.current = note.id;
-    submittedOrDiscardedRef.current = false;
-
-    const formattedDelta = formatWhenDoDisplay(note.deltaTrigger, note.deltaAction);
-    const canonical = {
-      title: note.meta?.title || '',
-      slug: note.slug,
-      pos: String(note.pos),
-      status: note.status,
-      quote: note.quote || '',
-      takeaway: note.takeaway || '',
-      tagsRaw: serializeTagsCsv(note.tags || []),
-      isPrediction: Boolean(note.meta?.isPrediction),
-      contextMechanism: note.contextMechanism || '',
-      critique: note.critique || '',
-      deltaTrigger: formattedDelta.triggerBody,
-      deltaAction: formattedDelta.actionBody,
-      deltaStatus: (note.deltaStatus || 'none') as DeltaStatus,
-      chapter: typeof note.meta?.chapter === 'string' ? note.meta.chapter : '',
-    };
-    canonicalRef.current = canonical;
-    setBaseUpdatedAt(note.updatedAt);
-
-    const draftKey = getEditNoteDraftKey(note.id);
-    const savedDraft = readDraft<EditNoteDraft>(draftKey);
-    if (savedDraft && isNoteDraftStale(savedDraft.baseUpdatedAt, note.updatedAt)) {
-      clearDraft(draftKey);
-    }
-
-    const validDraft =
-      savedDraft && !isNoteDraftStale(savedDraft.baseUpdatedAt, note.updatedAt) ? savedDraft : null;
-    const draftHasEdits =
-      validDraft &&
-      (validDraft.title !== canonical.title ||
-        validDraft.slug !== canonical.slug ||
-        validDraft.pos !== canonical.pos ||
-        validDraft.status !== canonical.status ||
-        validDraft.quote !== canonical.quote ||
-        validDraft.takeaway !== canonical.takeaway ||
-        validDraft.tagsRaw !== canonical.tagsRaw ||
-        validDraft.isPrediction !== canonical.isPrediction ||
-        validDraft.contextMechanism !== canonical.contextMechanism ||
-        validDraft.critique !== canonical.critique ||
-        validDraft.deltaTrigger !== canonical.deltaTrigger ||
-        validDraft.deltaAction !== canonical.deltaAction ||
-        validDraft.deltaStatus !== canonical.deltaStatus ||
-        (validDraft.chapter ?? canonical.chapter) !== canonical.chapter);
-
-    if (validDraft && draftHasEdits) {
-      setTitle(validDraft.title);
-      setSlug(validDraft.slug);
-      setPos(validDraft.pos);
-      setStatus(validDraft.status);
-      setQuote(validDraft.quote);
-      setTakeaway(validDraft.takeaway);
-      setTagsRaw(validDraft.tagsRaw);
-      setIsPrediction(Boolean(validDraft.isPrediction));
-      setContextMechanism(validDraft.contextMechanism);
-      setCritique(validDraft.critique);
-      setDeltaTrigger(validDraft.deltaTrigger);
-      setDeltaAction(validDraft.deltaAction);
-      setDeltaStatus(validDraft.deltaStatus || 'none');
-      setChapter(validDraft.chapter ?? canonical.chapter);
-      setDraftRestored(true);
-    } else {
-      setTitle(canonical.title);
-      setSlug(canonical.slug);
-      setPos(canonical.pos);
-      setStatus(canonical.status);
-      setQuote(canonical.quote);
-      setTakeaway(canonical.takeaway);
-      setTagsRaw(canonical.tagsRaw);
-      setIsPrediction(canonical.isPrediction);
-      setContextMechanism(canonical.contextMechanism);
-      setCritique(canonical.critique);
-      setDeltaTrigger(canonical.deltaTrigger);
-      setDeltaAction(canonical.deltaAction);
-      setDeltaStatus(canonical.deltaStatus);
-      setChapter(canonical.chapter);
-      setDraftRestored(false);
-    }
-
-    // Only renderable entries are editable; the rest are carried through on save.
-    openedAttachmentsRef.current = Array.isArray(note.meta?.attachments)
-      ? [...note.meta.attachments]
-      : [];
-    setAttachments(splitAttachments(openedAttachmentsRef.current).renderable);
-    setAttachMode('none');
-    setDraftUrl('');
-    setDraftTitle('');
-    setTakeawayCursor(null);
+  const resetSessionAttachments = (currentNote: Note) => {
+    const split = openEditableAttachments(currentNote.meta?.attachments);
+    openedAttachmentsRef.current = split.originalRaw;
+    setAttachments(split.renderable);
     setSlugError(null);
-    setContextCursor(null);
-    setCritiqueCursor(null);
-    setUploadingImage(false);
     setSubmitting(false);
-  }, [isOpen, note]);
-
-  // Debounced (250ms) draft autosave
-  useEffect(() => {
-    if (!isOpen || !note || !wasOpenRef.current) return;
-    if (isDirty) {
-      submittedOrDiscardedRef.current = false;
-    }
-    const key = getEditNoteDraftKey(note.id);
-    const timer = window.setTimeout(() => {
-      if (draftStateRef.current.isDirty) {
-        writeDraft(key, draftStateRef.current.payload);
-      } else {
-        clearDraft(key);
-      }
-    }, 250);
-    return () => window.clearTimeout(timer);
-  }, [
-    isOpen,
-    note,
-    isDirty,
-    title,
-    slug,
-    pos,
-    status,
-    quote,
-    takeaway,
-    tagsRaw,
-    isPrediction,
-    contextMechanism,
-    critique,
-    deltaTrigger,
-    deltaAction,
-    deltaStatus,
-    chapter,
-  ]);
-
-  useEffect(() => {
-    if (!isOpen || !isDirty) return;
-    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
-      if (draftStateRef.current.key && draftStateRef.current.isDirty) {
-        writeDraft(draftStateRef.current.key, draftStateRef.current.payload);
-      }
-      e.preventDefault();
-      e.returnValue = '';
-    };
-    window.addEventListener('beforeunload', handleBeforeUnload);
-    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
-  }, [isOpen, isDirty]);
-
-  const handleDiscardDraft = () => {
-    if (!note) return;
-    submittedOrDiscardedRef.current = true;
-    clearDraft(getEditNoteDraftKey(note.id));
-    const c = canonicalRef.current;
-    setTitle(c.title);
-    setSlug(c.slug);
-    setPos(c.pos);
-    setStatus(c.status);
-    setQuote(c.quote);
-    setTakeaway(c.takeaway);
-    setTagsRaw(c.tagsRaw);
-    setIsPrediction(c.isPrediction);
-    setContextMechanism(c.contextMechanism);
-    setCritique(c.critique);
-    setDeltaTrigger(c.deltaTrigger);
-    setDeltaAction(c.deltaAction);
-    setDeltaStatus(c.deltaStatus);
-    setChapter(c.chapter);
-    setDraftRestored(false);
+    setResetTick(t => t + 1);
   };
+
+  const { draftRestored, markSubmitted, discardDraft } = useModalDraft<EditNoteDraft>({
+    isOpen: isOpen && Boolean(note),
+    sessionId: note?.id ?? null,
+    draftKey: note ? getEditNoteDraftKey(note.id) : '',
+    isDirty,
+    payload: draftPayload,
+    currentUpdatedAt: note?.updatedAt,
+    getBaseUpdatedAt: d => d.baseUpdatedAt,
+    canRestore: validDraft => {
+      if (!note) return false;
+      const c = buildCanonical(note);
+      return (
+        validDraft.title !== c.title ||
+        validDraft.slug !== c.slug ||
+        validDraft.pos !== c.pos ||
+        validDraft.status !== c.status ||
+        validDraft.quote !== c.quote ||
+        validDraft.takeaway !== c.takeaway ||
+        validDraft.tagsRaw !== c.tagsRaw ||
+        validDraft.isPrediction !== c.isPrediction ||
+        validDraft.contextMechanism !== c.contextMechanism ||
+        validDraft.critique !== c.critique ||
+        validDraft.deltaTrigger !== c.deltaTrigger ||
+        validDraft.deltaAction !== c.deltaAction ||
+        validDraft.deltaStatus !== c.deltaStatus ||
+        (validDraft.chapter ?? c.chapter) !== c.chapter
+      );
+    },
+    onRestore: validDraft => {
+      if (!note) return;
+      const c = buildCanonical(note);
+      canonicalRef.current = c;
+      setBaseUpdatedAt(note.updatedAt);
+      applyFields({
+        title: validDraft.title,
+        slug: validDraft.slug,
+        pos: validDraft.pos,
+        status: validDraft.status,
+        quote: validDraft.quote,
+        takeaway: validDraft.takeaway,
+        tagsRaw: validDraft.tagsRaw,
+        isPrediction: Boolean(validDraft.isPrediction),
+        contextMechanism: validDraft.contextMechanism,
+        critique: validDraft.critique,
+        deltaTrigger: validDraft.deltaTrigger,
+        deltaAction: validDraft.deltaAction,
+        deltaStatus: validDraft.deltaStatus || 'none',
+        chapter: validDraft.chapter ?? c.chapter,
+      });
+      resetSessionAttachments(note);
+    },
+    onInitCanonical: () => {
+      if (!note) return;
+      const c = buildCanonical(note);
+      canonicalRef.current = c;
+      setBaseUpdatedAt(note.updatedAt);
+      applyFields(c);
+      resetSessionAttachments(note);
+    },
+    onDiscard: () => {
+      applyFields(canonicalRef.current);
+      setSlugError(null);
+    },
+  });
 
   const book = useMemo(
     () => (note ? books.find(b => b.id === note.bookId) || null : null),
     [books, note]
   );
 
-  const otherActiveCount = useMemo(() => {
-    if (!note) return 0;
-    return countOtherActiveDeltas(notes, note.id);
-  }, [note, notes]);
-
-  const isDeltaCapViolation = otherActiveCount >= 5 && deltaStatus === 'active';
-
-  const attachUrl = useCallback(
-    async (rawUrl: string, explicitTitle?: string) => {
-      const trimmed = rawUrl.trim();
-      if (!trimmed || !HTTP_URL_REGEX.test(trimmed)) {
-        showToast('Enter a valid http(s) URL', 'error');
-        return false;
-      }
-      if (attachments.length >= 3) {
-        showToast('Maximum 3 attachments per note', 'error');
-        return false;
-      }
-
-      const docMatch = trimmed.match(DOC_URL_REGEX);
-      if (docMatch) {
-        const docId = docMatch[1];
-        const attId = createUuid();
-        const initialTitle = explicitTitle?.trim() || 'Google Doc';
-        setAttachments(prev => {
-          if (prev.length >= 3) return prev;
-          return [
-            ...prev,
-            {
-              id: attId,
-              type: 'doc',
-              title: initialTitle,
-              url: trimmed,
-              docId,
-            },
-          ];
-        });
-        if (!explicitTitle?.trim()) {
-          resolveDocTitle(docId)
-            .then(resolved => {
-              if (!resolved) return;
-              setAttachments(prev =>
-                prev.map(a => (a.id === attId && a.type === 'doc' ? { ...a, title: resolved } : a))
-              );
-            })
-            .catch(() => {});
-        }
-        return true;
-      }
-
-      let fallbackTitle = explicitTitle?.trim() || '';
-      if (!fallbackTitle) {
-        try {
-          fallbackTitle = new URL(trimmed).hostname;
-        } catch {
-          fallbackTitle = trimmed;
-        }
-      }
-      setAttachments(prev => {
-        if (prev.length >= 3) return prev;
-        return [
-          ...prev,
-          {
-            id: createUuid(),
-            type: 'link',
-            title: fallbackTitle,
-            url: trimmed,
-          },
-        ];
-      });
-      return true;
-    },
-    [attachments.length, resolveDocTitle]
+  const otherActiveCount = useMemo(
+    () => (note ? countOtherActiveDeltas(notes, note.id) : 0),
+    [note, notes]
   );
-
-  const handleImageFile = useCallback(
-    async (file: File | Blob) => {
-      if (attachments.length >= 3) {
-        showToast('Maximum 3 attachments per note', 'error');
-        return;
-      }
-      setUploadingImage(true);
-      try {
-        const uploaded = await uploadImageAttachment(file);
-        setAttachments(prev => {
-          if (prev.length >= 3) {
-            showToast('Maximum 3 attachments per note', 'error');
-            return prev;
-          }
-          return [...prev, uploaded];
-        });
-      } catch (err) {
-        showToast(describeSyncError(err, 'Failed to compress/attach image'), 'error');
-      } finally {
-        setUploadingImage(false);
-      }
-    },
-    [attachments.length, uploadImageAttachment]
-  );
-
-  useEffect(() => {
-    if (!isOpen) return;
-    const handlePaste = (e: ClipboardEvent) => {
-      const items = e.clipboardData?.items;
-      if (items) {
-        for (let i = 0; i < items.length; i += 1) {
-          const item = items[i];
-          if (item.type.startsWith('image/')) {
-            const file = item.getAsFile();
-            if (file) {
-              e.preventDefault();
-              void handleImageFile(file);
-              return;
-            }
-          }
-        }
-      }
-
-      const text = e.clipboardData?.getData('text/plain')?.trim() || '';
-      if (text && HTTP_URL_REGEX.test(text)) {
-        const active = document.activeElement as HTMLElement | null;
-        const isTypingInInput =
-          active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement;
-        if (!isTypingInInput) {
-          e.preventDefault();
-          void attachUrl(text).then(ok => {
-            if (ok) {
-              setAttachMode('none');
-              setDraftUrl('');
-              setDraftTitle('');
-            }
-          });
-        }
-      }
-    };
-
-    window.addEventListener('paste', handlePaste);
-    return () => window.removeEventListener('paste', handlePaste);
-  }, [attachUrl, handleImageFile, isOpen]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!note) return;
 
-    if (isDeltaCapViolation) {
-      showToast(
-        'Active Behavioral Delta cap (5/5) reached. Graduate or pause an active delta first.',
-        'error'
-      );
-      return;
-    }
-
-    const normalizedTrigger = normalizeDeltaTrigger(deltaTrigger);
-    const normalizedAction = normalizeDeltaAction(deltaAction);
-    if (deltaStatus === 'active' && !normalizedTrigger && !normalizedAction) {
-      showToast('Enter a WHEN trigger or DO action to keep a delta active.', 'error');
+    const deltaCheck = validateDeltaForSave({
+      deltaTrigger,
+      deltaAction,
+      deltaStatus,
+      otherActiveCount,
+      emptyActiveMessage: 'Enter a WHEN trigger or DO action to keep a delta active.',
+    });
+    if (!deltaCheck.ok) {
+      showToast(deltaCheck.error, 'error');
       return;
     }
 
@@ -582,24 +323,22 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
 
     setSubmitting(true);
     try {
-      // CD 3 fix-up R2#1: explicit slug edits are validated (no silent -2 suffix).
       const slugEdit = resolveSlugEdit({
         rawSlug: slug,
         title,
         originalSlug: note.slug,
-        taken: takenSlugs(notes, note.id), // CD C3.2: other notes' aliases are taken too
+        taken: takenSlugs(notes, note.id),
       });
       if (slugEdit.error) {
         setSlugError(slugEdit.error);
         setSubmitting(false);
         return;
       }
-      const nextSlug = slugEdit.slug;
 
       const saved = await updateNote(
         {
           ...note,
-          slug: nextSlug,
+          slug: slugEdit.slug,
           pos: parsedPos,
           normalizedPos,
           status,
@@ -608,17 +347,13 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
           takeaway: takeaway.trim(),
           contextMechanism: contextMechanism.trim(),
           critique: critique.trim(),
-          deltaTrigger: normalizedTrigger,
-          deltaAction: normalizedAction,
+          deltaTrigger: deltaCheck.normalizedTrigger,
+          deltaAction: deltaCheck.normalizedAction,
           deltaStatus,
           meta: {
             ...withChapterKey(note.meta, 'chapter', chapter),
             ...(title.trim() ? { title: title.trim() } : { title: undefined }),
-            // R-4: merge against the list captured at open, keeping stored order.
-            attachments: mergeEditedAttachments(
-              openedAttachmentsRef.current,
-              attachments.slice(0, 3)
-            ),
+            attachments: saveEditedAttachments(openedAttachmentsRef.current, attachments),
             ...(book?.kind === 'fiction' ? { isPrediction } : {}),
           },
         },
@@ -629,10 +364,7 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
         }
       );
 
-      submittedOrDiscardedRef.current = true;
-      clearDraft(getEditNoteDraftKey(note.id));
-      setDraftRestored(false);
-      // CD C3.2 / OQ-6: alias-only rename copy (no link rewrite in this phase).
+      markSubmitted();
       showToast(
         saved.slug !== note.slug
           ? `Renamed to [[${saved.slug}]]. [[${note.slug}]] still works.`
@@ -648,7 +380,6 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
     }
   };
 
-  // C1.1: archive the note as stored (unsaved form edits are discarded with the modal).
   const runArchive = async () => {
     if (!note) return;
     setArchiving(true);
@@ -656,14 +387,17 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
     setArchiving(false);
     setArchiveConfirmOpen(false);
     if (!saved) return;
-    submittedOrDiscardedRef.current = true;
-    clearDraft(getEditNoteDraftKey(note.id));
+    markSubmitted();
     onClose();
     const hash = window.location.hash;
-    if (hash.startsWith(`#/note/${encodeURIComponent(note.slug)}`) || hash.startsWith(`#/note/${encodeURIComponent(note.id)}`)) {
+    if (
+      hash.startsWith(`#/note/${encodeURIComponent(note.slug)}`) ||
+      hash.startsWith(`#/note/${encodeURIComponent(note.id)}`)
+    ) {
       navigateTo('#/notes');
     }
   };
+
   const requestArchive = () => {
     if (note?.deltaStatus === 'active') setArchiveConfirmOpen(true);
     else void runArchive();
@@ -671,9 +405,8 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
 
   if (!note) return null;
 
-  const atLimit = attachments.length >= 3;
-
   return (
+    <>
     <Modal
       isOpen={isOpen}
       onClose={onClose}
@@ -689,33 +422,12 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
           </h2>
           {book && <p className="text-label text-muted-foreground truncate">{book.title}</p>}
         </div>
-        <button
-          type="button"
-          onClick={onClose}
-          aria-label="Close"
-          className="min-w-11 min-h-11 sm:min-w-0 sm:min-h-0 p-1.5 rounded-[8px] inline-flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-surface2 shrink-0"
-        >
+        <button type="button" onClick={onClose} aria-label="Close" className={MODAL_CLOSE_BTN}>
           <X className="w-4 h-4" />
         </button>
       </div>
 
-      {draftRestored && (
-        <div
-          data-testid="draft-restored-banner"
-          className="mb-4 px-3 py-2 rounded-[10px] bg-surface2 border border-border flex items-center justify-between gap-2 text-label"
-        >
-          <span className="text-foreground">Draft restored from earlier session</span>
-          <button
-            type="button"
-            data-testid="draft-discard-btn"
-            onClick={handleDiscardDraft}
-            className="min-h-11 sm:min-h-0 px-2 sm:px-0 inline-flex items-center gap-1 font-semibold text-muted-foreground hover:text-foreground"
-          >
-            <RotateCcw className="w-3 h-3" />
-            <span>Discard</span>
-          </button>
-        </div>
-      )}
+      <DraftRestoredBanner visible={draftRestored} onDiscard={discardDraft} />
 
       <form
         onSubmit={e => void handleSubmit(e)}
@@ -729,7 +441,7 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
       >
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <div className="space-y-1.5">
-            <label htmlFor={titleId} className="block text-eyebrow uppercase text-muted-foreground">
+            <label htmlFor={titleId} className={FIELD_LABEL}>
               Title
             </label>
             <input
@@ -739,12 +451,12 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
               value={title}
               onChange={e => setTitle(e.target.value)}
               placeholder="Optional note title..."
-              className="w-full h-11 sm:h-10 px-3 rounded-[10px] bg-background border border-input text-base sm:text-body text-foreground placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-ring/40"
+              className={INPUT}
             />
           </div>
 
           <div className="space-y-1.5">
-            <label htmlFor={slugId} className="block text-eyebrow uppercase text-muted-foreground">
+            <label htmlFor={slugId} className={FIELD_LABEL}>
               Slug
             </label>
             <input
@@ -762,7 +474,12 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
               className="w-full h-11 sm:h-10 px-3 rounded-[10px] bg-background border border-input font-mono text-base sm:text-label text-foreground focus:outline-none focus:ring-2 focus:ring-ring/40"
             />
             {slugError && (
-              <p id={`${slugId}-error`} role="alert" data-testid="edit-note-slug-error" className="text-label text-negative">
+              <p
+                id={`${slugId}-error`}
+                role="alert"
+                data-testid="edit-note-slug-error"
+                className="text-label text-negative"
+              >
                 {slugError}
               </p>
             )}
@@ -771,7 +488,7 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
 
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
           <div className="space-y-1.5">
-            <label htmlFor={posId} className="block text-eyebrow uppercase text-muted-foreground">
+            <label htmlFor={posId} className={FIELD_LABEL}>
               Position ({(book?.posUnit || 'page').toUpperCase()})
             </label>
             <input
@@ -782,15 +499,12 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
               data-testid="edit-note-pos-input"
               value={pos}
               onChange={e => setPos(e.target.value)}
-              className="w-full h-11 sm:h-10 px-3 rounded-[10px] bg-background border border-input text-base sm:text-body text-foreground num focus:outline-none focus:ring-2 focus:ring-ring/40"
+              className={`${INPUT} num`}
             />
           </div>
 
           <div className="space-y-1.5">
-            <label
-              htmlFor={statusId}
-              className="block text-eyebrow uppercase text-muted-foreground"
-            >
+            <label htmlFor={statusId} className={FIELD_LABEL}>
               Status
             </label>
             <select
@@ -798,7 +512,7 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
               data-testid="edit-note-status-select"
               value={status}
               onChange={e => setStatus(e.target.value as NoteStatus)}
-              className="w-full h-11 sm:h-10 px-2.5 rounded-[10px] bg-background border border-input text-base sm:text-body text-foreground focus:outline-none focus:ring-2 focus:ring-ring/40"
+              className={SELECT}
             >
               <option value="saved">Saved</option>
               <option value="inbox">Inbox (To Spar)</option>
@@ -808,7 +522,7 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
           </div>
 
           <div className="space-y-1.5">
-            <label htmlFor={tagsId} className="block text-eyebrow uppercase text-muted-foreground">
+            <label htmlFor={tagsId} className={FIELD_LABEL}>
               Tags (CSV)
             </label>
             <input
@@ -818,13 +532,13 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
               value={tagsRaw}
               onChange={e => setTagsRaw(e.target.value)}
               placeholder="#systems, #favorites"
-              className="w-full h-11 sm:h-10 px-3 rounded-[10px] bg-background border border-input text-base sm:text-body text-foreground focus:outline-none focus:ring-2 focus:ring-ring/40"
+              className={INPUT}
             />
           </div>
         </div>
 
         <div className="space-y-1.5">
-          <label htmlFor={chapterId} className="block text-eyebrow uppercase text-muted-foreground">
+          <label htmlFor={chapterId} className={FIELD_LABEL}>
             Chapter / Story (Optional)
           </label>
           <input
@@ -836,7 +550,7 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
             value={chapter}
             onChange={e => setChapter(e.target.value)}
             placeholder="e.g. Ch. 3: Run · or a story title"
-            className="w-full h-11 sm:h-10 px-3 rounded-[10px] bg-background border border-input text-base sm:text-body text-foreground placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-ring/40"
+            className={INPUT}
           />
         </div>
 
@@ -858,7 +572,7 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
         )}
 
         <div className="space-y-1.5">
-          <label htmlFor={quoteId} className="block text-eyebrow uppercase text-muted-foreground">
+          <label htmlFor={quoteId} className={FIELD_LABEL}>
             Verbatim Quote
           </label>
           <textarea
@@ -871,320 +585,68 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
           />
         </div>
 
-        <div className="space-y-1.5 relative">
-          <label
-            htmlFor={takeawayId}
-            className="block text-eyebrow uppercase text-muted-foreground"
-          >
-            Core Takeaway / Why I Liked It (supports [[wikilinks]])
-          </label>
-          <textarea
-            id={takeawayId}
-            ref={takeawayRef}
-            rows={3}
-            data-testid="edit-note-takeaway-input"
-            value={takeaway}
-            onChange={e => {
-              setTakeaway(e.target.value);
-              setTakeawayCursor(e.target.selectionStart);
-            }}
-            onClick={e => setTakeawayCursor(e.currentTarget.selectionStart)}
-            onKeyUp={e => setTakeawayCursor(e.currentTarget.selectionStart)}
-            onBlur={() => setTakeawayCursor(null)}
-            className="w-full p-3 rounded-[10px] bg-background border border-input text-base sm:text-body text-foreground focus:outline-none focus:ring-2 focus:ring-ring/40 resize-y"
-          />
-          <WikilinkAutocomplete
-            textareaRef={takeawayRef}
-            value={takeaway}
-            cursorPos={takeawayCursor}
-            notes={notes}
-            books={books}
-            excludeNoteId={note.id}
-            excludeSlug={note.slug}
-            onSelect={(nextVal, nextCursor) => {
-              setTakeaway(nextVal);
-              setTakeawayCursor(nextCursor);
-            }}
-          />
-        </div>
+        <WikilinkTextarea
+          id={takeawayId}
+          rows={3}
+          dataTestId="edit-note-takeaway-input"
+          label="Core Takeaway / Why I Liked It (supports [[wikilinks]])"
+          value={takeaway}
+          onValueChange={setTakeaway}
+          notes={notes}
+          books={books}
+          excludeNoteId={note.id}
+          excludeSlug={note.slug}
+          resetKey={resetTick}
+        />
 
-        <div className="space-y-1.5 relative">
-          <label
-            htmlFor={contextId}
-            className="block text-eyebrow uppercase text-muted-foreground"
-          >
-            Context &amp; Mechanism (supports [[wikilinks]])
-          </label>
-          <textarea
-            id={contextId}
-            ref={contextRef}
-            rows={2}
-            data-testid="edit-note-context-input"
-            value={contextMechanism}
-            onChange={e => {
-              setContextMechanism(e.target.value);
-              setContextCursor(e.target.selectionStart);
-            }}
-            onClick={e => setContextCursor(e.currentTarget.selectionStart)}
-            onKeyUp={e => setContextCursor(e.currentTarget.selectionStart)}
-            onBlur={() => setContextCursor(null)}
-            className="w-full p-3 rounded-[10px] bg-background border border-input text-base sm:text-body text-foreground focus:outline-none focus:ring-2 focus:ring-ring/40 resize-y"
-          />
-          <WikilinkAutocomplete
-            textareaRef={contextRef}
-            value={contextMechanism}
-            cursorPos={contextCursor}
-            notes={notes}
-            books={books}
-            excludeNoteId={note.id}
-            excludeSlug={note.slug}
-            onSelect={(nextVal, nextCursor) => {
-              setContextMechanism(nextVal);
-              setContextCursor(nextCursor);
-            }}
-          />
-        </div>
+        <WikilinkTextarea
+          id={contextId}
+          rows={2}
+          dataTestId="edit-note-context-input"
+          label="Context & Mechanism (supports [[wikilinks]])"
+          value={contextMechanism}
+          onValueChange={setContextMechanism}
+          notes={notes}
+          books={books}
+          excludeNoteId={note.id}
+          excludeSlug={note.slug}
+          resetKey={resetTick}
+        />
 
-        {/* Delta Fields */}
-        <div className="rounded-[12px] bg-surface2/50 border border-border p-4 space-y-3">
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <div className="space-y-1">
-              <label
-                htmlFor={triggerId}
-                className="block text-[11px] font-semibold uppercase text-muted-foreground"
-              >
-                WHEN Trigger
-              </label>
-              <input
-                id={triggerId}
-                type="text"
-                data-testid="edit-note-trigger-input"
-                value={deltaTrigger}
-                onChange={e => setDeltaTrigger(e.target.value)}
-                className="w-full h-11 sm:h-9 px-3 rounded-[8px] bg-background border border-input text-base sm:text-body text-foreground focus:outline-none focus:ring-2 focus:ring-ring/40"
-              />
-            </div>
-            <div className="space-y-1">
-              <label
-                htmlFor={actionId}
-                className="block text-[11px] font-semibold uppercase text-muted-foreground"
-              >
-                DO Action
-              </label>
-              <input
-                id={actionId}
-                type="text"
-                data-testid="edit-note-action-input"
-                value={deltaAction}
-                onChange={e => setDeltaAction(e.target.value)}
-                className="w-full h-11 sm:h-9 px-3 rounded-[8px] bg-background border border-input text-base sm:text-body text-foreground focus:outline-none focus:ring-2 focus:ring-ring/40"
-              />
-            </div>
-          </div>
+        <DeltaFieldsSection
+          variant="edit"
+          deltaTrigger={deltaTrigger}
+          onTriggerChange={setDeltaTrigger}
+          deltaAction={deltaAction}
+          onActionChange={setDeltaAction}
+          deltaStatus={deltaStatus}
+          onStatusChange={setDeltaStatus}
+          otherActiveCount={otherActiveCount}
+        />
 
-          <div className="flex flex-wrap items-center gap-3">
-            <label htmlFor={deltaStatusId} className="sr-only">
-              Delta Status
-            </label>
-            <select
-              id={deltaStatusId}
-              data-testid="edit-note-delta-status-select"
-              value={deltaStatus}
-              onChange={e => setDeltaStatus(e.target.value as DeltaStatus)}
-              className="h-11 sm:h-9 px-2.5 rounded-[8px] bg-background border border-input text-base sm:text-body text-foreground focus:outline-none focus:ring-2 focus:ring-ring/40"
-            >
-              <option value="none">None</option>
-              <option value="active">Active (Practice)</option>
-              <option value="paused">Paused</option>
-              <option value="graduated">Graduated</option>
-            </select>
-            <span className="text-[11px] text-muted-foreground num">
-              Other active deltas: {otherActiveCount}/5
-            </span>
-          </div>
+        <WikilinkTextarea
+          id={critiqueId}
+          rows={2}
+          dataTestId="edit-note-critique-input"
+          label="Critique & Boundary Conditions (supports [[wikilinks]])"
+          value={critique}
+          onValueChange={setCritique}
+          notes={notes}
+          books={books}
+          excludeNoteId={note.id}
+          excludeSlug={note.slug}
+          resetKey={resetTick}
+        />
 
-          {isDeltaCapViolation && (
-            <div
-              data-testid="deepen-delta-cap-warning"
-              className="rounded-[10px] bg-negative/10 border border-negative/30 px-3 py-2 flex items-start gap-2 text-label text-negative"
-            >
-              <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
-              <span>Active Behavioral Delta cap (5/5) reached.</span>
-            </div>
-          )}
-        </div>
-
-        <div className="space-y-1.5 relative">
-          <label
-            htmlFor={critiqueId}
-            className="block text-eyebrow uppercase text-muted-foreground"
-          >
-            Critique &amp; Boundary Conditions (supports [[wikilinks]])
-          </label>
-          <textarea
-            id={critiqueId}
-            ref={critiqueRef}
-            rows={2}
-            data-testid="edit-note-critique-input"
-            value={critique}
-            onChange={e => {
-              setCritique(e.target.value);
-              setCritiqueCursor(e.target.selectionStart);
-            }}
-            onClick={e => setCritiqueCursor(e.currentTarget.selectionStart)}
-            onKeyUp={e => setCritiqueCursor(e.currentTarget.selectionStart)}
-            onBlur={() => setCritiqueCursor(null)}
-            className="w-full p-3 rounded-[10px] bg-background border border-input text-base sm:text-body text-foreground focus:outline-none focus:ring-2 focus:ring-ring/40 resize-y"
-          />
-          <WikilinkAutocomplete
-            textareaRef={critiqueRef}
-            value={critique}
-            cursorPos={critiqueCursor}
-            notes={notes}
-            books={books}
-            excludeNoteId={note.id}
-            excludeSlug={note.slug}
-            onSelect={(nextVal, nextCursor) => {
-              setCritique(nextVal);
-              setCritiqueCursor(nextCursor);
-            }}
-          />
-        </div>
-
-        {/* Attachments Manager */}
-        <div className="space-y-2 pt-2 border-t border-border/60">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <span className="text-eyebrow uppercase text-muted-foreground num">
-              Attachments ({attachments.length}/3)
-            </span>
-
-            <div className="flex items-center gap-2">
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept="image/*"
-                aria-label="Upload image attachment"
-                className="hidden"
-                onChange={e => {
-                  const file = e.target.files?.[0];
-                  if (file) void handleImageFile(file);
-                  e.target.value = '';
-                }}
-              />
-              <button
-                type="button"
-                disabled={atLimit || uploadingImage}
-                onClick={() => fileInputRef.current?.click()}
-                className="h-11 sm:h-8 px-3 sm:px-2.5 rounded-[8px] border border-border bg-surface2/60 hover:bg-surface2 text-label font-medium text-foreground inline-flex items-center gap-1.5 disabled:opacity-40"
-              >
-                {uploadingImage ? (
-                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                ) : (
-                  <ImageIcon className="w-3.5 h-3.5" />
-                )}
-                <span>Photo</span>
-              </button>
-              <button
-                type="button"
-                disabled={atLimit}
-                onClick={() => {
-                  setAttachMode(prev => (prev === 'doc' ? 'none' : 'doc'));
-                  setDraftUrl('');
-                  setDraftTitle('');
-                }}
-                className="h-11 sm:h-8 px-3 sm:px-2.5 rounded-[8px] border border-border bg-surface2/60 hover:bg-surface2 text-label font-medium text-foreground inline-flex items-center gap-1.5 disabled:opacity-40"
-              >
-                <FileText className="w-3.5 h-3.5" />
-                <span>Doc</span>
-              </button>
-              <button
-                type="button"
-                disabled={atLimit}
-                onClick={() => {
-                  setAttachMode(prev => (prev === 'link' ? 'none' : 'link'));
-                  setDraftUrl('');
-                  setDraftTitle('');
-                }}
-                className="h-11 sm:h-8 px-3 sm:px-2.5 rounded-[8px] border border-border bg-surface2/60 hover:bg-surface2 text-label font-medium text-foreground inline-flex items-center gap-1.5 disabled:opacity-40"
-              >
-                <Link2 className="w-3.5 h-3.5" />
-                <span>Link</span>
-              </button>
-            </div>
-          </div>
-
-          {attachMode !== 'none' && (
-            <div className="p-3 rounded-[10px] bg-surface2/50 border border-border flex flex-col sm:flex-row gap-2">
-              <input
-                type="url"
-                aria-label="Attachment URL"
-                value={draftUrl}
-                onChange={e => setDraftUrl(e.target.value)}
-                placeholder="https://..."
-                className="flex-1 h-11 sm:h-9 px-3 rounded-[8px] bg-background border border-input text-base sm:text-label text-foreground focus:outline-none focus:ring-2 focus:ring-ring/40"
-              />
-              <input
-                type="text"
-                enterKeyHint="done"
-                aria-label="Attachment title"
-                value={draftTitle}
-                onChange={e => setDraftTitle(e.target.value)}
-                placeholder="Title (optional)"
-                className="sm:w-36 h-11 sm:h-9 px-3 rounded-[8px] bg-background border border-input text-base sm:text-label text-foreground focus:outline-none focus:ring-2 focus:ring-ring/40"
-              />
-              <button
-                type="button"
-                onClick={() => {
-                  void attachUrl(draftUrl, draftTitle).then(ok => {
-                    if (ok) {
-                      setAttachMode('none');
-                      setDraftUrl('');
-                      setDraftTitle('');
-                    }
-                  });
-                }}
-                className="h-11 sm:h-9 px-3 rounded-[8px] bg-primary text-primary-foreground text-label font-semibold whitespace-nowrap"
-              >
-                Attach
-              </button>
-            </div>
-          )}
-
-          {attachments.length > 0 && (
-            <div className="space-y-1.5">
-              {attachments.map(att => (
-                <div
-                  key={att.id}
-                  className="flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-[8px] bg-surface2 border border-border text-label"
-                >
-                  <div className="flex items-center gap-2 min-w-0">
-                    {att.type === 'image' ? (
-                      <DriveImage
-                        attachment={att}
-                        className="w-8 h-8 rounded object-cover shrink-0 border border-border"
-                      />
-                    ) : att.type === 'doc' ? (
-                      <FileText className="w-4 h-4 text-muted-foreground shrink-0" />
-                    ) : (
-                      <Link2 className="w-4 h-4 text-muted-foreground shrink-0" />
-                    )}
-                    <span className="truncate font-medium text-foreground">
-                      {att.type === 'image' ? att.fileName : att.title}
-                    </span>
-                  </div>
-                  <button
-                    type="button"
-                    aria-label={`Remove ${att.type === 'image' ? att.fileName : att.title}`}
-                    onClick={() => setAttachments(prev => prev.filter(a => a.id !== att.id))}
-                    className="min-w-11 min-h-11 sm:min-w-0 sm:min-h-0 p-1 inline-flex items-center justify-center text-muted-foreground hover:text-negative shrink-0"
-                  >
-                    <X className="w-3.5 h-3.5" />
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
+        <AttachmentManager
+          isOpen={isOpen}
+          attachments={attachments}
+          onChange={setAttachments}
+          uploadImageAttachment={uploadImageAttachment}
+          resolveDocTitle={resolveDocTitle}
+          onUploadingChange={setUploadingImage}
+          resetKey={resetTick}
+        />
 
         <div className="flex flex-wrap items-center justify-between gap-2 pt-2">
           <div>
@@ -1202,11 +664,7 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
             )}
           </div>
           <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={onClose}
-              className="h-11 sm:h-10 px-4 rounded-[10px] text-body font-medium text-muted-foreground hover:text-foreground hover:bg-surface2"
-            >
+            <button type="button" onClick={onClose} className={BTN_GHOST_LG}>
               Cancel
             </button>
             <button
@@ -1220,16 +678,17 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
           </div>
         </div>
       </form>
-      <ConfirmDialog
-        isOpen={archiveConfirmOpen}
-        tone="default"
-        title={ARCHIVE_ACTIVE_DELTA_COPY.title}
-        body={ARCHIVE_ACTIVE_DELTA_COPY.body}
-        confirmLabel={ARCHIVE_ACTIVE_DELTA_COPY.confirm}
-        busy={archiving}
-        onCancel={() => setArchiveConfirmOpen(false)}
-        onConfirm={() => void runArchive()}
-      />
     </Modal>
+    <ConfirmDialog
+      isOpen={archiveConfirmOpen}
+      tone="default"
+      title={ARCHIVE_ACTIVE_DELTA_COPY.title}
+      body={ARCHIVE_ACTIVE_DELTA_COPY.body}
+      confirmLabel={ARCHIVE_ACTIVE_DELTA_COPY.confirm}
+      busy={archiving}
+      onCancel={() => setArchiveConfirmOpen(false)}
+      onConfirm={() => void runArchive()}
+    />
+    </>
   );
 };

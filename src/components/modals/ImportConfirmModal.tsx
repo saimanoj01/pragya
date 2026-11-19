@@ -6,6 +6,7 @@ import { getLocalDateString } from '../../utils/sessionCoalesce';
 import { buildSnapshot } from '../../utils/snapshot';
 import { showToast } from '../../utils/toast';
 import { Modal } from '../common/Modal';
+import { BTN_GHOST_LG, MODAL_CLOSE_BTN } from '../common/uiClasses';
 import { describeSyncError } from '../../utils/apiErrors';
 
 export interface ImportConfirmModalProps {
@@ -66,12 +67,7 @@ export const ImportConfirmModal: React.FC<ImportConfirmModalProps> = ({
             Import Snapshot
           </h2>
         </div>
-        <button
-          type="button"
-          onClick={onClose}
-          aria-label="Close"
-          className="min-w-11 min-h-11 sm:min-w-0 sm:min-h-0 p-1.5 rounded-[8px] inline-flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-surface2"
-        >
+        <button type="button" onClick={onClose} aria-label="Close" className={MODAL_CLOSE_BTN}>
           <X className="w-4 h-4" />
         </button>
       </div>
@@ -123,11 +119,7 @@ export const ImportConfirmModal: React.FC<ImportConfirmModalProps> = ({
           </div>
 
           <div className="flex items-center justify-end gap-2 pt-2">
-            <button
-              type="button"
-              onClick={onClose}
-              className="h-11 sm:h-10 px-4 rounded-[10px] text-body font-medium text-muted-foreground hover:text-foreground hover:bg-surface2"
-            >
+            <button type="button" onClick={onClose} className={BTN_GHOST_LG}>
               Cancel
             </button>
             <button

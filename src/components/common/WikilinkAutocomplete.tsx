@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import type { Book, Note } from '../../types/pragya';
 import { filterWikilinkCandidates } from '../../utils/noteVisibility';
+import { applyWikilinkSelection, getActiveWikilinkMatch } from '../../utils/wikilinks';
 
 export interface WikilinkAutocompleteProps {
   textareaRef: React.RefObject<HTMLTextAreaElement | null>;
@@ -11,36 +12,6 @@ export interface WikilinkAutocompleteProps {
   excludeNoteId?: string;
   excludeSlug?: string;
   onSelect: (nextValue: string, nextCursorPos: number) => void;
-}
-
-export interface ActiveWikilinkMatch {
-  query: string;
-  startIndex: number;
-  endIndex: number;
-}
-
-export function getActiveWikilinkMatch(
-  value: string,
-  cursorPos: number | null
-): ActiveWikilinkMatch | null {
-  if (cursorPos === null || cursorPos < 2 || cursorPos > value.length) {
-    return null;
-  }
-
-  const beforeCursor = value.slice(0, cursorPos);
-  const openIdx = beforeCursor.lastIndexOf('[[');
-  if (openIdx === -1) return null;
-
-  const between = beforeCursor.slice(openIdx + 2);
-  if (between.includes(']]') || between.includes('\n')) {
-    return null;
-  }
-
-  return {
-    query: between,
-    startIndex: openIdx,
-    endIndex: cursorPos,
-  };
 }
 
 export const WikilinkAutocomplete: React.FC<WikilinkAutocompleteProps> = ({
@@ -147,12 +118,7 @@ export const WikilinkAutocomplete: React.FC<WikilinkAutocompleteProps> = ({
   const applySelection = useCallback(
     (targetSlug: string) => {
       if (!match) return;
-      const before = value.slice(0, match.startIndex);
-      const rawAfter = value.slice(match.endIndex);
-      const after = rawAfter.startsWith(']]') ? rawAfter.slice(2) : rawAfter;
-      const token = `[[${targetSlug}]]`;
-      const nextValue = `${before}${token}${after}`;
-      const nextCursor = before.length + token.length;
+      const { nextValue, nextCursor } = applyWikilinkSelection(value, match, targetSlug);
       setDismissedAtStart(null);
       const elNow = textareaRef.current;
       if (elNow && document.activeElement !== elNow) {

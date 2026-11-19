@@ -31,8 +31,14 @@ export const BTN_TERTIARY_NEGATIVE =
  */
 export const INPUT =
   'w-full h-11 sm:h-10 px-3 rounded-[10px] bg-background border border-input text-base sm:text-body text-foreground placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-ring/40';
+export const SELECT =
+  'w-full h-11 sm:h-10 px-2.5 rounded-[10px] bg-background border border-input text-base sm:text-body text-foreground focus:outline-none focus:ring-2 focus:ring-ring/40';
 export const TEXTAREA =
   'w-full p-3 rounded-[10px] bg-background border border-input text-base sm:text-body text-foreground placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-ring/40 resize-y';
+export const MODAL_CLOSE_BTN =
+  'min-w-11 min-h-11 sm:min-w-0 sm:min-h-0 p-1.5 rounded-[8px] inline-flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-surface2 transition-colors shrink-0';
+export const BTN_GHOST_LG =
+  'h-11 sm:h-10 px-4 rounded-[10px] text-body font-medium text-muted-foreground hover:text-foreground hover:bg-surface2 transition-colors';
 export const HELPER = 'text-label text-muted-foreground';
 export const FIELD_LABEL = 'block text-eyebrow uppercase text-muted-foreground';
 export const EYEBROW = 'text-eyebrow uppercase text-muted-foreground';

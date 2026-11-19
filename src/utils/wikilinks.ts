@@ -287,3 +287,50 @@ export function resolveSlugEdit(input: {
   if (input.taken.includes(raw)) return { slug: raw, error: slugCollisionError(raw) };
   return { slug: raw, error: null };
 }
+
+// ---- CD Batch 5: pure wikilink autocomplete cursor matching & replacement -----------------
+
+export interface ActiveWikilinkMatch {
+  query: string;
+  startIndex: number;
+  endIndex: number;
+}
+
+export function getActiveWikilinkMatch(
+  value: string,
+  cursorPos: number | null
+): ActiveWikilinkMatch | null {
+  if (cursorPos === null || cursorPos < 2 || cursorPos > value.length) {
+    return null;
+  }
+
+  const beforeCursor = value.slice(0, cursorPos);
+  const openIdx = beforeCursor.lastIndexOf('[[');
+  if (openIdx === -1) return null;
+
+  const between = beforeCursor.slice(openIdx + 2);
+  if (between.includes('[') || between.includes(']') || between.includes('\n')) {
+    return null;
+  }
+
+  return {
+    query: between,
+    startIndex: openIdx,
+    endIndex: cursorPos,
+  };
+}
+
+export function applyWikilinkSelection(
+  value: string,
+  match: ActiveWikilinkMatch,
+  targetSlug: string
+): { nextValue: string; nextCursor: number } {
+  const before = value.slice(0, match.startIndex);
+  const rawAfter = value.slice(match.endIndex);
+  const after = rawAfter.startsWith(']]') ? rawAfter.slice(2) : rawAfter;
+  const token = `[[${targetSlug}]]`;
+  return {
+    nextValue: `${before}${token}${after}`,
+    nextCursor: before.length + token.length,
+  };
+}

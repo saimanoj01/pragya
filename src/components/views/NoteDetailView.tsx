@@ -57,9 +57,8 @@ import {
   buildSparringPrompt,
   canCopySparringPrompt,
 } from '../../utils/sparringPrompt';
-import { tryCopyText } from '../../utils/capstonePrompt';
-import { showToast } from '../../utils/toast';
-import { CapstonePromptFallbackModal } from '../modals/CapstoneModal';
+import { useCopyPrompt } from '../../hooks/useCopyPrompt';
+import { PromptFallbackModal } from '../common/PromptFallbackModal';
 import { PredictionOutcomeModal } from '../modals/PredictionOutcomeModal';
 import { useArchiveActions } from '../../hooks/useArchiveActions';
 import { useDeleteForever } from '../../hooks/useDeleteForever';
@@ -150,16 +149,18 @@ export const NoteDetailView: React.FC<NoteDetailViewProps> = ({
   const { archiveNote, restoreNoteFromArchive } = useArchiveActions();
   const { requestDeleteNote, dialogProps: deleteDialogProps } = useDeleteForever();
   const [archiveConfirmOpen, setArchiveConfirmOpen] = useState(false);
-  const [sparringFallback, setSparringFallback] = useState<string | null>(null);
   const [outcomeOpen, setOutcomeOpen] = useState(false);
+  const { copyPrompt: copySparringText, fallbackModalProps: sparringFallbackProps } = useCopyPrompt({
+    successMessage: SPARRING_COPY_SUCCESS_MESSAGE,
+    fallbackTitle: 'Copy Sparring Prompt',
+    fallbackTestId: 'sparring-prompt-fallback-modal',
+    fallbackPromptLabel: 'Sparring prompt',
+  });
   // CD C4.1: zero-AI clipboard prompt; never built for a shielded (unrevealed) note.
-  const copySparringPrompt = useCallback(async () => {
+  const copySparringPrompt = useCallback(() => {
     if (!note) return;
-    const prompt = buildSparringPrompt(note, book, { revealed });
-    if (!prompt) return;
-    if (await tryCopyText(prompt)) showToast(SPARRING_COPY_SUCCESS_MESSAGE, 'success');
-    else setSparringFallback(prompt);
-  }, [book, note, revealed]);
+    void copySparringText(buildSparringPrompt(note, book, { revealed }));
+  }, [book, copySparringText, note, revealed]);
   const [archiveBusy, setArchiveBusy] = useState(false);
   const runArchive = useCallback(async () => {
     if (!note) return;
@@ -794,14 +795,7 @@ export const NoteDetailView: React.FC<NoteDetailViewProps> = ({
         attachment={lightboxAttachment}
         onClose={() => setLightboxAttachment(null)}
       />
-      <CapstonePromptFallbackModal
-        isOpen={sparringFallback !== null}
-        onClose={() => setSparringFallback(null)}
-        prompt={sparringFallback || ''}
-        title="Copy Sparring Prompt"
-        dataTestId="sparring-prompt-fallback-modal"
-        promptLabel="Sparring prompt"
-      />
+      <PromptFallbackModal {...sparringFallbackProps} />
       <PredictionOutcomeModal
         note={unlockedPrediction ? note : null}
         book={book}

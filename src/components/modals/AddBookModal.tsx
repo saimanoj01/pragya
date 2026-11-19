@@ -2,11 +2,18 @@ import React, { useEffect, useId, useState } from 'react';
 import { X } from 'lucide-react';
 import type { BookFormat, BookKind, BookStatus, PosUnit } from '../../types/pragya';
 import { usePragya } from '../../context/PragyaContext';
-import { showToast } from '../../utils/toast';
-import { coverUrlError } from '../../utils/bookSurfaces';
-import { Modal } from '../common/Modal';
 import { describeSyncError } from '../../utils/apiErrors';
+import { coverUrlError } from '../../utils/bookSurfaces';
 import { isSubmitShortcut } from '../../utils/keyboard';
+import { showToast } from '../../utils/toast';
+import { Modal } from '../common/Modal';
+import {
+  BTN_GHOST_LG,
+  FIELD_LABEL,
+  INPUT,
+  MODAL_CLOSE_BTN,
+  SELECT,
+} from '../common/uiClasses';
 
 export interface AddBookModalProps {
   isOpen: boolean;
@@ -58,17 +65,16 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({ isOpen, onClose }) =
       showToast('Please enter a book title', 'error');
       return;
     }
-    if (coverUrlError(coverUrl)) {
-      showToast(coverUrlError(coverUrl) || '', 'error');
+    const coverErr = coverUrlError(coverUrl);
+    if (coverErr) {
+      showToast(coverErr, 'error');
       return;
     }
     setSubmitting(true);
     try {
       const parsedCurrent = Math.max(0, Number(currentPos) || 0);
       const parsedTotal =
-        posUnit === 'percent' && !totalPos
-          ? 100
-          : Math.max(0, Number(totalPos) || 0);
+        posUnit === 'percent' && !totalPos ? 100 : Math.max(0, Number(totalPos) || 0);
       await addBook({
         title,
         author: author.trim() || 'Unknown Author',
@@ -90,6 +96,8 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({ isOpen, onClose }) =
     }
   };
 
+  const coverErr = coverUrlError(coverUrl);
+
   return (
     <Modal
       isOpen={isOpen}
@@ -102,12 +110,7 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({ isOpen, onClose }) =
         <h2 id={fid('heading')} className="text-title text-foreground">
           Add Book
         </h2>
-        <button
-          type="button"
-          onClick={onClose}
-          aria-label="Close"
-          className="min-w-11 min-h-11 sm:min-w-0 sm:min-h-0 p-1.5 rounded-[8px] inline-flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-surface2 transition-colors"
-        >
+        <button type="button" onClick={onClose} aria-label="Close" className={MODAL_CLOSE_BTN}>
           <X className="w-4 h-4" />
         </button>
       </div>
@@ -123,7 +126,9 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({ isOpen, onClose }) =
         className="space-y-4"
       >
         <div className="space-y-1.5">
-          <label htmlFor={fid('title')} className="block text-eyebrow uppercase text-muted-foreground">Title *</label>
+          <label htmlFor={fid('title')} className={FIELD_LABEL}>
+            Title *
+          </label>
           <input
             id={fid('title')}
             type="text"
@@ -131,13 +136,15 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({ isOpen, onClose }) =
             value={title}
             onChange={e => setTitle(e.target.value)}
             placeholder="e.g. Designing Data-Intensive Applications"
-            className="w-full h-11 sm:h-10 px-3 rounded-[10px] bg-background border border-input text-base sm:text-body text-foreground placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-ring/40"
+            className={INPUT}
             required
           />
         </div>
 
         <div className="space-y-1.5">
-          <label htmlFor={fid('author')} className="block text-eyebrow uppercase text-muted-foreground">Author</label>
+          <label htmlFor={fid('author')} className={FIELD_LABEL}>
+            Author
+          </label>
           <input
             id={fid('author')}
             type="text"
@@ -145,19 +152,21 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({ isOpen, onClose }) =
             value={author}
             onChange={e => setAuthor(e.target.value)}
             placeholder="e.g. Martin Kleppmann"
-            className="w-full h-11 sm:h-10 px-3 rounded-[10px] bg-background border border-input text-base sm:text-body text-foreground placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-ring/40"
+            className={INPUT}
           />
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
           <div className="space-y-1.5">
-            <label htmlFor={fid('format')} className="block text-eyebrow uppercase text-muted-foreground">Format</label>
+            <label htmlFor={fid('format')} className={FIELD_LABEL}>
+              Format
+            </label>
             <select
               id={fid('format')}
               data-testid="book-format-select"
               value={format}
               onChange={e => setFormat(e.target.value as BookFormat)}
-              className="w-full h-11 sm:h-10 px-2.5 rounded-[10px] bg-background border border-input text-base sm:text-body text-foreground focus:outline-none focus:ring-2 focus:ring-ring/40"
+              className={SELECT}
             >
               <option value="physical">Physical</option>
               <option value="kindle">Kindle</option>
@@ -165,13 +174,15 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({ isOpen, onClose }) =
           </div>
 
           <div className="space-y-1.5">
-            <label htmlFor={fid('kind')} className="block text-eyebrow uppercase text-muted-foreground">Kind</label>
+            <label htmlFor={fid('kind')} className={FIELD_LABEL}>
+              Kind
+            </label>
             <select
               id={fid('kind')}
               data-testid="book-kind-select"
               value={kind}
               onChange={e => setKind(e.target.value as BookKind)}
-              className="w-full h-11 sm:h-10 px-2.5 rounded-[10px] bg-background border border-input text-base sm:text-body text-foreground focus:outline-none focus:ring-2 focus:ring-ring/40"
+              className={SELECT}
             >
               <option value="nonfiction">Non-Fiction</option>
               <option value="fiction">Fiction</option>
@@ -179,13 +190,15 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({ isOpen, onClose }) =
           </div>
 
           <div className="space-y-1.5">
-            <label htmlFor={fid('status')} className="block text-eyebrow uppercase text-muted-foreground">Status</label>
+            <label htmlFor={fid('status')} className={FIELD_LABEL}>
+              Status
+            </label>
             <select
               id={fid('status')}
               data-testid="book-status-select"
               value={status}
               onChange={e => setStatus(e.target.value as BookStatus)}
-              className="w-full h-11 sm:h-10 px-2.5 rounded-[10px] bg-background border border-input text-base sm:text-body text-foreground focus:outline-none focus:ring-2 focus:ring-ring/40"
+              className={SELECT}
             >
               <option value="reading">Reading</option>
               <option value="queued">Queued</option>
@@ -197,7 +210,9 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({ isOpen, onClose }) =
 
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
           <div className="space-y-1.5">
-            <label htmlFor={fid('pos')} className="block text-eyebrow uppercase text-muted-foreground">Current Pos</label>
+            <label htmlFor={fid('pos')} className={FIELD_LABEL}>
+              Current Pos
+            </label>
             <input
               id={fid('pos')}
               type="number"
@@ -206,12 +221,14 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({ isOpen, onClose }) =
               data-testid="book-pos-input"
               value={currentPos}
               onChange={e => setCurrentPos(e.target.value)}
-              className="w-full h-11 sm:h-10 px-3 rounded-[10px] bg-background border border-input text-base sm:text-body text-foreground num focus:outline-none focus:ring-2 focus:ring-ring/40"
+              className={`${INPUT} num`}
             />
           </div>
 
           <div className="space-y-1.5">
-            <label htmlFor={fid('total')} className="block text-eyebrow uppercase text-muted-foreground">Total Pos</label>
+            <label htmlFor={fid('total')} className={FIELD_LABEL}>
+              Total Pos
+            </label>
             <input
               id={fid('total')}
               type="number"
@@ -221,18 +238,20 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({ isOpen, onClose }) =
               value={totalPos}
               onChange={e => setTotalPos(e.target.value)}
               placeholder="e.g. 320"
-              className="w-full h-11 sm:h-10 px-3 rounded-[10px] bg-background border border-input text-base sm:text-body text-foreground num placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-ring/40"
+              className={`${INPUT} num`}
             />
           </div>
 
           <div className="space-y-1.5">
-            <label htmlFor={fid('unit')} className="block text-eyebrow uppercase text-muted-foreground">Unit</label>
+            <label htmlFor={fid('unit')} className={FIELD_LABEL}>
+              Unit
+            </label>
             <select
               id={fid('unit')}
               data-testid="book-unit-select"
               value={posUnit}
               onChange={e => handleUnitChange(e.target.value as PosUnit)}
-              className="w-full h-11 sm:h-10 px-2.5 rounded-[10px] bg-background border border-input text-base sm:text-body text-foreground focus:outline-none focus:ring-2 focus:ring-ring/40"
+              className={SELECT}
             >
               <option value="page">Page</option>
               <option value="percent">Percent (%)</option>
@@ -242,7 +261,7 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({ isOpen, onClose }) =
         </div>
 
         <div className="space-y-1.5">
-          <label htmlFor={fid('docurl')} className="block text-eyebrow uppercase text-muted-foreground">
+          <label htmlFor={fid('docurl')} className={FIELD_LABEL}>
             Companion Google Doc URL (Optional)
           </label>
           <input
@@ -252,13 +271,12 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({ isOpen, onClose }) =
             value={docUrl}
             onChange={e => setDocUrl(e.target.value)}
             placeholder="https://docs.google.com/document/d/..."
-            className="w-full h-11 sm:h-10 px-3 rounded-[10px] bg-background border border-input text-base sm:text-body text-foreground placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-ring/40"
+            className={INPUT}
           />
         </div>
 
-
         <div className="space-y-1.5">
-          <label htmlFor={fid('cover')} className="block text-eyebrow uppercase text-muted-foreground">
+          <label htmlFor={fid('cover')} className={FIELD_LABEL}>
             Cover Image URL (Optional)
           </label>
           <input
@@ -269,12 +287,12 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({ isOpen, onClose }) =
             onChange={e => setCoverUrl(e.target.value)}
             placeholder="https://…"
             aria-describedby={fid('cover-help')}
-            aria-invalid={Boolean(coverUrlError(coverUrl))}
-            className="w-full h-11 sm:h-10 px-3 rounded-[10px] bg-background border border-input text-base sm:text-body text-foreground placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-ring/40"
+            aria-invalid={Boolean(coverErr)}
+            className={INPUT}
           />
-          {coverUrlError(coverUrl) ? (
+          {coverErr ? (
             <p id={fid('cover-help')} role="alert" className="text-label text-negative">
-              {coverUrlError(coverUrl)}
+              {coverErr}
             </p>
           ) : (
             <p id={fid('cover-help')} className="text-label text-faint">
@@ -284,11 +302,7 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({ isOpen, onClose }) =
         </div>
 
         <div className="flex items-center justify-end gap-2 pt-2">
-          <button
-            type="button"
-            onClick={onClose}
-            className="h-11 sm:h-10 px-4 rounded-[10px] text-body font-medium text-muted-foreground hover:text-foreground hover:bg-surface2 transition-colors"
-          >
+          <button type="button" onClick={onClose} className={BTN_GHOST_LG}>
             Cancel
           </button>
           <button

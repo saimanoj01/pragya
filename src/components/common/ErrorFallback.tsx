@@ -1,13 +1,7 @@
 import React from 'react';
 import { RefreshCw } from 'lucide-react';
 import { formatErrorReport } from '../../utils/errorReport';
-
-const BTN_PRIMARY =
-  'h-9 px-3.5 rounded-[10px] bg-primary text-primary-foreground text-label font-semibold hover:opacity-90 inline-flex items-center gap-1.5 whitespace-nowrap';
-const BTN_SECONDARY =
-  'h-9 px-3 rounded-[10px] bg-surface2 border border-border text-label font-medium text-foreground hover:bg-secondary inline-flex items-center gap-1.5 whitespace-nowrap';
-const BTN_TERTIARY =
-  'text-label font-medium text-muted-foreground hover:text-foreground inline-flex items-center gap-1 cursor-pointer';
+import { BTN_PRIMARY, BTN_SECONDARY, BTN_TERTIARY } from './uiClasses';
 
 export interface ErrorFallbackProps {
   error: Error;
@@ -82,7 +76,7 @@ export const ErrorFallback: React.FC<ErrorFallbackProps> = ({ error, onGoToShelf
           </button>
         </div>
         <details className="space-y-2">
-          <summary className={BTN_TERTIARY}>Technical details</summary>
+          <summary className={`${BTN_TERTIARY} cursor-pointer`}>Technical details</summary>
           <pre className="font-mono text-label text-muted-foreground bg-surface2 border border-border rounded-[10px] p-3 max-h-40 overflow-auto whitespace-pre-wrap">
             {details}
           </pre>

@@ -56,3 +56,44 @@ export function formatWhenDoDisplay(trigger: string, action: string): {
     doLine: actionBody ? `DO ${actionBody}` : '',
   };
 }
+
+export const ACTIVE_DELTA_CAP = 5;
+
+export function shouldDefaultOpenDeltaDetails(input: {
+  bookKind?: string;
+  triggerBody: string;
+  actionBody: string;
+  deltaStatus?: string;
+}): boolean {
+  return (
+    input.bookKind !== 'fiction' ||
+    Boolean(input.triggerBody || input.actionBody) ||
+    (input.deltaStatus || 'none') !== 'none'
+  );
+}
+
+export type DeltaSaveValidation =
+  | { ok: true; normalizedTrigger: string; normalizedAction: string }
+  | { ok: false; error: string };
+
+export function validateDeltaForSave(input: {
+  deltaTrigger: string;
+  deltaAction: string;
+  deltaStatus: string;
+  otherActiveCount: number;
+  emptyActiveMessage: string;
+}): DeltaSaveValidation {
+  if (input.otherActiveCount >= ACTIVE_DELTA_CAP && input.deltaStatus === 'active') {
+    return {
+      ok: false,
+      error:
+        'Active Behavioral Delta cap (5/5) reached. Graduate or pause an active delta first.',
+    };
+  }
+  const normalizedTrigger = normalizeDeltaTrigger(input.deltaTrigger);
+  const normalizedAction = normalizeDeltaAction(input.deltaAction);
+  if (input.deltaStatus === 'active' && !normalizedTrigger && !normalizedAction) {
+    return { ok: false, error: input.emptyActiveMessage };
+  }
+  return { ok: true, normalizedTrigger, normalizedAction };
+}
