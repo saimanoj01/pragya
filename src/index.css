@@ -151,6 +151,188 @@
 }
 
 /*
+ * CD Batch 6 (D2.4): Native <dialog> top-layer styles, ::backdrop, scroll lock,
+ * and @starting-style / allow-discrete / overlay entry transitions (ux_spec_cd §D.2.1).
+ */
+@media screen {
+  html:has(dialog:modal),
+  body:has(dialog:modal) {
+    overflow: hidden;
+    overscroll-behavior: contain;
+  }
+}
+
+@layer components {
+  /* Zero-specificity UA reset so Tailwind utilities (max-w-*, w-*, m-*) always win cleanly. */
+  :where(dialog.pragya-dialog) {
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    max-width: none;
+    max-height: none;
+    overflow: visible;
+    overscroll-behavior: contain;
+  }
+
+  dialog.pragya-dialog {
+    opacity: 0;
+    transform: scale(0.96) translateY(8px);
+    transition-property: opacity, transform, display, overlay;
+    transition-duration: 180ms;
+    transition-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+    transition-behavior: allow-discrete;
+  }
+
+  dialog.pragya-dialog--sheet {
+    transform: translateY(20px);
+  }
+
+  @media (min-width: 640px) {
+    dialog.pragya-dialog--sheet {
+      transform: translateX(24px);
+    }
+  }
+
+  dialog.pragya-dialog--mobile-sheet {
+    transform: translateY(20px);
+  }
+
+  @media (min-width: 640px) {
+    dialog.pragya-dialog--mobile-sheet {
+      transform: scale(0.96) translateY(8px);
+    }
+  }
+
+  dialog.pragya-dialog--palette {
+    transform: scale(0.97) translateY(-8px);
+    transition-duration: 140ms;
+  }
+
+  /* Lightbox omits transform so its viewport-fixed close button never shifts during entry. */
+  dialog.pragya-dialog--lightbox {
+    transform: none;
+    transition-property: opacity, display, overlay;
+    transition-duration: 160ms;
+    transition-behavior: allow-discrete;
+  }
+
+  dialog.pragya-dialog--drawer {
+    transform: translateY(24px);
+    transition-duration: 180ms;
+  }
+
+  dialog.pragya-dialog[open] {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+dialog.pragya-dialog::backdrop {
+  background-color: transparent;
+  backdrop-filter: blur(0px);
+  transition:
+    display 180ms allow-discrete,
+    overlay 180ms allow-discrete,
+    background-color 180ms ease-out,
+    backdrop-filter 180ms ease-out;
+}
+
+dialog.pragya-dialog[open]::backdrop {
+  background-color: hsl(var(--background) / 0.8);
+  backdrop-filter: blur(4px);
+}
+
+dialog.pragya-dialog--sheet[open]::backdrop,
+dialog.pragya-dialog--drawer[open]::backdrop {
+  background-color: hsl(var(--background) / 0.6);
+  backdrop-filter: blur(4px);
+}
+
+dialog.pragya-dialog--palette[open]::backdrop {
+  background-color: hsl(var(--background) / 0.7);
+  backdrop-filter: blur(4px);
+}
+
+dialog.pragya-dialog--lightbox[open]::backdrop {
+  background-color: hsl(var(--background) / 0.9);
+  backdrop-filter: blur(12px);
+}
+
+@starting-style {
+  dialog.pragya-dialog[open] {
+    opacity: 0;
+    transform: scale(0.96) translateY(8px);
+  }
+
+  dialog.pragya-dialog--sheet[open],
+  dialog.pragya-dialog--mobile-sheet[open] {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+
+  dialog.pragya-dialog--palette[open] {
+    opacity: 0;
+    transform: scale(0.97) translateY(-8px);
+  }
+
+  dialog.pragya-dialog--lightbox[open] {
+    opacity: 0;
+    transform: none;
+  }
+
+  dialog.pragya-dialog--drawer[open] {
+    opacity: 0;
+    transform: translateY(24px);
+  }
+
+  dialog.pragya-dialog[open]::backdrop {
+    background-color: transparent;
+    backdrop-filter: blur(0px);
+  }
+}
+
+@media (min-width: 640px) {
+  @starting-style {
+    dialog.pragya-dialog--sheet[open] {
+      opacity: 0;
+      transform: translateX(24px);
+    }
+
+    dialog.pragya-dialog--mobile-sheet[open] {
+      opacity: 0;
+      transform: scale(0.96) translateY(8px);
+    }
+  }
+}
+
+/* Top-layer host for Sonner <Toaster> (popover="manual" with fixed fallback). */
+.pragya-toast-layer {
+  position: fixed;
+  inset: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  width: auto;
+  height: auto;
+  max-width: none;
+  max-height: none;
+  background: transparent;
+  overflow: visible;
+  pointer-events: none;
+  z-index: 9999;
+}
+
+.pragya-toast-layer::backdrop {
+  display: none;
+}
+
+.pragya-toast-layer [data-sonner-toast],
+.pragya-toast-layer [data-testid='notification-toast'] {
+  pointer-events: auto;
+}
+
+/*
  * CD D2.3 reduced motion (framer-motion is covered by <MotionConfig reducedMotion="user">):
  * show the final state, no transitions, no smooth scroll, a static (dimmed) sync icon.
  */
@@ -162,6 +344,25 @@
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
+  }
+
+  dialog.pragya-dialog {
+    transform: none !important;
+  }
+
+  dialog.pragya-dialog::backdrop {
+    transition-duration: 0.01ms !important;
+  }
+
+  @starting-style {
+    dialog.pragya-dialog[open],
+    dialog.pragya-dialog--sheet[open],
+    dialog.pragya-dialog--mobile-sheet[open],
+    dialog.pragya-dialog--palette[open],
+    dialog.pragya-dialog--lightbox[open],
+    dialog.pragya-dialog--drawer[open] {
+      transform: none;
+    }
   }
 
   .animate-spin {
@@ -206,6 +407,7 @@
   html,
   body {
     background: #fff !important;
+    overflow: visible !important;
   }
 
   *,
@@ -217,8 +419,11 @@
   }
 
   [data-sonner-toaster],
+  .pragya-toast-layer,
   [data-testid='offline-readonly-badge'],
+  dialog[open],
   [role='dialog'],
+  [role='alertdialog'],
   [data-popover='true'],
   [data-print-hide],
   main input,

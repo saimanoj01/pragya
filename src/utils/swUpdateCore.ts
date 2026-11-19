@@ -3,6 +3,8 @@
  * node (R2#1). `swUpdate.ts` wires it to the real toast.
  */
 
+import { hasOpenDialog } from './dialogOverlay';
+
 /** ux_spec D.2 / H: optional new-version toast copy. */
 export const NEW_VERSION_TOAST = 'A new version of Pragya is ready.';
 export const NEW_VERSION_ACTION = 'Reload';
@@ -13,7 +15,7 @@ type QueryRoot = Pick<Document, 'querySelector'>;
 
 /** True while any modal dialog is open (the toast must not interrupt it). */
 export function isDialogOpen(doc: QueryRoot): boolean {
-  return Boolean(doc.querySelector('[role="dialog"], [role="alertdialog"], dialog[open]'));
+  return hasOpenDialog(doc);
 }
 
 /**

@@ -25,6 +25,7 @@ export const KeyboardHelpModal: React.FC<KeyboardHelpModalProps> = ({ isOpen, on
       onClose={onClose}
       headingId={headingId}
       dataTestId="keyboard-help-modal"
+      dismissOnBackdrop={true}
       maxWidth="max-w-2xl"
     >
       <div className="flex items-start justify-between gap-4">

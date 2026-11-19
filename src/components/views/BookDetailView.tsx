@@ -13,6 +13,7 @@ import {
 } from '../../utils/capstonePrompt';
 import { focusCard, focusedCardIndex } from '../../utils/cardFocus';
 import { computeChapterDividers } from '../../utils/chapterFormat';
+import { hasOpenDialog } from '../../utils/dialogOverlay';
 import { isSafeHttpUrl, navigateTo } from '../../utils/navigation';
 import { noteHref } from '../../utils/noteVisibility';
 import {
@@ -97,7 +98,7 @@ export const BookDetailView: React.FC<BookDetailViewProps> = ({
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.metaKey || e.ctrlKey || e.altKey) return;
       if (
-        document.querySelector('[role="dialog"]') ||
+        hasOpenDialog(document) ||
         document.querySelector('[data-popover="true"]')
       ) {
         return;

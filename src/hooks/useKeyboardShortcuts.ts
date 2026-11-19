@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react';
+import { hasOpenDialog, resolveEscapePriority } from '../utils/dialogOverlay';
 import { navigateTo, type PragyaRoute } from '../utils/navigation';
 import { isHelpShortcut } from '../utils/keyboardShortcuts';
 
@@ -60,12 +61,16 @@ export function useKeyboardShortcuts({
       }
 
       if (e.key === 'Escape') {
-        if (document.querySelector('[data-popover="true"]')) return;
-        if (document.querySelector('[data-testid="image-lightbox"]')) return;
-        if (hasOpenOverlay || isSessionExpiredOpen) return;
-        if (route.view === 'book') {
+        const target = resolveEscapePriority({
+          hasPopover: Boolean(document.querySelector('[data-popover="true"]')),
+          hasOpenDialog:
+            hasOpenDialog(document) || Boolean(document.querySelector('[data-testid="image-lightbox"]')),
+          hasOverlayFlag: hasOpenOverlay || isSessionExpiredOpen,
+          routeView: route.view,
+        });
+        if (target === 'route-shelf') {
           navigateTo('#/shelf');
-        } else if (route.view === 'note') {
+        } else if (target === 'route-notes') {
           navigateTo('#/notes');
         }
         return;
@@ -74,7 +79,7 @@ export function useKeyboardShortcuts({
       if (e.metaKey || e.ctrlKey || e.altKey) return;
       if (isEditableElement(e.target)) return;
       if (hasOpenOverlay || isSessionExpiredOpen) return;
-      if (document.querySelector('[role="dialog"]')) return;
+      if (hasOpenDialog(document)) return;
       if (document.querySelector('[data-popover="true"]')) return;
 
       if (isHelpShortcut(e)) {

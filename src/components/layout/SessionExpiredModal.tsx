@@ -25,7 +25,6 @@ export const SessionExpiredModal: React.FC<SessionExpiredModalProps> = ({
       title="Google Session Expired"
       headingId={headingId}
       maxWidth="max-w-sm"
-      overlayClassName="z-[70]"
     >
       <div className="space-y-4 text-center">
         <div className="w-11 h-11 rounded-full bg-negative/10 border border-negative/30 text-negative flex items-center justify-center mx-auto">

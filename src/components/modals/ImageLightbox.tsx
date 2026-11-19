@@ -1,6 +1,8 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useCallback, useEffect, useRef } from 'react';
 import { X } from 'lucide-react';
 import type { Attachment } from '../../types/pragya';
+import { useNativeDialog } from '../../hooks/useNativeDialog';
+import { dialogClosedByValue, isTopmostOpenDialog } from '../../utils/dialogOverlay';
 import { DriveImage } from '../common/DriveImage';
 
 export interface ImageLightboxProps {
@@ -9,26 +11,36 @@ export interface ImageLightboxProps {
 }
 
 export const ImageLightbox: React.FC<ImageLightboxProps> = ({ attachment, onClose }) => {
-  const lightboxRef = useRef<HTMLDivElement>(null);
-  const previouslyFocusedElementRef = useRef<HTMLElement | null>(null);
+  const dialogRef = useRef<HTMLDialogElement>(null);
+  const closeBtnRef = useRef<HTMLButtonElement>(null);
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
 
   const isOpen = Boolean(attachment);
 
+  const focusInitial = useCallback(() => {
+    if (closeBtnRef.current) {
+      closeBtnRef.current.focus();
+    } else {
+      dialogRef.current?.focus();
+    }
+  }, []);
+
+  useNativeDialog({
+    dialogRef,
+    isOpen,
+    onClose,
+    dismissOnBackdrop: true,
+    focusInitial,
+  });
+
   useEffect(() => {
     if (!isOpen) return;
 
-    previouslyFocusedElementRef.current = document.activeElement as HTMLElement | null;
-    if (lightboxRef.current && !lightboxRef.current.contains(document.activeElement)) {
-      lightboxRef.current.focus();
-    }
-
     const handleKeyDown = (e: KeyboardEvent) => {
-      // CD D.2.2: Space closes the image too (Esc stays the universal close).
-      if (e.key === 'Escape' || (e.key === ' ' && !e.repeat)) {
-        const dialogs = document.querySelectorAll('[role="dialog"]');
-        if (dialogs.length > 0 && dialogs[dialogs.length - 1] !== lightboxRef.current) {
+      // CD D.2.2: Space closes the image too (Escape is handled natively via dialog `cancel`).
+      if (e.key === ' ' && !e.repeat) {
+        if (!isTopmostOpenDialog(dialogRef.current, document)) {
           return;
         }
         e.preventDefault();
@@ -40,57 +52,52 @@ export const ImageLightbox: React.FC<ImageLightboxProps> = ({ attachment, onClos
     window.addEventListener('keydown', handleKeyDown, true);
     return () => {
       window.removeEventListener('keydown', handleKeyDown, true);
-      previouslyFocusedElementRef.current?.focus?.();
     };
   }, [isOpen]);
 
   if (!attachment) return null;
 
   return (
-    <div
-      ref={lightboxRef}
+    <dialog
+      ref={dialogRef}
       role="dialog"
       aria-modal="true"
       aria-label={attachment.fileName || 'Image preview'}
       data-testid="image-lightbox"
-      tabIndex={-1}
-      onClick={e => {
-        if (e.target === e.currentTarget) {
-          onCloseRef.current();
-        }
-      }}
-      className="fixed inset-0 z-[60] flex flex-col items-center justify-center p-4 sm:p-8 bg-background/90 backdrop-blur-md focus:outline-none"
+      {...({ closedby: dialogClosedByValue(true) } as Record<string, string>)}
+      className="pragya-dialog pragya-dialog--lightbox m-auto w-fit max-w-[calc(100vw-2rem)] sm:max-w-[calc(100vw-4rem)] focus:outline-none"
     >
       <button
+        ref={closeBtnRef}
         type="button"
+        autoFocus
         aria-label="Close image lightbox"
         onClick={() => onCloseRef.current()}
-        className="absolute top-[calc(env(safe-area-inset-top)+12px)] right-[max(env(safe-area-inset-right),1rem)] w-11 h-11 rounded-full bg-card border border-border text-foreground hover:bg-surface2 flex items-center justify-center shadow-lg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
+        className="fixed top-[calc(env(safe-area-inset-top)+12px)] right-[max(env(safe-area-inset-right),1rem)] w-11 h-11 rounded-full bg-card border border-border text-foreground hover:bg-surface2 flex items-center justify-center shadow-lg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
       >
         <X className="w-5 h-5" />
       </button>
 
-      <div
-        className="max-w-5xl max-h-[82vh] flex items-center justify-center"
-        onClick={e => e.stopPropagation()}
-      >
-        <DriveImage
-          attachment={attachment}
-          alt={attachment.fileName}
-          className="max-w-full max-h-[80vh] rounded-[12px] border border-border object-contain shadow-2xl"
-        />
-      </div>
+      <div className="flex flex-col items-center justify-center">
+        <div className="max-w-5xl max-h-[85dvh] flex items-center justify-center">
+          <DriveImage
+            attachment={attachment}
+            alt={attachment.fileName}
+            className="max-w-full max-h-[85dvh] rounded-[12px] border border-border object-contain shadow-2xl"
+          />
+        </div>
 
-      <div className="mt-3 px-3 py-1.5 rounded-full bg-card border border-border text-label text-muted-foreground flex items-center gap-2 num">
-        <span className="text-foreground font-medium truncate max-w-[260px] sm:max-w-md">
-          {attachment.fileName}
-        </span>
-        {attachment.width && attachment.height && (
-          <span>
-            · {attachment.width}×{attachment.height}
+        <div className="mt-3 px-3 py-1.5 rounded-full bg-card border border-border text-label text-muted-foreground flex items-center gap-2 num">
+          <span className="text-foreground font-medium truncate max-w-[260px] sm:max-w-md">
+            {attachment.fileName}
           </span>
-        )}
+          {attachment.width && attachment.height && (
+            <span>
+              · {attachment.width}×{attachment.height}
+            </span>
+          )}
+        </div>
       </div>
-    </div>
+    </dialog>
   );
 };

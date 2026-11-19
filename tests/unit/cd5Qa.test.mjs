@@ -329,7 +329,7 @@ test('CD5 QA R1/R2 fix-up contracts: single-bracket wikilinks, foreign-draft saf
   );
   assert.ok(hookSrc.includes('flushSessionModalDraft('), 'useModalDraft delegates to flushSessionModalDraft');
 
-  // R1#3 / R2-3: AttachmentManager sessionEpochRef guards + topmost [role="dialog"] paste guard
+  // R1#3 / R2-3 / CD Batch 6: AttachmentManager sessionEpochRef guards + topmost open-dialog paste guard
   const attSrc = read('src/components/common/AttachmentManager.tsx');
   assert.ok(attSrc.includes('sessionEpochRef.current += 1;'), 'AttachmentManager bumps epoch on open/reset');
   assert.ok(
@@ -337,9 +337,9 @@ test('CD5 QA R1/R2 fix-up contracts: single-bracket wikilinks, foreign-draft saf
     'AttachmentManager guards resolveDocTitle and uploadImageAttachment (try + catch) with epoch check'
   );
   assert.ok(
-    attSrc.includes("fileInputRef.current?.closest('[role=\"dialog\"]')") &&
-      attSrc.includes('openDialogs[openDialogs.length - 1] !== myDialog'),
-    'AttachmentManager ignores paste when another dialog sits above its modal'
+    attSrc.includes('fileInputRef.current?.closest(OPEN_DIALOG_SELECTOR)') &&
+      attSrc.includes('!isTopmostOpenDialog(myDialog, document)'),
+    'AttachmentManager ignores paste when another dialog (dialog[open]/dialog/alertdialog) sits above its modal'
   );
 
   // R2-3: EditNoteModal hoists <ConfirmDialog> as a sibling outside </Modal>

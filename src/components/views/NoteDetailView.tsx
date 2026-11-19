@@ -68,6 +68,7 @@ import {
   isArchived,
   withoutArchived,
 } from '../../utils/archive';
+import { getOpenDialogs, getTopmostOpenDialog } from '../../utils/dialogOverlay';
 import { ImageLightbox } from '../modals/ImageLightbox';
 
 export interface CaptureForSlugRequest {
@@ -212,8 +213,8 @@ export const NoteDetailView: React.FC<NoteDetailViewProps> = ({
       if (e.metaKey || e.ctrlKey || e.altKey) return;
       if (isEditableElement(e.target)) return;
       if (document.querySelector('[data-popover="true"]')) return;
-      const dialogs = document.querySelectorAll('[role="dialog"]');
-      const topDialog = dialogs.length > 0 ? dialogs[dialogs.length - 1] : null;
+      const openDialogs = getOpenDialogs(document);
+      const topDialog = getTopmostOpenDialog(document);
       const openLightboxEl = document.querySelector('[data-testid="image-lightbox"]');
       if (openLightboxEl) {
         if (topDialog && topDialog !== openLightboxEl) return;
@@ -223,7 +224,7 @@ export const NoteDetailView: React.FC<NoteDetailViewProps> = ({
         }
         return;
       }
-      if (dialogs.length > 0) return;
+      if (openDialogs.length > 0) return;
       const target = e.target as HTMLElement | null;
       if (e.key === ' ' && target && target.closest('button, a, summary, [role="button"]')) return;
 

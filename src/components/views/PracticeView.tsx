@@ -29,6 +29,7 @@ import {
   normalizeDeltaAction,
   normalizeDeltaTrigger,
 } from '../../utils/deltaFormat';
+import { hasOpenDialog } from '../../utils/dialogOverlay';
 import { getRenderableAttachments } from '../../utils/metaCodecs';
 import { navigateTo } from '../../utils/navigation';
 import { getPracticeDeltaLists, noteHref, shieldedNoteLabel } from '../../utils/noteVisibility';
@@ -223,7 +224,7 @@ export const PracticeView: React.FC = () => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.metaKey || e.ctrlKey || e.altKey) return;
       if (
-        document.querySelector('[role="dialog"]') ||
+        hasOpenDialog(document) ||
         document.querySelector('[data-popover="true"]')
       ) {
         return;

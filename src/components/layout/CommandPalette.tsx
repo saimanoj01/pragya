@@ -1,5 +1,4 @@
-import React, { useEffect, useId, useMemo, useRef, useState } from 'react';
-import { AnimatePresence, motion } from 'framer-motion';
+import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import {
   Search,
   BookOpen,
@@ -13,6 +12,8 @@ import {
   Keyboard,
 } from 'lucide-react';
 import type { Book, Note } from '../../types/pragya';
+import { useNativeDialog } from '../../hooks/useNativeDialog';
+import { dialogClosedByValue } from '../../utils/dialogOverlay';
 import { navigateTo } from '../../utils/navigation';
 import { isNoteSpoiler } from '../../utils/spoilerMath';
 import { isArchived } from '../../utils/archive';
@@ -68,38 +69,24 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
   const listId = `${baseId}-list`;
   const optionId = (idx: number) => `${baseId}-opt-${idx}`;
   const [announcement, setAnnouncement] = useState('');
-  const dialogRef = useRef<HTMLDivElement>(null);
-  const onCloseRef = useRef(onClose);
-  onCloseRef.current = onClose;
+  const dialogRef = useRef<HTMLDialogElement>(null);
+
+  const focusInput = useCallback(() => {
+    inputRef.current?.focus();
+  }, []);
+
+  useNativeDialog({
+    dialogRef,
+    isOpen,
+    onClose,
+    dismissOnBackdrop: true,
+    focusInitial: focusInput,
+  });
 
   useEffect(() => {
     if (!isOpen) return;
     setQuery('');
     setSelectedIndex(0);
-    if (
-      inputRef.current &&
-      (!dialogRef.current || !dialogRef.current.contains(document.activeElement))
-    ) {
-      inputRef.current.focus();
-    }
-    const handleEsc = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        const dialogs = document.querySelectorAll('[role="dialog"]');
-        if (dialogs.length > 0 && dialogs[dialogs.length - 1] !== dialogRef.current) {
-          return;
-        }
-        if (dialogRef.current?.querySelector('[data-popover="true"]')) {
-          return;
-        }
-        e.preventDefault();
-        e.stopPropagation();
-        onCloseRef.current();
-      }
-    };
-    window.addEventListener('keydown', handleEsc, true);
-    return () => {
-      window.removeEventListener('keydown', handleEsc, true);
-    };
   }, [isOpen]);
 
   const bookMap = useMemo(() => {
@@ -317,153 +304,141 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
     }
   };
 
+  if (!isOpen) return null;
+
   return (
-    <AnimatePresence>
-      {isOpen && (
-        <div className="print:hidden fixed inset-0 z-[60] flex items-start justify-center pt-16 sm:pt-20 px-4">
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            onClick={onClose}
-            className="fixed inset-0 bg-background/70 backdrop-blur-sm"
+    <dialog
+      ref={dialogRef}
+      data-testid="command-palette"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Command Palette"
+      {...({ closedby: dialogClosedByValue(true) } as Record<string, string>)}
+      className="pragya-dialog pragya-dialog--palette print:hidden mt-16 sm:mt-20 mb-auto mx-auto w-[calc(100%-2rem)] max-w-xl"
+    >
+      <div className="w-full bg-card border border-border rounded-[14px] shadow-2xl overflow-hidden flex flex-col">
+        <div className="flex items-center gap-3 px-4 py-3 border-b border-border bg-surface2/50">
+          <Search className="w-4 h-4 text-muted-foreground shrink-0" />
+          <input
+            ref={inputRef}
+            type="text"
+            autoFocus
+            role="combobox"
+            aria-expanded="true"
+            aria-controls={listId}
+            aria-autocomplete="list"
+            aria-activedescendant={flatItems[selectedIndex] ? optionId(selectedIndex) : undefined}
+            enterKeyHint="search"
+            autoComplete="off"
+            aria-label="Search commands, books, and notes"
+            data-testid="command-palette-input"
+            value={query}
+            onChange={e => setQuery(e.target.value)}
+            onKeyDown={handleKeyDown}
+            placeholder="Search books, notes, #tags, or commands…"
+            className="w-full bg-transparent text-foreground placeholder:text-muted-foreground text-base sm:text-body font-medium outline-none"
           />
-
-          <motion.div
-            ref={dialogRef}
-            data-testid="command-palette"
-            role="dialog"
-            aria-modal="true"
-            aria-label="Command Palette"
-            initial={{ opacity: 0, scale: 0.97, y: -8 }}
-            animate={{ opacity: 1, scale: 1, y: 0 }}
-            exit={{ opacity: 0, scale: 0.97, y: -8 }}
-            transition={{ duration: 0.14 }}
-            className="relative w-full max-w-xl bg-card border border-border rounded-[14px] shadow-2xl overflow-hidden flex flex-col z-10"
-          >
-            <div className="flex items-center gap-3 px-4 py-3 border-b border-border bg-surface2/50">
-              <Search className="w-4 h-4 text-muted-foreground shrink-0" />
-              <input
-                ref={inputRef}
-                type="text"
-                role="combobox"
-                aria-expanded="true"
-                aria-controls={listId}
-                aria-autocomplete="list"
-                aria-activedescendant={flatItems[selectedIndex] ? optionId(selectedIndex) : undefined}
-                enterKeyHint="search"
-                autoComplete="off"
-                aria-label="Search commands, books, and notes"
-                data-testid="command-palette-input"
-                value={query}
-                onChange={e => setQuery(e.target.value)}
-                onKeyDown={handleKeyDown}
-                placeholder="Search books, notes, #tags, or commands…"
-                className="w-full bg-transparent text-foreground placeholder:text-muted-foreground text-base sm:text-body font-medium outline-none"
-              />
-              {query && (
-                <button
-                  type="button"
-                  aria-label="Clear search"
-                  onClick={() => setQuery('')}
-                  className="min-w-11 min-h-11 sm:min-w-0 sm:min-h-0 sm:p-1 inline-flex items-center justify-center rounded-[8px] text-muted-foreground hover:text-foreground"
-                >
-                  <X className="w-4 h-4" />
-                </button>
-              )}
-              <kbd className="hidden sm:inline-block px-1.5 py-0.5 text-label rounded bg-surface2 text-muted-foreground border border-border">
-                ESC
-              </kbd>
-            </div>
-
-            <div role="status" aria-live="polite" className="sr-only" data-testid="command-palette-announcer">
-              {announcement}
-            </div>
-            <div
-              ref={listRef}
-              id={listId}
-              role="listbox"
-              aria-label="Results"
-              className={
-                flatItems.length === 0
-                  ? 'sr-only'
-                  : 'max-h-80 overflow-y-auto custom-scrollbar p-2 space-y-2'
-              }
+          {query && (
+            <button
+              type="button"
+              aria-label="Clear search"
+              onClick={() => setQuery('')}
+              className="min-w-11 min-h-11 sm:min-w-0 sm:min-h-0 sm:p-1 inline-flex items-center justify-center rounded-[8px] text-muted-foreground hover:text-foreground"
             >
-              {groupedItems.map(group => (
-                <div
-                  key={group.category}
-                  role="group"
-                  aria-label={group.category}
-                  data-testid={`command-palette-group-${group.category.toLowerCase()}`}
-                  className="space-y-0.5"
-                >
-                  <div
-                    aria-hidden="true"
-                    className="px-3 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground"
+              <X className="w-4 h-4" />
+            </button>
+          )}
+          <kbd className="hidden sm:inline-block px-1.5 py-0.5 text-label rounded bg-surface2 text-muted-foreground border border-border">
+            ESC
+          </kbd>
+        </div>
+
+        <div role="status" aria-live="polite" className="sr-only" data-testid="command-palette-announcer">
+          {announcement}
+        </div>
+        <div
+          ref={listRef}
+          id={listId}
+          role="listbox"
+          aria-label="Results"
+          className={
+            flatItems.length === 0
+              ? 'sr-only'
+              : 'max-h-80 overflow-y-auto overscroll-contain custom-scrollbar p-2 space-y-2'
+          }
+        >
+          {groupedItems.map(group => (
+            <div
+              key={group.category}
+              role="group"
+              aria-label={group.category}
+              data-testid={`command-palette-group-${group.category.toLowerCase()}`}
+              className="space-y-0.5"
+            >
+              <div
+                aria-hidden="true"
+                className="px-3 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground"
+              >
+                {group.category}
+              </div>
+              {group.entries.map(({ item, flatIndex }) => {
+                const Icon = item.icon;
+                const isSelected = flatIndex === selectedIndex;
+                return (
+                  <button
+                    key={item.id}
+                    type="button"
+                    id={optionId(flatIndex)}
+                    role="option"
+                    aria-selected={isSelected}
+                    tabIndex={-1}
+                    data-cmd-idx={flatIndex}
+                    data-testid={`command-palette-item-${item.id}`}
+                    onClick={() => {
+                      onClose();
+                      item.action();
+                    }}
+                    onMouseEnter={() => setSelectedIndex(flatIndex)}
+                    className={`w-full min-h-11 sm:min-h-0 flex items-center justify-between gap-3 px-3 py-2.5 rounded-[10px] text-left transition-colors ${
+                      isSelected
+                        ? 'bg-surface2 text-foreground border border-border'
+                        : 'text-foreground hover:bg-surface2/60 border border-transparent'
+                    }`}
                   >
-                    {group.category}
-                  </div>
-                  {group.entries.map(({ item, flatIndex }) => {
-                    const Icon = item.icon;
-                    const isSelected = flatIndex === selectedIndex;
-                    return (
-                      <button
-                        key={item.id}
-                        type="button"
-                        id={optionId(flatIndex)}
-                        role="option"
-                        aria-selected={isSelected}
-                        tabIndex={-1}
-                        data-cmd-idx={flatIndex}
-                        data-testid={`command-palette-item-${item.id}`}
-                        onClick={() => {
-                          onClose();
-                          item.action();
-                        }}
-                        onMouseEnter={() => setSelectedIndex(flatIndex)}
-                        className={`w-full min-h-11 sm:min-h-0 flex items-center justify-between gap-3 px-3 py-2.5 rounded-[10px] text-left transition-colors ${
+                    <div className="flex items-center gap-3 min-w-0">
+                      <div
+                        className={`p-1.5 rounded-[8px] shrink-0 ${
                           isSelected
-                            ? 'bg-surface2 text-foreground border border-border'
-                            : 'text-foreground hover:bg-surface2/60 border border-transparent'
+                            ? 'bg-primary text-primary-foreground'
+                            : 'bg-surface2 text-muted-foreground'
                         }`}
                       >
-                        <div className="flex items-center gap-3 min-w-0">
-                          <div
-                            className={`p-1.5 rounded-[8px] shrink-0 ${
-                              isSelected
-                                ? 'bg-primary text-primary-foreground'
-                                : 'bg-surface2 text-muted-foreground'
-                            }`}
-                          >
-                            <Icon className="w-4 h-4" />
-                          </div>
-                          <div className="min-w-0">
-                            <p className="text-body font-medium truncate">{item.title}</p>
-                            {item.subtitle && (
-                              <p className="text-label text-muted-foreground truncate">
-                                {item.subtitle}
-                              </p>
-                            )}
-                          </div>
-                        </div>
-                        <span className="text-[11px] px-1.5 py-0.5 rounded bg-surface2 text-muted-foreground shrink-0 border border-border/60">
-                          {item.category}
-                        </span>
-                      </button>
-                    );
-                  })}
-                </div>
-              ))}
+                        <Icon className="w-4 h-4" />
+                      </div>
+                      <div className="min-w-0">
+                        <p className="text-body font-medium truncate">{item.title}</p>
+                        {item.subtitle && (
+                          <p className="text-label text-muted-foreground truncate">
+                            {item.subtitle}
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                    <span className="text-[11px] px-1.5 py-0.5 rounded bg-surface2 text-muted-foreground shrink-0 border border-border/60">
+                      {item.category}
+                    </span>
+                  </button>
+                );
+              })}
             </div>
-            {flatItems.length === 0 && (
-              <div className="py-8 text-center text-muted-foreground text-label">
-                No matching books, notes, or actions found.
-              </div>
-            )}
-          </motion.div>
+          ))}
         </div>
-      )}
-    </AnimatePresence>
+        {flatItems.length === 0 && (
+          <div className="py-8 text-center text-muted-foreground text-label">
+            No matching books, notes, or actions found.
+          </div>
+        )}
+      </div>
+    </dialog>
   );
 };

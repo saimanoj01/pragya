@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { Book, Note } from '../../types/pragya';
 import { filterWikilinkCandidates } from '../../utils/noteVisibility';
 import { applyWikilinkSelection, getActiveWikilinkMatch } from '../../utils/wikilinks';
@@ -115,19 +115,37 @@ export const WikilinkAutocomplete: React.FC<WikilinkAutocompleteProps> = ({
     activeEl?.scrollIntoView?.({ block: 'nearest' });
   }, [baseId, isOpen, selectedIdx]);
 
+  const pendingCursorRef = useRef<{ value: string; pos: number } | null>(null);
+
+  useLayoutEffect(() => {
+    const pending = pendingCursorRef.current;
+    if (!pending) return;
+    pendingCursorRef.current = null;
+    if (pending.value !== value) return;
+    const el = textareaRef.current;
+    if (el && document.activeElement === el) {
+      el.setSelectionRange(pending.pos, pending.pos);
+    }
+  }, [textareaRef, value]);
+
   const applySelection = useCallback(
     (targetSlug: string) => {
       if (!match) return;
       const { nextValue, nextCursor } = applyWikilinkSelection(value, match, targetSlug);
       setDismissedAtStart(null);
+      pendingCursorRef.current = { value: nextValue, pos: nextCursor };
       const elNow = textareaRef.current;
       if (elNow && document.activeElement !== elNow) {
         elNow.focus();
       }
       onSelect(nextValue, nextCursor);
       requestAnimationFrame(() => {
+        const pending = pendingCursorRef.current;
+        if (pending && pending.value === nextValue && pending.pos === nextCursor) {
+          pendingCursorRef.current = null;
+        }
         const el = textareaRef.current;
-        if (el && document.activeElement === el) {
+        if (el && document.activeElement === el && el.value === nextValue) {
           el.setSelectionRange(nextCursor, nextCursor);
         }
       });

@@ -11,6 +11,7 @@ import {
   isTextPasteTarget,
   parseUrlAttachmentInput,
 } from '../../utils/attachmentLimits';
+import { OPEN_DIALOG_SELECTOR, isTopmostOpenDialog } from '../../utils/dialogOverlay';
 import { createUuid } from '../../utils/sessionCoalesce';
 import { showToast } from '../../utils/toast';
 import { DriveImage } from './DriveImage';
@@ -155,10 +156,9 @@ export const AttachmentManager: React.FC<AttachmentManagerProps> = ({
   useEffect(() => {
     if (!isOpen) return;
     const handlePaste = (e: ClipboardEvent) => {
-      // R1#3 / R2-3: ignore paste when a stacked dialog (e.g. ConfirmDialog) sits above this modal.
-      const myDialog = fileInputRef.current?.closest('[role="dialog"]');
-      const openDialogs = document.querySelectorAll('[role="dialog"]');
-      if (myDialog && openDialogs.length > 0 && openDialogs[openDialogs.length - 1] !== myDialog) {
+      // R1#3 / R2-3 / CD Batch 6: ignore paste when a stacked dialog (e.g. ConfirmDialog) sits above this modal.
+      const myDialog = fileInputRef.current?.closest(OPEN_DIALOG_SELECTOR) ?? null;
+      if (myDialog && !isTopmostOpenDialog(myDialog, document)) {
         return;
       }
 

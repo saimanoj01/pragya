@@ -1,5 +1,6 @@
-import React, { useEffect, useRef } from 'react';
-import { motion } from 'framer-motion';
+import React, { useCallback, useRef } from 'react';
+import { useNativeDialog } from '../../hooks/useNativeDialog';
+import { dialogClosedByValue } from '../../utils/dialogOverlay';
 
 export interface ModalProps {
   isOpen: boolean;
@@ -10,8 +11,19 @@ export interface ModalProps {
   headingId?: string;
   /** Id of the dialog's body text; bound via aria-describedby (ConfirmDialog). */
   describedById?: string;
-  /** False for destructive confirmations: a stray backdrop tap must not count as an answer. */
+  /** Explicit ARIA role: `'dialog'` (default) or `'alertdialog'` (ConfirmDialog). */
+  role?: 'dialog' | 'alertdialog';
+  /**
+   * True only for view-only dialogs (`closedby="any"` + pointerdown-safe backdrop fallback).
+   * Defaults to `false` (`closedby="closerequest"`) so forms and confirms never lose work on
+   * a stray backdrop tap or text-selection drag (ux_spec_cd §D.2.1).
+   */
   dismissOnBackdrop?: boolean;
+  /**
+   * When true (e.g. a `busy` destructive `ConfirmDialog`), sets `closedby="none"` and blocks
+   * Escape / CloseWatcher closes so an in-flight destructive action cannot desync `<dialog>`.
+   */
+  disableCloseRequest?: boolean;
   dataTestId?: string;
   variant?: 'dialog' | 'sheet';
   /** When true (and variant='dialog'), docks as a full-width bottom sheet on <640px mobile. */
@@ -24,6 +36,21 @@ export interface ModalProps {
   overlayClassName?: string;
 }
 
+const SM_MAX_WIDTH: Record<string, string> = {
+  'max-w-sm': 'sm:max-w-sm',
+  'max-w-md': 'sm:max-w-md',
+  'max-w-lg': 'sm:max-w-lg',
+  'max-w-xl': 'sm:max-w-xl',
+  'max-w-2xl': 'sm:max-w-2xl',
+};
+
+function isFocusableModalChild(el: HTMLElement): boolean {
+  // Exclude reparented top-layer toast buttons/items from modal initial-focus selection.
+  if (el.closest('[data-testid="toast-layer"]')) return false;
+  if (el.offsetParent !== null) return true;
+  return typeof el.getClientRects === 'function' && el.getClientRects().length > 0;
+}
+
 export function Modal({
   isOpen,
   onClose,
@@ -31,7 +58,9 @@ export function Modal({
   ariaLabel,
   headingId,
   describedById,
-  dismissOnBackdrop = true,
+  role = 'dialog',
+  dismissOnBackdrop = false,
+  disableCloseRequest = false,
   dataTestId,
   variant = 'dialog',
   mobileSheet = false,
@@ -41,166 +70,107 @@ export function Modal({
   className = '',
   overlayClassName = '',
 }: ModalProps) {
-  const modalRef = useRef<HTMLDivElement>(null);
-  const previouslyFocusedElementRef = useRef<HTMLElement | null>(null);
-  const onCloseRef = useRef(onClose);
-  onCloseRef.current = onClose;
+  const dialogRef = useRef<HTMLDialogElement>(null);
   const initialFocusRefHolder = useRef(initialFocusRef);
   initialFocusRefHolder.current = initialFocusRef;
 
-  useEffect(() => {
-    if (!isOpen) return;
+  const focusInitial = useCallback(() => {
+    const container = dialogRef.current;
+    if (!container) return;
 
-    previouslyFocusedElementRef.current = document.activeElement as HTMLElement | null;
+    const explicitTarget = initialFocusRefHolder.current?.current;
+    if (explicitTarget && container.contains(explicitTarget) && isFocusableModalChild(explicitTarget)) {
+      explicitTarget.focus();
+      return;
+    }
 
-    const focusInitialElement = () => {
-      const container = modalRef.current;
-      if (!container) return;
-      const explicitTarget = initialFocusRefHolder.current?.current;
-      if (explicitTarget && container.contains(explicitTarget) && explicitTarget.offsetParent !== null) {
-        explicitTarget.focus();
-        return;
-      }
+    // Note: React 18 strips JSX `autoFocus` from the DOM attribute; prefer `initialFocusRef` for
+    // React-managed elements. This query still catches raw/imperatively-set `[autofocus]`.
+    const autoFocusTarget = Array.from(
+      container.querySelectorAll<HTMLElement>('[autofocus]:not([disabled])')
+    ).find(isFocusableModalChild);
+    if (autoFocusTarget) {
+      autoFocusTarget.focus();
+      return;
+    }
 
-      const active = document.activeElement as HTMLElement | null;
-      if (active && container.contains(active) && active !== container) {
-        return;
-      }
+    const formControls = Array.from(
+      container.querySelectorAll<HTMLElement>(
+        'input:not([disabled]):not([type="hidden"]), textarea:not([disabled]), select:not([disabled])'
+      )
+    ).filter(el => !el.closest('[data-testid="toast-layer"]'));
+    const preferredForm = formControls.find(isFocusableModalChild) || formControls[0];
+    if (preferredForm) {
+      preferredForm.focus();
+      return;
+    }
 
-      const formControls = Array.from(
-        container.querySelectorAll<HTMLElement>(
-          'input:not([disabled]):not([type="hidden"]), textarea:not([disabled]), select:not([disabled])'
-        )
-      );
-      const preferredForm = formControls.find(el => el.offsetParent !== null) || formControls[0];
-      if (preferredForm) {
-        preferredForm.focus();
-        return;
-      }
+    const nonCloseControls = Array.from(
+      container.querySelectorAll<HTMLElement>(
+        'button:not([disabled]):not([aria-label^="Close"]), [href], [tabindex]:not([tabindex="-1"])'
+      )
+    ).filter(el => !el.closest('[data-testid="toast-layer"]'));
+    const preferredAction = nonCloseControls.find(isFocusableModalChild) || nonCloseControls[0];
+    if (preferredAction) {
+      preferredAction.focus();
+      return;
+    }
 
-      const nonCloseControls = Array.from(
-        container.querySelectorAll<HTMLElement>(
-          'button:not([disabled]):not([aria-label^="Close"]), [href], [tabindex]:not([tabindex="-1"])'
-        )
-      );
-      const preferredAction =
-        nonCloseControls.find(el => el.offsetParent !== null) || nonCloseControls[0];
-      if (preferredAction) {
-        preferredAction.focus();
-        return;
-      }
+    const allFocusables = Array.from(
+      container.querySelectorAll<HTMLElement>(
+        'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+      )
+    ).filter(el => !el.closest('[data-testid="toast-layer"]'));
+    const fallback = allFocusables.find(isFocusableModalChild) || allFocusables[0];
+    if (fallback) {
+      fallback.focus();
+    } else {
+      container.focus();
+    }
+  }, []);
 
-      const allFocusables = Array.from(
-        container.querySelectorAll<HTMLElement>(
-          'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
-        )
-      );
-      const fallback = allFocusables.find(el => el.offsetParent !== null) || allFocusables[0];
-      if (fallback) {
-        fallback.focus();
-      } else {
-        container.focus();
-      }
-    };
-
-    focusInitialElement();
-
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        const dialogs = document.querySelectorAll('[role="dialog"]');
-        if (dialogs.length > 0 && dialogs[dialogs.length - 1] !== modalRef.current) {
-          return;
-        }
-        // Respect inner popovers if any are open inside this modal
-        if (modalRef.current?.querySelector('[data-popover="true"]')) {
-          return;
-        }
-        e.preventDefault();
-        e.stopPropagation();
-        onCloseRef.current();
-        return;
-      }
-
-      if (e.key === 'Tab' && modalRef.current) {
-        const focusables = Array.from(
-          modalRef.current.querySelectorAll<HTMLElement>(
-            'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
-          )
-        ).filter(el => el.offsetParent !== null);
-
-        if (focusables.length === 0) return;
-        const first = focusables[0];
-        const last = focusables[focusables.length - 1];
-
-        if (e.shiftKey) {
-          if (document.activeElement === first) {
-            last.focus();
-            e.preventDefault();
-          }
-        } else if (document.activeElement === last) {
-          first.focus();
-          e.preventDefault();
-        }
-      }
-    };
-
-    window.addEventListener('keydown', handleKeyDown, true);
-    return () => {
-      window.removeEventListener('keydown', handleKeyDown, true);
-      previouslyFocusedElementRef.current?.focus?.();
-    };
-  }, [isOpen]);
+  useNativeDialog({
+    dialogRef,
+    isOpen,
+    onClose,
+    dismissOnBackdrop,
+    disableCloseRequest,
+    focusInitial,
+  });
 
   if (!isOpen) return null;
 
-  const handleBackdropClick = (e: React.MouseEvent<HTMLDivElement>) => {
-    if (dismissOnBackdrop && e.target === e.currentTarget) {
-      onCloseRef.current();
-    }
-  };
-
   const isSheet = variant === 'sheet';
+  const smMaxWidth = SM_MAX_WIDTH[maxWidth] || maxWidth;
+
+  const dialogClassName = isSheet
+    ? `pragya-dialog pragya-dialog--sheet m-0 mt-auto mb-0 sm:mt-0 sm:ml-auto sm:mr-0 w-full sm:w-[440px] sm:h-full max-h-[90dvh] sm:max-h-[100dvh] ${overlayClassName}`
+    : mobileSheet
+      ? `pragya-dialog pragya-dialog--mobile-sheet m-0 mt-auto mb-0 w-full max-w-full sm:m-auto sm:w-[calc(100%-2rem)] ${smMaxWidth} ${overlayClassName}`
+      : `pragya-dialog m-auto w-[calc(100%-2rem)] ${maxWidth} ${overlayClassName}`;
+
+  const panelClassName = isSheet
+    ? `w-full h-full max-h-[90dvh] sm:max-h-[100dvh] rounded-t-[18px] sm:rounded-none sm:border-l border-t sm:border-t-0 border-border bg-popover text-popover-foreground pt-6 pb-[max(env(safe-area-inset-bottom),1.5rem)] sm:pb-6 pl-[max(env(safe-area-inset-left),1.5rem)] pr-[max(env(safe-area-inset-right),1.5rem)] sm:pl-6 shadow-2xl relative overflow-y-auto overscroll-contain custom-scrollbar ${className}`
+    : mobileSheet
+      ? `bg-popover text-popover-foreground w-full max-h-[92dvh] sm:max-h-[90vh] rounded-t-[18px] sm:rounded-[14px] pt-4 pb-[max(env(safe-area-inset-bottom),1rem)] pl-[max(env(safe-area-inset-left),1rem)] pr-[max(env(safe-area-inset-right),1rem)] sm:p-6 shadow-2xl border-t sm:border border-border relative overflow-y-auto overscroll-contain custom-scrollbar ${className}`
+      : `bg-popover text-popover-foreground w-full max-h-[90vh] rounded-[14px] p-6 shadow-2xl border border-border relative overflow-y-auto overscroll-contain custom-scrollbar ${className}`;
 
   return (
-    <div
-      ref={modalRef}
-      role="dialog"
+    <dialog
+      ref={dialogRef}
+      role={role}
       aria-modal="true"
       aria-labelledby={headingId || undefined}
       aria-describedby={describedById || undefined}
       aria-label={headingId ? undefined : ariaLabel || title || 'Dialog'}
       data-testid={dataTestId}
-      onClick={handleBackdropClick}
       tabIndex={-1}
-      className={
-        isSheet
-          ? `fixed inset-0 z-50 flex items-end sm:items-stretch sm:justify-end bg-background/60 backdrop-blur-sm ${overlayClassName}`
-          : mobileSheet
-            ? `fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4 bg-background/80 backdrop-blur-sm overflow-y-auto ${overlayClassName}`
-            : `fixed inset-0 z-50 flex items-center justify-center p-4 bg-background/80 backdrop-blur-sm overflow-y-auto ${overlayClassName}`
-      }
+      {...({
+        closedby: dialogClosedByValue(dismissOnBackdrop, disableCloseRequest),
+      } as Record<string, string>)}
+      className={dialogClassName.trim()}
     >
-      <motion.div
-        initial={
-          isSheet
-            ? { opacity: 0, x: 24 }
-            : mobileSheet
-              ? { opacity: 0, y: 20 }
-              : { opacity: 0, scale: 0.96, y: 8 }
-        }
-        animate={isSheet ? { opacity: 1, x: 0 } : { opacity: 1, scale: 1, y: 0 }}
-        transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1] }}
-        className={
-          isSheet
-            ? `w-full sm:w-[440px] sm:h-full max-h-[90vh] sm:max-h-screen rounded-t-[18px] sm:rounded-none sm:border-l border-t sm:border-t-0 border-border bg-popover p-6 pb-[max(env(safe-area-inset-bottom),1.5rem)] sm:pb-6 shadow-2xl relative overflow-y-auto custom-scrollbar ${className}`
-            : mobileSheet
-              ? `bg-popover text-popover-foreground w-full ${maxWidth} max-h-[92dvh] sm:max-h-[90vh] rounded-t-[18px] sm:rounded-[14px] p-4 pb-[max(env(safe-area-inset-bottom),1rem)] sm:p-6 shadow-2xl border-t sm:border border-border relative overflow-y-auto custom-scrollbar ${className}`
-              : `bg-popover text-popover-foreground w-full ${maxWidth} max-h-[90vh] rounded-[14px] p-6 shadow-2xl border border-border relative overflow-y-auto custom-scrollbar ${className}`
-        }
-        onClick={e => e.stopPropagation()}
-      >
-        {children}
-      </motion.div>
-    </div>
+      <div className={panelClassName.trim()}>{children}</div>
+    </dialog>
   );
 }

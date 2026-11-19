@@ -23,10 +23,9 @@ export interface ConfirmDialogProps {
 }
 
 /**
- * ux_spec_cd §0.1 shared confirmation. Built on the current Modal (role="dialog" so the
- * existing shortcut / Escape guards still see it; `alertdialog` arrives with the native
- * <dialog> migration in CD Batch 6). Cancel has initial focus, Escape = Cancel, and the
- * backdrop never answers for the user.
+ * ux_spec_cd §0.1 shared confirmation built on native `<dialog role="alertdialog">` via Modal.
+ * Cancel has initial autofocus, Escape = Cancel, and `closedby="closerequest"` ensures a stray
+ * backdrop tap never answers for the user.
  */
 export function ConfirmDialog({
   isOpen,
@@ -46,18 +45,21 @@ export function ConfirmDialog({
   const bodyId = useId();
   const cancelRef = useRef<HTMLButtonElement>(null);
   if (!isOpen) return null;
-  // Portaled to <body> so it is never trapped inside a parent modal's transformed box,
-  // and is the last [role="dialog"] in the DOM (Modal's Escape layering picks it first).
+  // Portaled to <body> so it also sits last in DOM order alongside native top-layer stacking.
   return createPortal(
     <Modal
       isOpen={isOpen}
-      onClose={onCancel}
+      onClose={() => {
+        if (!busy) onCancel();
+      }}
+      role="alertdialog"
       title={title}
       headingId={headingId}
       describedById={bodyId}
       dataTestId="confirm-dialog"
       initialFocusRef={cancelRef}
       dismissOnBackdrop={false}
+      disableCloseRequest={busy}
       maxWidth="max-w-md"
     >
       <div className="space-y-4">
@@ -81,6 +83,7 @@ export function ConfirmDialog({
           <button
             ref={cancelRef}
             type="button"
+            autoFocus
             data-testid="confirm-dialog-cancel-btn"
             onClick={onCancel}
             className={`${BTN_SECONDARY} ${BTN_SIZE_LG}`}

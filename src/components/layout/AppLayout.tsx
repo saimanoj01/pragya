@@ -1,8 +1,37 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useLayoutEffect, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { Toaster } from 'sonner';
+import { registerToastLayerHost, syncToastLayerContainer } from '../../utils/toastLayer';
+
+const TOAST_LAYER_ATTRS = { popover: 'manual' } as const;
 
 /** CD D1.1: with `viewport-fit=cover`, the root pads the notch / rounded-corner insets. */
 export function AppLayout({ children }: { children: React.ReactNode }) {
+  // CD Batch 6 (D2.4 + QA-44 / R1#1): single persistent imperative `popover="manual"` container
+  // outside React's child reconciliation so `toastLayer.ts` can reparent it into the topmost open
+  // `<dialog:modal>` (keeping Undo/dismiss buttons non-inert and `role="alert"` in the AX tree)
+  // without ever unmounting or resetting Sonner state.
+  const [toastHost] = useState<HTMLDivElement | null>(() => {
+    if (typeof document === 'undefined') return null;
+    const el = document.createElement('div');
+    el.setAttribute('data-testid', 'toast-layer');
+    el.setAttribute('popover', TOAST_LAYER_ATTRS.popover);
+    el.className = 'pragya-toast-layer print:hidden';
+    return el;
+  });
+
+  useLayoutEffect(() => {
+    if (!toastHost) return;
+    registerToastLayerHost(toastHost);
+    syncToastLayerContainer(document, toastHost);
+    return () => {
+      registerToastLayerHost(null);
+      if (toastHost.parentNode) {
+        toastHost.parentNode.removeChild(toastHost);
+      }
+    };
+  }, [toastHost]);
+
   // CD D2.3 / ux_spec_cd §D.4.2: temporarily open collapsed content disclosures (e.g.
   // Recent Reading Sessions, atomic Socratic prompts) for window.print(), then restore.
   useEffect(() => {
@@ -44,16 +73,20 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
         {children}
       </div>
 
-      <Toaster
-        visibleToasts={1}
-        position="bottom-right"
-        // CD D1.1: on phones, sit above the BottomNav and the home indicator.
-        mobileOffset={{ bottom: 'calc(env(safe-area-inset-bottom) + 76px)' }}
-        className="toaster-wrapper"
-        toastOptions={{
-          className: 'notification-toast',
-        }}
-      />
+      {toastHost &&
+        createPortal(
+          <Toaster
+            visibleToasts={1}
+            position="bottom-right"
+            // CD D1.1: on phones, sit above the BottomNav and the home indicator.
+            mobileOffset={{ bottom: 'calc(env(safe-area-inset-bottom) + 76px)' }}
+            className="toaster-wrapper"
+            toastOptions={{
+              className: 'notification-toast',
+            }}
+          />,
+          toastHost
+        )}
     </div>
   );
 }

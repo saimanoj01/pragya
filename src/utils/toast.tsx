@@ -1,5 +1,6 @@
 import { toast as sonnerToast } from 'sonner';
 import { getToastStyle, type ToastType } from './toastStyle';
+import { promoteToastLayer } from './toastLayer';
 
 export type { ToastType };
 
@@ -23,6 +24,9 @@ export function showToast(
   type: ToastType = 'info',
   options?: ToastOptions
 ) {
+  // CD Batch 6 (D2.4): lift the toast container above any open top-layer `<dialog>`.
+  promoteToastLayer();
+
   // M4.3: trust the explicit semantic type — never regex-override from message text.
   const style = getToastStyle(type);
   const logicalId = options?.id;

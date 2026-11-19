@@ -34,6 +34,7 @@ export function PromptFallbackModal({
       title={title}
       headingId={headingId}
       dataTestId={dataTestId}
+      dismissOnBackdrop={true}
       initialFocusRef={textareaRef}
     >
       <div className="space-y-3">

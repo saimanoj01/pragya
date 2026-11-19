@@ -42,6 +42,7 @@ import { useArchiveActions } from '../../hooks/useArchiveActions';
 import { useDeleteForever } from '../../hooks/useDeleteForever';
 import { ConfirmDialog } from '../common/ConfirmDialog';
 import { archivedDateLabel, onlyArchived, withoutArchived } from '../../utils/archive';
+import { hasOpenDialog } from '../../utils/dialogOverlay';
 import { ChapterPosChip } from '../common/ChapterPosChip';
 
 /** CD C3.4: scroll + focused card per notes hash, restored on Back (sessionStorage). */
@@ -271,7 +272,7 @@ export const NotesView: React.FC<NotesViewProps> = ({
   React.useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.metaKey || e.ctrlKey || e.altKey) return;
-      if (document.querySelector('[role="dialog"]')) return;
+      if (hasOpenDialog(document)) return;
       if (document.querySelector('[data-popover="true"]')) return;
       const target = e.target as HTMLElement | null;
       if (
