@@ -8,7 +8,10 @@ Supports:
   - book-capstone
   - progress
   - capture
+  - note-list
+  - note-get
   - note-update
+  - delta-status
   - reflect (--stage 1 | --stage commit)
   - recall (--mode qa | checkin | shuffle)
   - ocr-backfill
@@ -1074,6 +1077,39 @@ def normalize_note_dict(note: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def normalize_session_dict(session: dict[str, Any]) -> dict[str, Any]:
+    """Idempotent drift normalization for snapshot/state-file reading session dicts."""
+    out = dict(session)
+    if "bookId" in out and out["bookId"] is not None:
+        out["bookId"] = str(out["bookId"]).strip()
+    if "date" in out:
+        out["date"] = decode_sheet_date(out.get("date"))
+    for key in ("startPos", "endPos"):
+        if key in out:
+            out[key] = clean_num(out.get(key), 0)
+    if "updatedAt" in out:
+        out["updatedAt"] = decode_sheet_timestamp(out.get("updatedAt"))
+    if "note" in out:
+        out["note"] = "" if out["note"] is None else str(out["note"])
+    return out
+
+
+def normalize_delta_log_dict(log: dict[str, Any]) -> dict[str, Any]:
+    """Idempotent drift normalization for snapshot/state-file delta log dicts."""
+    out = dict(log)
+    if "noteId" in out and out["noteId"] is not None:
+        out["noteId"] = str(out["noteId"]).strip()
+    if "date" in out:
+        out["date"] = decode_sheet_date(out.get("date"))
+    outcome = str(out.get("outcome") or "no-trigger").strip()
+    if outcome not in ("applied", "missed", "no-trigger"):
+        outcome = "no-trigger"
+    out["outcome"] = outcome
+    if "reflection" in out:
+        out["reflection"] = "" if out["reflection"] is None else str(out["reflection"])
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Sheet Codecs (Books!A:L, Notes!A:R, Sessions!A:G, DeltaLogs!A:E)
 # ---------------------------------------------------------------------------
@@ -1479,6 +1515,26 @@ class WorkspaceBackend:
     ) -> dict[str, Any]:
         raise NotImplementedError
 
+    def save_notes_batch(
+        self,
+        items: list[tuple[dict[str, Any], str | None]],
+        *,
+        force: bool = False,
+        update_only: bool = False,
+    ) -> list[dict[str, Any]]:
+        """Save multiple (note, expected_base_updated_at) entries with per-row conflict guards."""
+        _ = update_only
+        saved: list[dict[str, Any]] = []
+        for note, expected_base in items:
+            saved.append(
+                self.save_note(
+                    note,
+                    expected_base_updated_at=expected_base,
+                    force=force,
+                )
+            )
+        return saved
+
     def save_session(self, session: dict[str, Any]) -> dict[str, Any]:
         raise NotImplementedError
 
@@ -1562,12 +1618,17 @@ class StateFileBackend(WorkspaceBackend):
 
     def load_workspace(self) -> dict[str, Any]:
         raw = self._read_raw()
-        # Same drift codecs as the Sheets path (print/companion/q1-q2/chapterNote).
+        # Same drift codecs across all 4 entities as the Sheets path.
         return {
             "books": [normalize_book_dict(b) if isinstance(b, dict) else b for b in raw["books"]],
             "notes": [normalize_note_dict(n) if isinstance(n, dict) else n for n in raw["notes"]],
-            "sessions": list(raw["sessions"]),
-            "deltaLogs": list(raw["deltaLogs"]),
+            "sessions": [
+                normalize_session_dict(s) if isinstance(s, dict) else s for s in raw["sessions"]
+            ],
+            "deltaLogs": [
+                normalize_delta_log_dict(dl) if isinstance(dl, dict) else dl
+                for dl in raw["deltaLogs"]
+            ],
         }
 
     def save_book(
@@ -1600,32 +1661,57 @@ class StateFileBackend(WorkspaceBackend):
         expected_base_updated_at: str | None = None,
         force: bool = False,
     ) -> dict[str, Any]:
+        return self.save_notes_batch([(note, expected_base_updated_at)], force=force)[0]
+
+    def save_notes_batch(
+        self,
+        items: list[tuple[dict[str, Any], str | None]],
+        *,
+        force: bool = False,
+        update_only: bool = False,
+    ) -> list[dict[str, Any]]:
+        if not items:
+            return []
         raw = self._read_raw()
-        normalized = normalize_note_dict(note)
-        if expected_base_updated_at and not force:
-            for existing in raw["notes"]:
-                if isinstance(existing, dict) and existing.get("id") == note.get("id"):
-                    remote_ts = existing.get("updatedAt")
-                    if _is_remote_newer(remote_ts, expected_base_updated_at):
-                        raise CliError(
-                            f"Row conflict on Notes {note.get('id')}: remote updatedAt ({remote_ts}) is newer than loaded base ({expected_base_updated_at}). Re-run or pass --force to overwrite."
-                        )
-                    break
-        raw["notes"] = _upsert_by_id(raw["notes"], normalized)
+        existing_by_id = {
+            existing.get("id"): existing
+            for existing in raw["notes"]
+            if isinstance(existing, dict) and existing.get("id")
+        }
+        normalized_items: list[dict[str, Any]] = []
+        # Pre-validate every note's existence & conflict guard BEFORE writing anything (all-or-nothing).
+        for note, expected_base in items:
+            existing = existing_by_id.get(note.get("id"))
+            if existing is None and update_only:
+                raise CliError(
+                    f"Notes row {note.get('id')} moved or was deleted during write; nothing was "
+                    "written. Re-run the command."
+                )
+            if expected_base and not force and existing is not None:
+                remote_ts = existing.get("updatedAt")
+                if _is_remote_newer(remote_ts, expected_base):
+                    raise CliError(
+                        f"Row conflict on Notes {note.get('id')}: remote updatedAt ({remote_ts}) is newer than loaded base ({expected_base}). Re-run or pass --force to overwrite."
+                    )
+            normalized_items.append(normalize_note_dict(note))
+        for normalized in normalized_items:
+            raw["notes"] = _upsert_by_id(raw["notes"], normalized)
         self._write_raw(raw)
-        return normalized
+        return normalized_items
 
     def save_session(self, session: dict[str, Any]) -> dict[str, Any]:
         raw = self._read_raw()
-        raw["sessions"] = _upsert_by_id(raw["sessions"], session)
+        normalized = normalize_session_dict(session)
+        raw["sessions"] = _upsert_by_id(raw["sessions"], normalized)
         self._write_raw(raw)
-        return session
+        return normalized
 
     def save_delta_log(self, log: dict[str, Any]) -> dict[str, Any]:
         raw = self._read_raw()
-        raw["deltaLogs"] = _upsert_by_id(raw["deltaLogs"], log)
+        normalized = normalize_delta_log_dict(log)
+        raw["deltaLogs"] = _upsert_by_id(raw["deltaLogs"], normalized)
         self._write_raw(raw)
-        return log
+        return normalized
 
     def upload_image(self, local_path: Path) -> dict[str, Any]:
         if not local_path.exists():
@@ -1688,6 +1774,7 @@ class GoogleWorkspaceBackend(WorkspaceBackend):
         self._runner = runner
         self._sleep = sleep
         self._schema_checked = False
+        self._tabs_ensured = False
         self._sheet_ids: dict[str, int] = {}
 
     def _run_with_retry(self, cmd: list[str]) -> tuple[int, str, str]:
@@ -1907,31 +1994,43 @@ class GoogleWorkspaceBackend(WorkspaceBackend):
             if os.path.exists(tmp_path):
                 os.unlink(tmp_path)
 
+    _REQUIRED_TABS: tuple[tuple[str, str, list[str]], ...] = (
+        ("Books", "L", BOOKS_HEADERS),
+        ("Notes", "R", NOTES_HEADERS),
+        ("Sessions", "G", SESSIONS_HEADERS),
+        ("DeltaLogs", "E", DELTA_LOGS_HEADERS),
+    )
+
+    def _ensure_tabs(self) -> tuple[str, set[str]]:
+        """Discover/cache spreadsheetId and list-sheets sheetIds once per backend instance."""
+        sid = self.resolve_spreadsheet_id()
+        if self._tabs_ensured:
+            return sid, set()
+
+        existing_titles = self._load_sheet_ids(sid)
+        added_tabs: set[str] = set()
+        for tab, _, _ in self._REQUIRED_TABS:
+            if tab not in existing_titles:
+                self._run_ok(["gsheets", "mutate", "add-sheet", sid, "--title", tab, "--json"])
+                added_tabs.add(tab)
+        if added_tabs:
+            # Refresh tab -> sheetId so the new tab is writable.
+            self._load_sheet_ids(sid)
+
+        self._tabs_ensured = True
+        return sid, added_tabs
+
     def ensure_schema(self) -> str:
         sid = self.resolve_spreadsheet_id()
         if self._schema_checked:
             return sid
 
-        existing_titles = self._load_sheet_ids(sid)
-
-        required_tabs: list[tuple[str, str, list[str]]] = [
-            ("Books", "L", BOOKS_HEADERS),
-            ("Notes", "R", NOTES_HEADERS),
-            ("Sessions", "G", SESSIONS_HEADERS),
-            ("DeltaLogs", "E", DELTA_LOGS_HEADERS),
-        ]
-
-        added_any = False
-        for tab, _, _ in required_tabs:
-            if tab not in existing_titles:
-                self._run_ok(["gsheets", "mutate", "add-sheet", sid, "--title", tab, "--json"])
-                added_any = True
-        if added_any:
-            # Refresh tab -> sheetId so the new tab is writable.
-            self._load_sheet_ids(sid)
-
+        sid, added_tabs = self._ensure_tabs()
         header_ops: list[dict[str, Any]] = []
-        for tab, last_col, headers in required_tabs:
+        for tab, last_col, headers in self._REQUIRED_TABS:
+            if tab in added_tabs:
+                header_ops.append({"kind": "update", "tab": tab, "row": 1, "values": list(headers)})
+                continue
             rows = self._read_range(sid, f"{tab}!A1:{last_col}1")
             first_row = [str(c) for c in rows[0]] if rows else []
             if first_row != headers:
@@ -2029,11 +2128,32 @@ class GoogleWorkspaceBackend(WorkspaceBackend):
         self._write_cells(sid, [op])
 
     def load_workspace(self) -> dict[str, Any]:
-        sid = self.ensure_schema()
+        # CD Batch 8 (D3.5): cache list-sheets per backend instance and validate headers
+        # directly from row 1 of the 4 data reads (eliminates 4 separate A1:X1 subprocesses).
+        sid, added_tabs = self._ensure_tabs()
         books_rows = self._read_range(sid, "Books!A:L")
         notes_rows = self._read_range(sid, "Notes!A:R")
         sessions_rows = self._read_range(sid, "Sessions!A:G")
         logs_rows = self._read_range(sid, "DeltaLogs!A:E")
+
+        if not self._schema_checked:
+            tab_rows_map = {
+                "Books": books_rows,
+                "Notes": notes_rows,
+                "Sessions": sessions_rows,
+                "DeltaLogs": logs_rows,
+            }
+            header_ops: list[dict[str, Any]] = []
+            for tab, _, headers in self._REQUIRED_TABS:
+                rows = tab_rows_map[tab]
+                first_row = [str(c) for c in rows[0]] if rows else []
+                if tab in added_tabs or first_row != headers:
+                    header_ops.append(
+                        {"kind": "update", "tab": tab, "row": 1, "values": list(headers)}
+                    )
+            if header_ops:
+                self._write_cells(sid, header_ops)
+            self._schema_checked = True
 
         books = [b for b in (row_to_book(r) for r in books_rows[1:]) if b is not None]
         notes = [n for n in (row_to_note(r) for r in notes_rows[1:]) if n is not None]
@@ -2079,6 +2199,79 @@ class GoogleWorkspaceBackend(WorkspaceBackend):
             force=force,
         )
         return note
+
+    def save_notes_batch(
+        self,
+        items: list[tuple[dict[str, Any], str | None]],
+        *,
+        force: bool = False,
+        update_only: bool = False,
+    ) -> list[dict[str, Any]]:
+        """CD Batch 8 (D3.5): write multiple Notes in ONE raw-batch subprocess with
+        all-or-nothing pre-write conflict and row-ID validation (1 read + 1 write)."""
+        if not items:
+            return []
+        sid = self.ensure_schema()
+        tab_rows = self._read_range(sid, "Notes!A:R")
+        row_by_id: dict[str, tuple[int, list[Any]]] = {}
+        for idx, cand in enumerate(tab_rows, start=1):
+            if idx == 1:
+                continue
+            if cand:
+                cid = str(cand[0] or "").strip()
+                if cid and cid not in row_by_id:
+                    row_by_id[cid] = (idx, cand)
+
+        # Deduplicate repeated note IDs (keep earliest expected_base_updated_at, latest note body).
+        deduped_order: list[str] = []
+        deduped_map: dict[str, tuple[dict[str, Any], str | None]] = {}
+        for note, expected_base in items:
+            nid = str(note["id"])
+            if nid not in deduped_map:
+                deduped_order.append(nid)
+                deduped_map[nid] = (note, expected_base)
+            else:
+                prev_base = deduped_map[nid][1]
+                deduped_map[nid] = (note, prev_base or expected_base)
+
+        ops: list[dict[str, Any]] = []
+        saved_notes: list[dict[str, Any]] = []
+        for nid in deduped_order:
+            note, expected_base = deduped_map[nid]
+            found = row_by_id.get(nid)
+            if found is not None:
+                matched_row, target_row = found
+                if expected_base and not force:
+                    remote_ts: Any = target_row[4] if len(target_row) > 4 else None
+                    if _is_remote_newer(remote_ts, expected_base):
+                        raise CliError(
+                            f"Row conflict on Notes {nid}: remote updatedAt ({remote_ts}) is newer than loaded base ({expected_base}). Re-run after syncing or pass --force to overwrite."
+                        )
+                ops.append(
+                    {
+                        "kind": "update",
+                        "tab": "Notes",
+                        "row": matched_row,
+                        "values": note_to_row(note),
+                    }
+                )
+            else:
+                if update_only or expected_base:
+                    raise CliError(
+                        f"Notes row {nid} moved or was deleted during write; nothing was "
+                        "written. Re-run the command."
+                    )
+                ops.append(
+                    {
+                        "kind": "append",
+                        "tab": "Notes",
+                        "values": note_to_row(note),
+                    }
+                )
+            saved_notes.append(note)
+
+        self._write_cells(sid, ops)
+        return saved_notes
 
     def save_session(self, session: dict[str, Any]) -> dict[str, Any]:
         self._upsert_row("Sessions", "G", session["id"], session_to_row(session))
@@ -3163,6 +3356,231 @@ NOTE_UPDATE_FIELDS = (
 )
 
 
+def _is_note_shielded_for_cli(note: dict[str, Any], book: dict[str, Any] | None) -> bool:
+    """Spoiler shield rule shared with PWA/timeline: ahead of bookmark OR sealed prediction."""
+    if not book:
+        return False
+    return is_note_spoiler(note, book) or is_sealed_prediction(note, book)
+
+
+def _redacted_shielded_note(note: dict[str, Any], book: dict[str, Any] | None) -> dict[str, Any]:
+    """Minimal spoiler-safe stub exposing zero title/slug/chapter/quote/takeaway/delta text."""
+    pos_unit = (book or {}).get("posUnit") or "page"
+    return {
+        "id": note["id"],
+        "bookId": note.get("bookId", ""),
+        "bookTitle": (book or {}).get("title") or "",
+        "pos": note.get("pos"),
+        "posDisplay": format_pos_display(_safe_float(note.get("pos"), 0.0), pos_unit),
+        "status": note.get("status"),
+        "tags": list(note.get("tags") or []),
+        "archived": is_archived(note),
+    }
+
+
+def cmd_note_list(args: argparse.Namespace, backend: WorkspaceBackend) -> dict[str, Any]:
+    """CD Batch 8 (D3.6): list notes with book/status/tag/delta-status/archive/spoiler filters."""
+    ws = backend.load_workspace()
+    book_map = {b["id"]: b for b in ws["books"]}
+
+    target_book = resolve_book(ws["books"], args.book) if getattr(args, "book", None) else None
+    status_filter = getattr(args, "status", None)
+    delta_filter = getattr(args, "delta_status", None)
+    include_archived = bool(getattr(args, "include_archived", False))
+    include_spoilers = bool(getattr(args, "include_spoilers", False))
+
+    raw_tag = (getattr(args, "tag", None) or "").strip()
+    tag_filter: str | None = None
+    if raw_tag:
+        parsed_tags = parse_tags_csv(raw_tag)
+        tag_filter = parsed_tags[0] if parsed_tags else f"#{raw_tag.lstrip('#').lower()}"
+
+    matched: list[dict[str, Any]] = []
+    archived_count = 0
+    shielded_count = 0
+
+    for n in ws["notes"]:
+        if target_book and n.get("bookId") != target_book["id"]:
+            continue
+        if is_archived(n):
+            archived_count += 1
+            if not include_archived:
+                continue
+        if status_filter and n.get("status") != status_filter:
+            continue
+        if delta_filter and (n.get("deltaStatus") or "none") != delta_filter:
+            continue
+        if tag_filter:
+            note_tags = [str(t).lower() for t in (n.get("tags") or [])]
+            if tag_filter.lower() not in note_tags:
+                continue
+        book = book_map.get(n.get("bookId", ""))
+        if not include_spoilers and _is_note_shielded_for_cli(n, book):
+            shielded_count += 1
+            continue
+        matched.append(n)
+
+    return {
+        "count": len(matched),
+        "archivedCount": archived_count,
+        "shieldedCount": shielded_count,
+        "notes": matched,
+    }
+
+
+def cmd_note_get(args: argparse.Namespace, backend: WorkspaceBackend) -> dict[str, Any]:
+    """CD Batch 8 (D3.6): inspect one note by id/slug/alias, spoiler-shielded by default."""
+    ws = backend.load_workspace()
+    book_map = {b["id"]: b for b in ws["books"]}
+    note = resolve_note(ws["notes"], args.note)
+    book = book_map.get(note.get("bookId", ""))
+    include_spoilers = bool(getattr(args, "include_spoilers", False))
+
+    if not include_spoilers and _is_note_shielded_for_cli(note, book):
+        return {
+            "shielded": True,
+            "note": _redacted_shielded_note(note, book),
+            "message": (
+                "Note is shielded (ahead of the book's current bookmark or a sealed prediction). "
+                "Pass --include-spoilers (or --reveal) to view its contents."
+            ),
+        }
+
+    return {
+        "shielded": False,
+        "bookTitle": (book or {}).get("title") or "",
+        "note": note,
+    }
+
+
+def cmd_delta_status(args: argparse.Namespace, backend: WorkspaceBackend) -> dict[str, Any]:
+    """CD Batch 8 (D3.6): list Behavioral Deltas (5-cap) or transition a note's deltaStatus."""
+    ws = backend.load_workspace()
+    book_map = {b["id"]: b for b in ws["books"]}
+
+    note_ref = (getattr(args, "note", None) or "").strip()
+    next_status = getattr(args, "status", None)
+    trigger_arg = getattr(args, "trigger", None)
+    action_arg = getattr(args, "action", None)
+
+    if bool(note_ref) != bool(next_status):
+        raise CliError(
+            "Provide both --note and --status together to change a note's Behavioral Delta status."
+        )
+
+    # View mode: grouped active/paused/graduated lists + 5-cap count (ignoring archived).
+    if not note_ref and not next_status:
+        if trigger_arg is not None or action_arg is not None:
+            raise CliError("Pass --note and --status when updating --trigger or --action.")
+        include_archived = bool(getattr(args, "include_archived", False))
+        include_spoilers = bool(getattr(args, "include_spoilers", False))
+
+        active_count = sum(
+            1
+            for n in ws["notes"]
+            if (n.get("deltaStatus") or "none") == "active" and not is_archived(n)
+        )
+        buckets: dict[str, list[dict[str, Any]]] = {
+            "active": [],
+            "paused": [],
+            "graduated": [],
+        }
+        for n in ws["notes"]:
+            ds = n.get("deltaStatus") or "none"
+            if ds not in buckets:
+                continue
+            if is_archived(n) and not include_archived:
+                continue
+            book = book_map.get(n.get("bookId", ""))
+            shielded = not include_spoilers and _is_note_shielded_for_cli(n, book)
+            if shielded:
+                entry = _redacted_shielded_note(n, book)
+                entry["deltaStatus"] = ds
+                entry["shielded"] = True
+                buckets[ds].append(entry)
+            else:
+                _, _, when_line, do_line = format_when_do_lines(
+                    n.get("deltaTrigger") or "",
+                    n.get("deltaAction") or "",
+                )
+                buckets[ds].append(
+                    {
+                        "id": n["id"],
+                        "slug": n["slug"],
+                        "title": (n.get("meta") or {}).get("title") or n["slug"],
+                        "bookId": n.get("bookId", ""),
+                        "bookTitle": (book or {}).get("title") or "",
+                        "pos": n.get("pos"),
+                        "deltaStatus": ds,
+                        "whenLine": when_line,
+                        "doLine": do_line,
+                        "archived": is_archived(n),
+                        "shielded": False,
+                    }
+                )
+
+        return {
+            "activeCount": active_count,
+            "cap": ACTIVE_DELTA_CAP,
+            "remainingSlots": max(0, ACTIVE_DELTA_CAP - active_count),
+            "active": buckets["active"],
+            "paused": buckets["paused"],
+            "graduated": buckets["graduated"],
+        }
+
+    # Transition mode: enforce archived, atomic, 5-cap, and WHEN/DO invariants.
+    note = resolve_note(ws["notes"], note_ref)
+    prev_status = note.get("deltaStatus") or "none"
+    updated = json.loads(json.dumps(note))
+    meta = updated.setdefault("meta", {})
+
+    if trigger_arg is not None:
+        updated["deltaTrigger"] = normalize_delta_trigger(trigger_arg)
+    if action_arg is not None:
+        updated["deltaAction"] = normalize_delta_action(action_arg)
+    updated["deltaStatus"] = next_status
+    meta.pop("archivedDeltaStatus", None)
+
+    if next_status == "active":
+        if is_archived(updated):
+            raise CliError(
+                "Cannot activate a Behavioral Delta on an archived note. Unarchive it first."
+            )
+        if updated.get("status") != "atomic":
+            raise CliError(
+                "An active Behavioral Delta needs an atomic note: deepen/promote it to atomic "
+                "first (or set --status paused)."
+            )
+        check_active_delta_cap(ws["notes"], note["id"], next_status)
+        if not (updated.get("deltaTrigger") or updated.get("deltaAction")):
+            raise CliError("Provide a WHEN trigger or DO action to activate a Behavioral Delta.")
+
+    updated["updatedAt"] = now_iso_utc()
+    force = bool(getattr(args, "force", False))
+    backend.save_note(updated, expected_base_updated_at=note.get("updatedAt"), force=force)
+
+    next_active_count = sum(
+        1
+        for n in ws["notes"]
+        if (
+            (updated if n.get("id") == note["id"] else n).get("deltaStatus") == "active"
+            and not is_archived(updated if n.get("id") == note["id"] else n)
+        )
+    )
+    include_spoilers = bool(getattr(args, "include_spoilers", False))
+    book = book_map.get(updated.get("bookId", ""))
+    shielded = not include_spoilers and _is_note_shielded_for_cli(updated, book)
+    return {
+        "note": _redacted_shielded_note(updated, book) if shielded else updated,
+        "shielded": shielded,
+        "previousDeltaStatus": prev_status,
+        "deltaStatus": next_status,
+        "activeCount": next_active_count,
+        "cap": ACTIVE_DELTA_CAP,
+        "remainingSlots": max(0, ACTIVE_DELTA_CAP - next_active_count),
+    }
+
+
 def cmd_note_update(args: argparse.Namespace, backend: WorkspaceBackend) -> dict[str, Any]:
     """A4.2: field edits + the inbox/in-reflection -> saved "just save it" escape hatch.
 
@@ -3663,7 +4081,7 @@ def cmd_ocr_backfill(args: argparse.Namespace, backend: WorkspaceBackend) -> dic
     if args.note:
         target_note_id = resolve_note(ws["notes"], args.note)["id"]
 
-    updated_notes: list[dict[str, Any]] = []
+    pending_updates: list[tuple[dict[str, Any], str | None]] = []
     skipped_notes: list[str] = []
 
     for n in ws["notes"]:
@@ -3720,12 +4138,17 @@ def cmd_ocr_backfill(args: argparse.Namespace, backend: WorkspaceBackend) -> dic
         updated["quote"] = resolved_text
         updated.setdefault("meta", {})["ocrBackfilled"] = True
         updated["updatedAt"] = now_iso_utc()
-        backend.save_note(
-            updated,
-            expected_base_updated_at=n.get("updatedAt"),
+        pending_updates.append((updated, n.get("updatedAt")))
+
+    updated_notes = (
+        backend.save_notes_batch(
+            pending_updates,
             force=bool(getattr(args, "force", False)),
+            update_only=True,
         )
-        updated_notes.append(updated)
+        if pending_updates
+        else []
+    )
 
     return {
         "updatedCount": len(updated_notes),
@@ -3831,6 +4254,7 @@ def cmd_export_md(args: argparse.Namespace, backend: WorkspaceBackend) -> dict[s
     out_dir_resolved = out_dir.resolve()
 
     exported_files: list[str] = []
+    pending_stamps: list[tuple[dict[str, Any], str | None]] = []
     skipped = 0
 
     for n in ws["notes"]:
@@ -3862,12 +4286,15 @@ def cmd_export_md(args: argparse.Namespace, backend: WorkspaceBackend) -> dict[s
 
         updated_note = json.loads(json.dumps(n))
         updated_note.setdefault("meta", {})["exportedAt"] = stamp_iso
-        backend.save_note(
-            updated_note,
-            expected_base_updated_at=n.get("updatedAt"),
-            force=bool(getattr(args, "force", False)),
-        )
+        pending_stamps.append((updated_note, n.get("updatedAt")))
         exported_files.append(str(dest_file))
+
+    if pending_stamps:
+        backend.save_notes_batch(
+            pending_stamps,
+            force=bool(getattr(args, "force", False)),
+            update_only=True,
+        )
 
     # A1.5: per-book Markdown index books/<book-slug>.md (atomic files above stay OQ-8).
     books_dir = out_dir / "books"
@@ -5057,6 +5484,20 @@ def build_parser() -> argparse.ArgumentParser:
     p_cap.add_argument("--force-pos", action="store_true", help="Override monotonic bookmark ceiling.")
     p_cap.add_argument("--chapter", default=None, help="Note chapter (default: inherit the book's current chapter at the bookmark; empty = none).")
 
+    # 1a. note-list
+    p_nlist = sub.add_parser("note-list", parents=[common], help="List notes with book/status/tag/delta/archive/spoiler filters.")
+    p_nlist.add_argument("--book", default=None, help="Filter by book UUID or title.")
+    p_nlist.add_argument("--status", default=None, choices=["saved", "inbox", "in-reflection", "atomic"], help="Filter by note status.")
+    p_nlist.add_argument("--tag", default=None, help="Filter by #tag (leading # optional).")
+    p_nlist.add_argument("--delta-status", default=None, choices=["none", "active", "paused", "graduated"], help="Filter by Behavioral Delta status.")
+    p_nlist.add_argument("--include-archived", action="store_true", help="Include soft-archived notes.")
+    p_nlist.add_argument("--include-spoilers", "--reveal", dest="include_spoilers", action="store_true", help="Include notes ahead of an unfinished book's bookmark and sealed predictions.")
+
+    # 1a2. note-get
+    p_nget = sub.add_parser("note-get", parents=[common], help="Inspect a single note by UUID, slug, or alias (spoiler-safe by default).")
+    p_nget.add_argument("--note", required=True, help="Note UUID, slug, or former slug alias.")
+    p_nget.add_argument("--include-spoilers", "--reveal", dest="include_spoilers", action="store_true", help="Reveal spoiler-shielded note contents.")
+
     # 1b. note-update
     p_nupd = sub.add_parser("note-update", parents=[common], help="Edit note fields or move inbox -> saved.")
     p_nupd.add_argument("--note", required=True, help="Note UUID or slug.")
@@ -5074,6 +5515,15 @@ def build_parser() -> argparse.ArgumentParser:
     g_narch = p_nupd.add_mutually_exclusive_group()
     g_narch.add_argument("--archive", action="store_true", help="Soft-archive the note (an active delta is paused).")
     g_narch.add_argument("--unarchive", action="store_true", help="Restore a soft-archived note (reactivates a delta archiving paused, if under the cap).")
+
+    # 1c. delta-status
+    p_dstat = sub.add_parser("delta-status", parents=[common], help="View active/paused/graduated Behavioral Deltas (5-cap) or transition a note's deltaStatus.")
+    p_dstat.add_argument("--note", default=None, help="Note UUID, slug, or alias to transition (requires --status).")
+    p_dstat.add_argument("--status", default=None, choices=["active", "paused", "graduated", "none"], help="Target Behavioral Delta status (requires --note).")
+    p_dstat.add_argument("--trigger", "--delta-trigger", dest="trigger", default=None, help="Optional WHEN trigger when updating delta status.")
+    p_dstat.add_argument("--action", "--delta-action", dest="action", default=None, help="Optional DO action when updating delta status.")
+    p_dstat.add_argument("--include-archived", action="store_true", help="Include archived notes when listing deltas (never counted in 5-cap).")
+    p_dstat.add_argument("--include-spoilers", "--reveal", dest="include_spoilers", action="store_true", help="Reveal spoiler-shielded notes in list or transition output.")
 
     # 2. reflect
     p_ref = sub.add_parser("reflect", parents=[common], help="4-stage Socratic reflection.")
@@ -5148,7 +5598,10 @@ def main(argv: list[str] | None = None, runner: Callable[[list[str]], tuple[int,
         "book-add": cmd_book_add,
         "book-update": cmd_book_update,
         "book-capstone": cmd_book_capstone,
+        "note-list": cmd_note_list,
+        "note-get": cmd_note_get,
         "note-update": cmd_note_update,
+        "delta-status": cmd_delta_status,
         "progress": cmd_progress,
         "capture": cmd_capture,
         "reflect": cmd_reflect,

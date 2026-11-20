@@ -1,8 +1,8 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { ImageOff } from 'lucide-react';
 import type { Attachment } from '../../types/pragya';
 import { getDemoMediaBlob } from '../../services/demoMediaDb';
-import { useAuth } from '../../context/AuthContext';
+import { MOCK_MODE_KEY, useAuth } from '../../context/AuthContext';
 
 export const PRAGYA_MEDIA_CACHE_NAME = 'pragya-media-v1';
 
@@ -21,13 +21,35 @@ export const DriveImage: React.FC<DriveImageProps> = ({
   onClick,
   testId,
 }) => {
-  const { getGoogleToken, triggerSessionExpired } = useAuth();
+  const {
+    user,
+    isAuthenticated,
+    isMockMode,
+    getGoogleToken,
+    refreshGoogleTokenSilent,
+    triggerSessionExpired,
+  } = useAuth();
   const [src, setSrc] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
+
+  const isAuthenticatedRef = useRef<boolean>(isAuthenticated);
+  isAuthenticatedRef.current = isAuthenticated;
+  const isMockModeRef = useRef<boolean>(isMockMode);
+  isMockModeRef.current = isMockMode;
+  const userEmailRef = useRef<string | undefined>(user?.email);
+  userEmailRef.current = user?.email;
 
   useEffect(() => {
     let active = true;
     let objectUrl: string | null = null;
+    const ownerEmail = user?.email;
+
+    const isCloudSessionActive = () =>
+      active &&
+      isAuthenticatedRef.current &&
+      !isMockModeRef.current &&
+      userEmailRef.current === ownerEmail &&
+      localStorage.getItem(MOCK_MODE_KEY) !== 'true';
 
     const loadImage = async () => {
       setFailed(false);
@@ -56,9 +78,12 @@ export const DriveImage: React.FC<DriveImageProps> = ({
           if (typeof caches !== 'undefined') {
             try {
               const cache = await caches.open(PRAGYA_MEDIA_CACHE_NAME);
+              if (!active) return;
               const cachedResponse = await cache.match(cacheKey);
+              if (!active) return;
               if (cachedResponse) {
                 blob = await cachedResponse.blob();
+                if (!active) return;
               }
             } catch {
               // Cache API unavailable or restricted
@@ -66,25 +91,53 @@ export const DriveImage: React.FC<DriveImageProps> = ({
           }
 
           if (!blob) {
-            const token = getGoogleToken();
+            if (!isCloudSessionActive()) return;
+            let token = getGoogleToken();
+            let refreshedOnce = false;
             if (!token) {
-              setFailed(true);
+              refreshedOnce = true;
+              token = await refreshGoogleTokenSilent({
+                force: true,
+                expectedEmailOverride: ownerEmail,
+              });
+              if (!isCloudSessionActive()) return;
+            }
+            if (!token) {
+              if (active) setFailed(true);
               return;
             }
-            const res = await fetch(
-              `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(
-                attachment.driveFileId
-              )}?alt=media`,
-              {
-                headers: {
-                  Authorization: `Bearer ${token}`,
-                },
+            const fetchMedia = (tok: string) =>
+              fetch(
+                `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(
+                  attachment.driveFileId!
+                )}?alt=media`,
+                {
+                  headers: {
+                    Authorization: `Bearer ${tok}`,
+                  },
+                }
+              );
+
+            let res = await fetchMedia(token);
+            if (!isCloudSessionActive()) return;
+
+            if (res.status === 401 && !refreshedOnce) {
+              const refreshed = await refreshGoogleTokenSilent({
+                force: true,
+                expectedEmailOverride: ownerEmail,
+              });
+              if (!isCloudSessionActive()) return;
+              if (refreshed && refreshed !== token) {
+                res = await fetchMedia(refreshed);
+                if (!isCloudSessionActive()) return;
               }
-            );
+            }
 
             if (res.status === 401) {
-              triggerSessionExpired();
-              if (active) setFailed(true);
+              if (isCloudSessionActive()) {
+                triggerSessionExpired();
+                setFailed(true);
+              }
               return;
             }
 
@@ -95,10 +148,14 @@ export const DriveImage: React.FC<DriveImageProps> = ({
 
             const cloned = res.clone();
             blob = await res.blob();
+            if (!isCloudSessionActive() || !getGoogleToken()) return;
 
             if (typeof caches !== 'undefined') {
               try {
                 const cache = await caches.open(PRAGYA_MEDIA_CACHE_NAME);
+                // R1#2: re-check active Cloud session + stored token right before put() so
+                // a slow fetch settling during/after logout never resurrects pragya-media-v1.
+                if (!isCloudSessionActive() || !getGoogleToken()) return;
                 await cache.put(cacheKey, cloned);
               } catch {
                 // Ignore cache write errors
@@ -126,7 +183,16 @@ export const DriveImage: React.FC<DriveImageProps> = ({
         URL.revokeObjectURL(objectUrl);
       }
     };
-  }, [attachment.demoMediaId, attachment.driveFileId, getGoogleToken, triggerSessionExpired]);
+  }, [
+    attachment.demoMediaId,
+    attachment.driveFileId,
+    isAuthenticated,
+    isMockMode,
+    user?.email,
+    getGoogleToken,
+    refreshGoogleTokenSilent,
+    triggerSessionExpired,
+  ]);
 
   if (failed) {
     return (

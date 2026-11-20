@@ -34,6 +34,7 @@ function PragyaShell() {
   const {
     user,
     isAuthenticated,
+    isRecoveringSession,
     isMockMode,
     login,
     loginAsMock,
@@ -175,9 +176,20 @@ function PragyaShell() {
   return (
     <AppLayout>
       {!isAuthenticated ? (
-        <main className="flex-1 overflow-y-auto pb-[env(safe-area-inset-bottom)] custom-scrollbar">
-          <LoginView />
-        </main>
+        isRecoveringSession ? (
+          <main
+            data-testid="auth-recovering-spinner"
+            aria-busy="true"
+            aria-label="Restoring Google session"
+            className="flex-1 flex items-center justify-center min-h-[60vh]"
+          >
+            <Loader2 className="w-8 h-8 animate-spin text-primary" />
+          </main>
+        ) : (
+          <main className="flex-1 overflow-y-auto pb-[env(safe-area-inset-bottom)] custom-scrollbar">
+            <LoginView />
+          </main>
+        )
       ) : (
         <>
           <div className="flex-1 flex print:block overflow-hidden print:overflow-visible min-h-0">

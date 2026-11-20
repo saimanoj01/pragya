@@ -20,6 +20,10 @@ module.exports = {
   },
   overrides: [
     {
+      files: ['scripts/**/*.mjs', 'tests/**/*.mjs', '*.mjs'],
+      env: { node: true, es2022: true },
+    },
+    {
       files: ['tests/**'],
       rules: {
         '@typescript-eslint/no-explicit-any': 'off',

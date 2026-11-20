@@ -1,12 +1,14 @@
-name: Playwright E2E
+name: CI & Playwright E2E
 
 on:
+  push:
+    branches: [main]
   pull_request:
     branches: [main]
   workflow_dispatch:
 
 jobs:
-  e2e:
+  ci:
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
@@ -28,10 +30,33 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Typecheck TypeScript
+        run: npx tsc --noEmit
+
+      - name: Lint TypeScript, React & ESM (.mjs)
+        run: npm run lint
+
+      - name: Run JS/TS unit & parity tests
+        run: npm run test:unit
+
+      - name: Run Python CLI unit tests
+        run: python3 -m unittest discover -s tests/unit -v
+
+      - name: Verify CLI and skill bundle are byte-identical
+        run: npm run check:skill
+
+      - name: Build default production bundle
+        run: npm run build
+
+      - name: Build GitHub Pages (/pragya/) production bundle
+        env:
+          VITE_BASE_PATH: '/pragya/'
+        run: npm run build
+
       - name: Install Playwright Chromium browser
         run: npx playwright install --with-deps chromium
 
-      - name: Build and run Playwright E2E suite
+      - name: Run Playwright E2E suite (incl. prod SW /pragya/ spec)
         run: npm run test:e2e
 
       - name: Upload Playwright HTML report on failure

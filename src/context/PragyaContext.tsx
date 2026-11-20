@@ -180,15 +180,58 @@ const PragyaDataContext = createContext<PragyaDataContextValue | undefined>(unde
 const PragyaActionsContext = createContext<PragyaActionsContextValue | undefined>(undefined);
 
 export const PragyaProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const { isAuthenticated, isMockMode, user, getGoogleToken, triggerSessionExpired } = useAuth();
+  const {
+    isAuthenticated,
+    isMockMode,
+    user,
+    getGoogleToken,
+    refreshGoogleTokenSilent,
+    triggerSessionExpired,
+  } = useAuth();
 
   const userEmail = user?.email;
+  const isAuthenticatedRef = useRef<boolean>(isAuthenticated);
+  isAuthenticatedRef.current = isAuthenticated;
+  const isMockModeRef = useRef<boolean>(isMockMode);
+  isMockModeRef.current = isMockMode;
+  const userEmailRef = useRef<string | undefined>(userEmail);
+  userEmailRef.current = userEmail;
+  const activeAdapterRef = useRef<StorageAdapter | null>(null);
+
   const adapter: StorageAdapter = useMemo(() => {
     if (isMockMode) {
       return new DemoStorageAdapter();
     }
-    return new GoogleSheetsAdapter(getGoogleToken, triggerSessionExpired, userEmail);
-  }, [isMockMode, userEmail, getGoogleToken, triggerSessionExpired]);
+    const ownerEmail = userEmail;
+    function isAdapterStillActive(): boolean {
+      return (
+        activeAdapterRef.current === instance &&
+        isAuthenticatedRef.current &&
+        !isMockModeRef.current &&
+        userEmailRef.current === ownerEmail
+      );
+    }
+    const instance = new GoogleSheetsAdapter(
+      () => (isAdapterStillActive() ? getGoogleToken() : null),
+      () => {
+        if (!isAdapterStillActive()) return;
+        triggerSessionExpired();
+      },
+      ownerEmail,
+      {
+        refreshToken: async () => {
+          if (!isAdapterStillActive()) return null;
+          const refreshed = await refreshGoogleTokenSilent({
+            force: true,
+            expectedEmailOverride: ownerEmail,
+          });
+          if (!isAdapterStillActive()) return null;
+          return refreshed;
+        },
+      }
+    );
+    return instance;
+  }, [isMockMode, userEmail, getGoogleToken, triggerSessionExpired, refreshGoogleTokenSilent]);
 
   const [books, setBooks] = useState<Book[]>([]);
   const [notes, setNotes] = useState<Note[]>([]);
@@ -203,15 +246,12 @@ export const PragyaProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
   const adapterRef = useRef<StorageAdapter>(adapter);
   adapterRef.current = adapter;
+  activeAdapterRef.current = adapter;
   const booksRef = useRef<Book[]>(books);
   const notesRef = useRef<Note[]>(notes);
   const sessionsRef = useRef<ReadingSession[]>(sessions);
   const deltaLogsRef = useRef<DeltaLog[]>(deltaLogs);
-  const isAuthenticatedRef = useRef<boolean>(isAuthenticated);
-  isAuthenticatedRef.current = isAuthenticated;
   const isOfflineReadOnlyRef = useRef<boolean>(false);
-  const isMockModeRef = useRef<boolean>(isMockMode);
-  isMockModeRef.current = isMockMode;
 
   // R1#1: monotonic session epoch incremented synchronously whenever auth/mode/account/adapter
   // changes so in-flight syncs or queued mutations from a prior session can never execute against

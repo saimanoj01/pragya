@@ -1,9 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
-import vm from 'node:vm';
 import module from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -41,7 +39,7 @@ const repoRoot = path.resolve(__dirname, '../..');
 const load = rel => import(pathToFileURL(path.join(repoRoot, rel)).href);
 
 const dp = await load('src/utils/deletePlan.ts');
-const { GoogleSheetsAdapter, SPREADSHEET_ID_STORAGE_KEY, SHEETS_CACHE_STORAGE_KEY } = await load(
+const { GoogleSheetsAdapter, SPREADSHEET_ID_STORAGE_KEY } = await load(
   'src/services/googleSheetsAdapter.ts'
 );
 const { DemoStorageAdapter } = await load('src/services/demoAdapter.ts');

@@ -641,6 +641,7 @@ test.describe('Tier 10 — CD Batch 7 Sync Architecture (IndexedDB, Migration, C
     // toast, both Book and Note are reconciled into UI, and Notes tab has exactly 1 appended row (no duplicate).
     await page.keyboard.press('n');
     await expect(page.getByTestId('quick-capture-modal')).toBeVisible();
+    await expect(page.getByTestId('capture-pos-input')).toHaveValue('50');
     await page.getByTestId('capture-pos-input').fill('85');
     await page.getByTestId('capture-takeaway-input').fill('Saved despite session append failure');
     await page.getByTestId('capture-submit-btn').click();
@@ -665,6 +666,7 @@ test.describe('Tier 10 — CD Batch 7 Sync Architecture (IndexedDB, Migration, C
     failNotesAppend = true;
     await page.keyboard.press('n');
     await expect(page.getByTestId('quick-capture-modal')).toBeVisible();
+    await expect(page.getByTestId('capture-pos-input')).toHaveValue('85');
     await page.getByTestId('capture-pos-input').fill('110');
     await page.getByTestId('capture-takeaway-input').fill('Retry note after book committed');
     await page.getByTestId('capture-submit-btn').click();

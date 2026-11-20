@@ -208,6 +208,8 @@ export const RATE_LIMIT_BACKOFF_MS: readonly number[] = [500, 1000];
 export interface GoogleSheetsAdapterOptions {
   /** Injectable backoff sleep (tests pass a no-op). */
   sleep?: (ms: number) => Promise<void>;
+  /** CD Batch 8 (B4.12): optional silent GIS token refresh attempted once before onUnauthorized. */
+  refreshToken?: () => Promise<string | null>;
 }
 
 function defaultSleep(ms: number): Promise<void> {
@@ -217,6 +219,7 @@ function defaultSleep(ms: number): Promise<void> {
 export class GoogleSheetsAdapter implements StorageAdapter {
   private getToken: () => string | null;
   private onUnauthorized?: () => void;
+  private refreshToken?: () => Promise<string | null>;
   private accountEmail?: string;
   private writeQueue: Promise<unknown> = Promise.resolve();
   private spreadsheetId: string | null = null;
@@ -239,6 +242,7 @@ export class GoogleSheetsAdapter implements StorageAdapter {
   ) {
     this.getToken = getToken;
     this.onUnauthorized = onUnauthorized;
+    this.refreshToken = options.refreshToken;
     this.accountEmail = accountEmail;
     this.sleep = options.sleep ?? defaultSleep;
   }
@@ -338,7 +342,12 @@ export class GoogleSheetsAdapter implements StorageAdapter {
     url: string,
     options: RequestInit = {}
   ): Promise<T> {
-    const token = this.getToken();
+    let token = this.getToken();
+    let refreshedOnce = false;
+    if (!token && this.refreshToken) {
+      refreshedOnce = true;
+      token = await this.refreshToken();
+    }
     if (!token) {
       this.onUnauthorized?.();
       throw new Error('Not authenticated');
@@ -361,6 +370,15 @@ export class GoogleSheetsAdapter implements StorageAdapter {
     for (let attempt = 1; ; attempt += 1) {
       const response = await fetch(url, { ...options, headers });
       if (response.status === 401) {
+        if (!refreshedOnce && this.refreshToken) {
+          refreshedOnce = true;
+          const refreshed = await this.refreshToken();
+          if (refreshed && refreshed !== token) {
+            token = refreshed;
+            headers.set('Authorization', `Bearer ${token}`);
+            continue;
+          }
+        }
         this.onUnauthorized?.();
         throw new Error('401 Unauthorized');
       }

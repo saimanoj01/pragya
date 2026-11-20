@@ -206,7 +206,7 @@ python3 scripts/pragya_cli.py note-update --note delays-in-feedback-loops \
 
 **Soft-archive (`--archive` / `--unarchive`, books and notes):** archiving only sets `metaJson.archivedAt` (no columns change, nothing is deleted). Archived items still resolve by id/slug/title so they can be restored.
 - **Archived book:** drops out of `book-list` (use `--include-archived`) and refuses `capture` (offer `book-update --book <id> --unarchive` first). It hides **only the book** — its notes stay reachable in recall, the Companion Doc / Markdown timelines and `notesSummary`.
-- **Archived note:** drops out of `recall qa|checkin|shuffle`, `notesSummary`, per-note `export-md` and the Markdown book index, is no longer *added* to the Companion Doc, and never holds one of the 5 active-delta slots.
+- **Archived note:** drops out of `note-list`, `delta-status`, `recall qa|checkin|shuffle`, `notesSummary`, per-note `export-md` and the Markdown book index (pass `--include-archived` on `note-list` / `delta-status` to inspect), is no longer *added* to the Companion Doc, and never holds one of the 5 active-delta slots.
 - **Permanent delete is PWA-only and deliberate:** the user can "Delete Forever…" an archived book (with its notes, check-ins and sessions) or note in the app, with a short Undo. The CLI has no delete command; if asked, point the user to the archive in the app.
 - **Companion Doc text is never deleted:** an entry already written for a note that is archived later stays in the Doc; the user can remove it by hand. Don't tell the user it is "gone from the doc".
 
@@ -219,9 +219,22 @@ python3 scripts/pragya_cli.py book-list --include-archived
 
 Never archive on the user's behalf without asking; confirm in one sentence afterwards ("Archived it. It's hidden from your lists and can be restored anytime.").
 
-### 4. Spoiler-Safe Recall, Check-In & Takeaway Shuffle (`recall`)
+### 4. Inspecting Notes, Behavioral Delta Status, Recall, Check-In & Shuffle (`note-list`, `note-get`, `delta-status`, `recall`)
 
 ```bash
+# List notes (shields spoilers & archived notes by default)
+python3 scripts/pragya_cli.py note-list --book "Thinking in Systems" --status atomic --tag "#systems"
+python3 scripts/pragya_cli.py note-list --delta-status active --include-archived
+
+# Inspect one note by UUID, slug, or old slug alias (spoiler-shielded unless --include-spoilers / --reveal)
+python3 scripts/pragya_cli.py note-get --note delays-in-feedback-loops
+python3 scripts/pragya_cli.py note-get --note future-plot-note --reveal
+
+# View active/paused/graduated Behavioral Deltas (5-cap excludes archived) or transition one note
+python3 scripts/pragya_cli.py delta-status
+python3 scripts/pragya_cli.py delta-status --note delays-in-feedback-loops --status paused
+python3 scripts/pragya_cli.py delta-status --note delays-in-feedback-loops --status active
+
 # Spoiler-safe cross-book Q&A (clamps fiction notes > book.currentPos)
 python3 scripts/pragya_cli.py recall --mode qa --query "feedback delays"
 
@@ -240,6 +253,9 @@ python3 scripts/pragya_cli.py recall --mode checkin \
 python3 scripts/pragya_cli.py recall --mode shuffle --limit 3
 python3 scripts/pragya_cli.py recall --mode shuffle --mark-reviewed delays-in-feedback-loops
 ```
+
+- **`note-list` / `note-get` spoiler shield:** notes ahead of an unfinished book's bookmark (and sealed fiction predictions) are excluded from `note-list` (`shieldedCount`) and returned as redacted stubs (`shielded: true`, zero title/slug/quote/takeaway/delta text) from `note-get` unless `--include-spoilers` / `--reveal` is passed.
+- **`delta-status`:** with no `--note`/`--status`, returns grouped `active`, `paused`, `graduated` lists plus `activeCount` / `cap` / `remainingSlots` (5, ignoring archived notes; pass `--include-archived` to include archived items; shielded deltas are redacted unless `--include-spoilers` / `--reveal`). Passing `--note <id|slug|alias> --status active|paused|graduated|none` (optionally with `--trigger` / `--action`) transitions the note (enforcing non-archived, `atomic`, WHEN/DO, and the 5-cap on `active`, plus the row conflict guard, and redacting shielded notes in the response unless `--include-spoilers` / `--reveal`).
 
 ### 5. Media Transcription, Markdown Export & Companion Docs (`ocr-backfill`, `export-md`, `book-doc-sync`)
 

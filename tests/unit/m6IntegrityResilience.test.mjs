@@ -360,7 +360,7 @@ test('B4.7: Drive 403 rateLimitExceeded on the modifiedTime check keeps and serv
   try {
     seedV2Cache();
     const body = JSON.stringify({ error: { code: 403, errors: [{ reason: 'rateLimitExceeded', domain: 'usageLimits' }] } });
-    globalThis.fetch = async (url, init = {}) => {
+    globalThis.fetch = async url => {
       calls.push(String(url));
       if (String(url).includes('drive/v3/files/sheet-1')) return new Response(body, { status: 403 });
       return json({});

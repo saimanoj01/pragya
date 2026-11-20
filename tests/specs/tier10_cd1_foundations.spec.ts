@@ -184,6 +184,7 @@ test.describe('Tier 10 — CD Batch 1a foundations (Dev)', () => {
     await demo(page);
     await page.getByTestId('nav-item-practice').click();
     const lines = page.locator('[data-testid^="shuffle-provenance-"]');
+    await expect(lines.first()).toBeVisible();
     const n = await lines.count();
     expect(n).toBeGreaterThan(0);
     for (let i = 0; i < n; i += 1) {

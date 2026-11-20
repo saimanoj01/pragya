@@ -35,7 +35,10 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Lint TypeScript & React
+      - name: Typecheck TypeScript
+        run: npx tsc --noEmit
+
+      - name: Lint TypeScript, React & ESM (.mjs)
         run: npm run lint
 
       - name: Run JS unit tests
@@ -43,6 +46,9 @@ jobs:
 
       - name: Run Python CLI unit tests
         run: python3 -m unittest discover -s tests/unit -v
+
+      - name: Verify CLI and skill bundle are byte-identical
+        run: npm run check:skill
 
       - name: Check optional build-time OAuth Client ID
         env:

@@ -3,7 +3,6 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import module from 'node:module';
-import { spawnSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 if (typeof module.registerHooks === 'function') {
@@ -118,13 +117,9 @@ async function withFetch(fetchImpl, fn) {
 
 test('QA: retry policy — 5xx and plain 403 are never retried; quota-403 then 200 succeeds; writes retried on 429', async () => {
   for (const [status, body] of [[500, 'RESOURCE_EXHAUSTED text'], [503, ''], [403, '{"error":{"status":"PERMISSION_DENIED"}}'], [404, '']]) {
-    let n = 0;
     const sleeps = [];
     await withFetch(
-      async () => {
-        n += 1;
-        return new Response(body, { status });
-      },
+      async () => new Response(body, { status }),
       async () => {
         const adapter = new GoogleSheetsAdapter(() => 'tok', undefined, undefined, { sleep: async ms => sleeps.push(ms) });
         localStorage.setItem(SPREADSHEET_ID_STORAGE_KEY, 'sheet-1');
