@@ -21,6 +21,7 @@ import {
 import { OFFLINE_INFO_TOAST } from '../utils/offline';
 import { DEMO_DRAFT_SCOPE, clearAllDrafts } from '../utils/draftStorage';
 import { CAPSTONE_HIDDEN_KEY } from '../utils/capstonePrompt';
+import { COLLISION_SKIP_KEY } from '../utils/crossBookSynthesis';
 import { LAST_DELETE_BACKUP_KEY } from '../utils/deletePlan';
 import { flushIdbQueue, idbClear, idbDelete } from '../utils/idbStore';
 import { clearPreImportBackupAsync } from '../utils/importSafety';
@@ -734,6 +735,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         : Promise.resolve(false),
     ]);
     localStorage.removeItem(CAPSTONE_HIDDEN_KEY);
+    localStorage.removeItem(COLLISION_SKIP_KEY);
     localStorage.removeItem(LAST_DELETE_BACKUP_KEY);
     sessionStorage.removeItem(OAUTH_CSRF_STATE_KEY);
     sessionStorage.removeItem(OAUTH_RETURN_ROUTE_KEY);

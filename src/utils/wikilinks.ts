@@ -103,12 +103,21 @@ export function extractNoteWikilinks(note: Note): string[] {
     note.critique || '',
     note.quote || '',
   ].join('\n');
-  return extractWikilinks(combined);
+  const out = extractWikilinks(combined);
+  const seen = new Set(out);
+  for (const rel of noteRelatedSlugs(note)) {
+    if (!seen.has(rel)) {
+      seen.add(rel);
+      out.push(rel);
+    }
+  }
+  return out;
 }
 
 /**
- * R2-a: every `[[link]]` in a note as `{ slug, text }` (slug = new rule, text = inner text as
- * typed), de-duplicated by slug in the same order as `extractNoteWikilinks`.
+ * R2-a: every inline `[[link]]` in note prose (`takeaway`, `contextMechanism`, `critique`,
+ * `quote`) as `{ slug, text }` (slug = new rule, text = inner text as typed), de-duplicated
+ * by slug. Does not include `meta.relatedSlugs` (rendered separately with `bridgeNotes`).
  */
 export function extractNoteWikilinkTexts(note: Note): { slug: string; text: string }[] {
   const combined = [
@@ -130,11 +139,22 @@ export function extractNoteWikilinkTexts(note: Note): { slug: string; text: stri
   return out;
 }
 
-/** R2-a: all resolution keys (exact, new slug, legacy slug) of every link in a note. */
+/** R2-a + v2: all resolution keys (exact, new slug, legacy slug) of every inline link and `meta.relatedSlugs`. */
 export function extractNoteWikilinkKeys(note: Note): Set<string> {
   const keys = new Set<string>();
   for (const { text } of extractNoteWikilinkTexts(note)) {
     for (const k of wikilinkKeys(text)) keys.add(k);
+  }
+  const rawRelated = (note.meta as { relatedSlugs?: unknown } | undefined)?.relatedSlugs;
+  if (Array.isArray(rawRelated)) {
+    let count = 0;
+    for (const item of rawRelated) {
+      if (typeof item !== 'string' || !item.trim()) continue;
+      if (!slugifyOrNull(item)) continue;
+      for (const k of wikilinkKeys(item)) keys.add(k);
+      count += 1;
+      if (count >= NOTE_RELATED_SLUGS_CAP) break;
+    }
   }
   return keys;
 }
@@ -149,6 +169,24 @@ export function computeBacklinks(targetSlug: string, allNotes: Note[]): Note[] {
 // ---- CD Batch 3 (C3.1–C3.3): inline chips, slug aliases, capture-from-missing ------------
 
 export const NOTE_ALIAS_CAP = 10;
+export const NOTE_RELATED_SLUGS_CAP = 20;
+
+/** v2: `meta.relatedSlugs` (approved cross-note bridges), slugified + deduped, <= 20. */
+export function noteRelatedSlugs(note: Pick<Note, 'meta'>): string[] {
+  const raw = (note.meta as { relatedSlugs?: unknown } | undefined)?.relatedSlugs;
+  const out: string[] = [];
+  if (Array.isArray(raw)) {
+    for (const item of raw) {
+      if (typeof item !== 'string' || !item.trim()) continue;
+      const s = slugifyOrNull(item);
+      if (s && !out.includes(s)) {
+        out.push(s);
+        if (out.length >= NOTE_RELATED_SLUGS_CAP) break;
+      }
+    }
+  }
+  return out;
+}
 
 /** `meta.aliases` (old slugs), slugified + de-duplicated. Python mirror: `note_aliases`. */
 export function noteAliases(note: Pick<Note, 'meta'>): string[] {

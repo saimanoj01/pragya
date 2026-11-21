@@ -5,7 +5,9 @@ import type {
   BookMetaJson,
   NoteMetaJson,
   NoteSource,
+  ReadingQuestion,
 } from '../types/pragya';
+import { NOTE_RELATED_SLUGS_CAP, slugifyOrNull } from './wikilinks';
 
 /**
  * Defensive metaJson / enum codecs shared by the Sheets codecs and the snapshot
@@ -22,6 +24,9 @@ import type {
  *   preserved on read → write; use {@link getRenderableAttachments} to render.
  * - `capstone`: preserved verbatim; use {@link getBookCapstone} for a typed view.
  * - `sparStage`: preserved verbatim (not coerced).
+ * - `readingQuestions`, `relatedSlugs`, `bridgeNotes`, `whyQueued`, `pauseNote`,
+ *   `nextStop` (v2): preserved verbatim on decode (keeps `SHEETS_CACHE_CODEC_VERSION = 2`
+ *   intact); use the typed accessors below at render/edit time.
  */
 
 const BOOK_META_STRING_KEYS = ['coverUrl', 'startedAt', 'finishedAt', 'currentChapter', 'archivedAt'] as const;
@@ -30,6 +35,12 @@ const NOTE_META_BOOLEAN_KEYS = ['isPrediction', 'ocrBackfilled'] as const;
 const LEGACY_QUESTION_KEYS = ['q1', 'q2', 'q3'] as const;
 const MAX_SOCRATIC_QUESTIONS = 3;
 export const MAX_ATTACHMENTS = 3;
+export const MAX_OPEN_READING_QUESTIONS = 5;
+export const READING_QUESTION_MAX = 240;
+export const READING_ANSWER_MAX = 500;
+export const BOOK_CONTEXT_NOTE_MAX = 240;
+export const BOOK_NEXT_STOP_MAX = 120;
+export const BRIDGE_NOTE_MAX = 240;
 
 export function isPlainObject(value: unknown): value is Record<string, unknown> {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
@@ -142,6 +153,70 @@ export function getBookCapstone(meta: unknown): BookCapstone | undefined {
     perspectiveShift: coerceMetaString(value.perspectiveShift) ?? '',
     completedAt: coerceMetaString(value.completedAt) ?? '',
   };
+}
+
+export type BookContextMetaKey = 'whyQueued' | 'pauseNote' | 'nextStop';
+
+/** v2: render-safe trimmed string for `whyQueued`, `pauseNote`, or `nextStop`. */
+export function getBookMetaString(meta: unknown, key: BookContextMetaKey): string {
+  if (!isPlainObject(meta)) return '';
+  const coerced = coerceMetaString(meta[key]);
+  return coerced ? coerced.trim() : '';
+}
+
+/** v2: typed, render-safe view of `meta.readingQuestions` (stored list passes through verbatim). */
+export function getBookReadingQuestions(meta: unknown): ReadingQuestion[] {
+  const raw = isPlainObject(meta) ? meta.readingQuestions : undefined;
+  if (!Array.isArray(raw)) return [];
+  const out: ReadingQuestion[] = [];
+  const seenIds = new Set<string>();
+  for (const item of raw) {
+    if (!isPlainObject(item)) continue;
+    const id = coerceMetaString(item.id)?.trim() ?? '';
+    const question = coerceMetaString(item.question)?.trim() ?? '';
+    if (!id || !question || seenIds.has(id)) continue;
+    seenIds.add(id);
+    const status = item.status === 'answered' ? 'answered' : 'open';
+    const answer = coerceMetaString(item.answer)?.trim();
+    const noteId = coerceMetaString(item.noteId)?.trim();
+    const createdAt = coerceMetaString(item.createdAt)?.trim() ?? '';
+    const answeredAt = coerceMetaString(item.answeredAt)?.trim();
+    const entry: ReadingQuestion = { id, question, status, createdAt };
+    if (answer) entry.answer = answer;
+    if (noteId) entry.noteId = noteId;
+    if (status === 'answered' && answeredAt) entry.answeredAt = answeredAt;
+    out.push(entry);
+  }
+  return out;
+}
+
+/** v2: render-safe view of `meta.relatedSlugs` (slugified, deduped, <= 20). */
+export function getNoteRelatedSlugs(meta: unknown): string[] {
+  const raw = isPlainObject(meta) ? meta.relatedSlugs : undefined;
+  if (!Array.isArray(raw)) return [];
+  const out: string[] = [];
+  for (const item of raw) {
+    if (typeof item !== 'string' || !item.trim()) continue;
+    const s = slugifyOrNull(item);
+    if (s && !out.includes(s)) {
+      out.push(s);
+      if (out.length >= NOTE_RELATED_SLUGS_CAP) break;
+    }
+  }
+  return out;
+}
+
+/** v2: render-safe view of `meta.bridgeNotes` (slug-normalized key -> trimmed 1-line note). */
+export function getNoteBridgeNotes(meta: unknown): Record<string, string> {
+  const raw = isPlainObject(meta) ? meta.bridgeNotes : undefined;
+  if (!isPlainObject(raw)) return {};
+  const out: Record<string, string> = {};
+  for (const [rawKey, rawVal] of Object.entries(raw)) {
+    const key = slugifyOrNull(rawKey);
+    const val = coerceMetaString(rawVal)?.trim();
+    if (key && val) out[key] = val;
+  }
+  return out;
 }
 
 function toValidAttachment(item: unknown): Attachment | null {
@@ -296,6 +371,12 @@ export const NOTE_ARCHIVE_OWNED_META_KEYS: readonly string[] = [
 
 /** CD C4.2 "Reflect on Outcome": only the prediction outcome (+ updatedAt via the column). */
 export const NOTE_PREDICTION_OUTCOME_OWNED_META_KEYS: readonly string[] = ['predictionOutcome'];
+/** v2 inline Reading Questions editor on BookDetailView: only readingQuestions (+ updatedAt). */
+export const BOOK_QUESTIONS_OWNED_META_KEYS: readonly string[] = ['readingQuestions', 'updatedAt'];
+/** v2 inline Next Stopping Point editor on BookDetailView: only nextStop (+ updatedAt). */
+export const BOOK_NEXT_STOP_OWNED_META_KEYS: readonly string[] = ['nextStop', 'updatedAt'];
+/** v2 note bridge actions (CollisionCard / NoteDetailView unlink): only relatedSlugs + bridgeNotes. */
+export const NOTE_BRIDGES_OWNED_META_KEYS: readonly string[] = ['relatedSlugs', 'bridgeNotes'];
 
 /** Key-order-insensitive JSON for deep-equality checks. */
 function stableJson(value: unknown): string {

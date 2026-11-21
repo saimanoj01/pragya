@@ -55,6 +55,16 @@ import {
   isNetworkError,
   shouldBlockCloudWrite,
 } from '../utils/offline';
+import {
+  clearCollisionSkipState,
+  planNoteBridgeOps,
+  type NoteBridgeOptions,
+} from '../utils/crossBookSynthesis';
+import {
+  NOTE_BRIDGES_OWNED_META_KEYS,
+  mergeUnknownMetaKeys,
+} from '../utils/metaCodecs';
+import type { BatchMutationOp } from '../utils/batchPlan';
 import { useAuth } from './AuthContext';
 import {
   planBookmarkAdvance,
@@ -113,6 +123,17 @@ export interface PragyaDataContextValue {
   isOfflineReadOnly: boolean;
 }
 
+export interface NoteBridgeUndo {
+  prevNotes: Note[];
+  appliedUpdatedAtById: Record<string, string>;
+}
+
+export interface NoteBridgeActionResult {
+  changed: boolean;
+  notes: Note[];
+  undo?: NoteBridgeUndo;
+}
+
 export interface PragyaActionsContextValue {
   syncNow: (force?: boolean) => Promise<void>;
   addBook: (input: AddBookInput) => Promise<Book>;
@@ -128,6 +149,14 @@ export interface PragyaActionsContextValue {
   markBookFinished: (bookId: string) => Promise<Book | null>;
   captureNote: (input: QuickCaptureInput) => Promise<Note>;
   updateNote: (note: Note, options?: UpdateNoteOptions) => Promise<Note>;
+  /** v2: atomic link/unlink of two notes via meta.relatedSlugs + meta.bridgeNotes. */
+  saveNoteBridge: (
+    noteAId: string,
+    noteBId: string,
+    options: Omit<NoteBridgeOptions, 'allowShielded' | 'nowIso'>
+  ) => Promise<NoteBridgeActionResult>;
+  /** v2: single compensating Undo restoring both notes' bridge fields atomically. */
+  restoreNoteBridge: (undo: NoteBridgeUndo) => Promise<void>;
   /** @deprecated CD C2.1: always appends (no same-day coalescing) — use `checkInDelta`. */
   logDeltaOutcome: (
     noteId: string,
@@ -846,6 +875,157 @@ export const PragyaProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     [assertCloudWritable, enqueueMutation]
   );
 
+  const saveNoteBridge = useCallback(
+    (
+      noteAId: string,
+      noteBId: string,
+      options: Omit<NoteBridgeOptions, 'allowShielded' | 'nowIso'>
+    ): Promise<NoteBridgeActionResult> =>
+      enqueueMutation(async ({ adapter: activeAdapter, isCurrentSession }) => {
+        assertCloudWritable();
+        const noteA = notesRef.current.find(n => n.id === noteAId);
+        const noteB = notesRef.current.find(n => n.id === noteBId);
+        if (!noteA || !noteB) throw new Error('Note not found.');
+        const plan = planNoteBridgeOps(noteA, noteB, notesRef.current, booksRef.current, {
+          ...options,
+          allowShielded: false,
+        });
+        if (!plan.changed) {
+          return { changed: false, notes: [] };
+        }
+        let savedNotes: Note[];
+        if (activeAdapter.batchCommitMutations) {
+          const ops: BatchMutationOp[] = plan.nextNotes.map(n => ({
+            kind: 'note',
+            note: n,
+            expectedBaseUpdatedAt: plan.expectedBaseById[n.id],
+            mode: 'update',
+          }));
+          let res: BatchMutationResult;
+          try {
+            res = await activeAdapter.batchCommitMutations(ops);
+          } catch (err) {
+            if (err instanceof PartialBatchCommitError) {
+              reconcileCommitted(err.committed, isCurrentSession);
+            }
+            throw err;
+          }
+          savedNotes = res.notes.length > 0 ? res.notes : plan.nextNotes;
+          reconcileCommitted(
+            { books: [], notes: savedNotes, sessions: [], deltaLogs: [] },
+            isCurrentSession
+          );
+        } else {
+          savedNotes = [];
+          for (const nextNote of plan.nextNotes) {
+            try {
+              const saved = await activeAdapter.saveNote(nextNote, {
+                expectedBaseUpdatedAt: plan.expectedBaseById[nextNote.id],
+              });
+              savedNotes.push(saved);
+            } catch (err) {
+              if (savedNotes.length > 0) {
+                const committed = { books: [], notes: savedNotes, sessions: [], deltaLogs: [] };
+                reconcileCommitted(committed, isCurrentSession);
+                throw new PartialBatchCommitError(committed, err);
+              }
+              throw err;
+            }
+          }
+          reconcileCommitted(
+            { books: [], notes: savedNotes, sessions: [], deltaLogs: [] },
+            isCurrentSession
+          );
+        }
+        const appliedUpdatedAtById: Record<string, string> = {};
+        for (const saved of savedNotes) appliedUpdatedAtById[saved.id] = saved.updatedAt;
+        return {
+          changed: true,
+          notes: savedNotes,
+          undo: {
+            prevNotes: plan.prevNotes,
+            appliedUpdatedAtById,
+          },
+        };
+      }),
+    [assertCloudWritable, enqueueMutation, reconcileCommitted]
+  );
+
+  const restoreNoteBridge = useCallback(
+    (undo: NoteBridgeUndo): Promise<void> =>
+      enqueueMutation(async ({ adapter: activeAdapter, isCurrentSession }) => {
+        assertCloudWritable();
+        if (!undo.prevNotes.length) return;
+        const nowIso = new Date().toISOString();
+        const restoredList: Array<{ note: Note; expectedBaseUpdatedAt?: string }> = [];
+        for (const prev of undo.prevNotes) {
+          const loaded = notesRef.current.find(n => n.id === prev.id) ?? prev;
+          const mergedMeta = mergeUnknownMetaKeys(
+            prev.meta,
+            loaded.meta,
+            NOTE_BRIDGES_OWNED_META_KEYS
+          );
+          restoredList.push({
+            note: {
+              ...loaded,
+              meta: mergedMeta,
+              updatedAt: nowIso,
+            },
+            expectedBaseUpdatedAt: undo.appliedUpdatedAtById[prev.id] ?? loaded.updatedAt,
+          });
+        }
+
+        if (activeAdapter.batchCommitMutations) {
+          const ops: BatchMutationOp[] = restoredList.map(item => ({
+            kind: 'note',
+            note: item.note,
+            expectedBaseUpdatedAt: item.expectedBaseUpdatedAt,
+            mode: 'update',
+          }));
+          let res: BatchMutationResult;
+          try {
+            res = await activeAdapter.batchCommitMutations(ops);
+          } catch (err) {
+            if (err instanceof PartialBatchCommitError) {
+              reconcileCommitted(err.committed, isCurrentSession);
+            }
+            throw err;
+          }
+          reconcileCommitted(
+            {
+              books: [],
+              notes: res.notes.length > 0 ? res.notes : restoredList.map(i => i.note),
+              sessions: [],
+              deltaLogs: [],
+            },
+            isCurrentSession
+          );
+        } else {
+          const savedList: Note[] = [];
+          for (const item of restoredList) {
+            try {
+              const saved = await activeAdapter.saveNote(item.note, {
+                expectedBaseUpdatedAt: item.expectedBaseUpdatedAt,
+              });
+              savedList.push(saved);
+            } catch (err) {
+              if (savedList.length > 0) {
+                const committed = { books: [], notes: savedList, sessions: [], deltaLogs: [] };
+                reconcileCommitted(committed, isCurrentSession);
+                throw new PartialBatchCommitError(committed, err);
+              }
+              throw err;
+            }
+          }
+          reconcileCommitted(
+            { books: [], notes: savedList, sessions: [], deltaLogs: [] },
+            isCurrentSession
+          );
+        }
+      }),
+    [assertCloudWritable, enqueueMutation, reconcileCommitted]
+  );
+
   const logDeltaOutcome = useCallback(
     (noteId: string, outcome: DeltaOutcome, reflection = ''): Promise<DeltaLog> =>
       enqueueMutation(async ({ adapter: activeAdapter, isCurrentSession }) => {
@@ -1020,6 +1200,7 @@ export const PragyaProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         if (!activeAdapter.resetDemoData) return;
         // CD 1a fix-up: Reset Demo clears only Demo drafts (real-account scopes untouched).
         clearAllDrafts({ scope: DEMO_DRAFT_SCOPE });
+        clearCollisionSkipState();
         const fresh = await activeAdapter.resetDemoData();
         if (!isCurrentSession()) return;
         booksRef.current = fresh.books;
@@ -1229,6 +1410,8 @@ export const PragyaProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       markBookFinished,
       captureNote,
       updateNote,
+      saveNoteBridge,
+      restoreNoteBridge,
       logDeltaOutcome,
       checkInDelta,
       updateDeltaLogFields,
@@ -1254,6 +1437,8 @@ export const PragyaProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       markBookFinished,
       captureNote,
       updateNote,
+      saveNoteBridge,
+      restoreNoteBridge,
       logDeltaOutcome,
       checkInDelta,
       updateDeltaLogFields,

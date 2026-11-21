@@ -5,6 +5,7 @@ import {
 } from '../services/googleSheetsAdapter';
 import { adoptLegacyDrafts, clearAllDrafts, dropLegacyDrafts } from './draftStorage';
 import { CAPSTONE_HIDDEN_KEY } from './capstonePrompt';
+import { COLLISION_SKIP_KEY } from './crossBookSynthesis';
 import { LAST_DELETE_BACKUP_KEY } from './deletePlan';
 import { flushIdbQueue, idbClear, idbDelete } from './idbStore';
 import { clearPreImportBackup } from './importSafety';
@@ -31,6 +32,8 @@ export function clearPerAccountLocalData(): void {
   localStorage.removeItem(LAST_DELETE_BACKUP_KEY);
   // R1 nit: the per-device capstone Hide list belongs to the previous account's books.
   localStorage.removeItem(CAPSTONE_HIDDEN_KEY);
+  // v2: per-day collision skip state belongs to the previous account's notes.
+  localStorage.removeItem(COLLISION_SKIP_KEY);
   if (typeof caches !== 'undefined') {
     caches.delete('pragya-media-v1').catch(() => {});
   }

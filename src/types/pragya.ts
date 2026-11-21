@@ -10,6 +10,16 @@ export interface BookCapstone {
   completedAt: string;
 }
 
+export interface ReadingQuestion {
+  id: string;
+  question: string;
+  status: 'open' | 'answered';
+  answer?: string;
+  noteId?: string;
+  createdAt: string;
+  answeredAt?: string;
+}
+
 export interface BookMetaJson {
   coverUrl?: string;
   startedAt?: string;
@@ -22,6 +32,14 @@ export interface BookMetaJson {
   capstone?: unknown;
   /** CD C2.4: read to the end at least once → re-reads show every note (OQ-7). */
   everFinished?: boolean;
+  /** v2: optional curiosity spark when queued (<= 240 chars). */
+  whyQueued?: string;
+  /** v2: optional guilt-free context when paused (<= 240 chars). */
+  pauseNote?: string;
+  /** v2: optional gentle landmark while reading (<= 120 chars). */
+  nextStop?: string;
+  /** v2: stored verbatim; read via `getBookReadingQuestions()` for a typed view. */
+  readingQuestions?: unknown[];
   /** Unknown keys (e.g. written by the CLI/skill) are preserved verbatim on round-trip. */
   [extraKey: string]: unknown;
 }
@@ -97,6 +115,10 @@ export interface NoteMetaJson {
   aliases?: string[];
   /** CD C4.2: reflection on an unlocked fiction prediction (`{ text, at }`, ISO `at`). */
   predictionOutcome?: { text: string; at: string };
+  /** v2: approved cross-note bridges (slugs, <= 20), read via `getNoteRelatedSlugs()`. */
+  relatedSlugs?: string[];
+  /** v2: optional 1-line bridge reasons keyed by target slug (<= 240 chars), read via `getNoteBridgeNotes()`. */
+  bridgeNotes?: Record<string, string>;
   /** Unknown keys (e.g. written by the CLI/skill) are preserved verbatim on round-trip. */
   [extraKey: string]: unknown;
 }

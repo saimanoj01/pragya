@@ -2,7 +2,7 @@ import type { Book, BookCapstone, Note } from '../types/pragya';
 import { formatWhenDoDisplay } from './deltaFormat';
 import { formatChapterBadge } from './chapterFormat';
 import { effectiveNoteNorm, isNoteSpoiler, isSealedPrediction } from './spoilerMath';
-import { getBookCapstone } from './metaCodecs';
+import { getBookCapstone, getBookReadingQuestions } from './metaCodecs';
 import { isArchived } from './archive';
 
 /**
@@ -172,6 +172,30 @@ export function buildCapstonePrompt(book: Book, notes: Note[]): string {
   const parts = [head.join('\n')];
   for (const block of blocks) parts.push(block);
   if (omitted > 0) parts.push(formatOmittedLine(omitted));
+
+  const answeredQuestions = getBookReadingQuestions(book.meta).filter(q => q.status === 'answered');
+  if (answeredQuestions.length > 0) {
+    const finished = book.status === 'finished';
+    const noteById = new Map(notes.map(n => [n.id, n] as const));
+    const qLines = ['Reading questions I answered along the way:'];
+    for (const q of answeredQuestions) {
+      const qText = oneLine(q.question);
+      const aText = oneLine(q.answer);
+      const linked = q.noteId ? noteById.get(q.noteId) : undefined;
+      const safeLinked =
+        linked &&
+        linked.bookId === book.id &&
+        !isArchived(linked) &&
+        (finished || !(isNoteSpoiler(linked, book) || isSealedPrediction(linked, book)))
+          ? linked
+          : undefined;
+      const refSuffix = safeLinked ? ` (from: ${capstoneNoteLabel(safeLinked)})` : '';
+      qLines.push(`- Q: ${qText}${refSuffix}`);
+      if (aText) qLines.push(`  A: ${aText}`);
+    }
+    parts.push(qLines.join('\n'));
+  }
+
   return parts.join('\n\n');
 }
 

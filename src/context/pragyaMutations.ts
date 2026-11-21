@@ -29,6 +29,7 @@ import {
 import { normalizeTagList } from '../utils/sheetCodecs';
 import { computeNormalizedPos } from '../utils/spoilerMath';
 import { addSlugAlias, generateUniqueSlug, takenSlugs } from '../utils/wikilinks';
+import { normalizeBookContextValue } from '../utils/readingMomentum';
 
 /**
  * Pure, Node-testable mutation planners extracted from PragyaContext (CD Batch 7 D3.2).
@@ -48,6 +49,12 @@ export interface AddBookInput {
   docUrl?: string;
   /** CD C2.6: optional https cover (validated by the form). */
   coverUrl?: string;
+  /** v2: optional curiosity spark when queued. */
+  whyQueued?: string;
+  /** v2: optional guilt-free context when paused. */
+  pauseNote?: string;
+  /** v2: optional gentle landmark while reading. */
+  nextStop?: string;
 }
 
 export interface QuickCaptureInput {
@@ -145,6 +152,10 @@ export function planNewBook(
       ? 1
       : computeNormalizedPos(currentPos, totalPos, input.posUnit);
 
+  const whyQueued = input.whyQueued ? normalizeBookContextValue('whyQueued', input.whyQueued) : '';
+  const pauseNote = input.pauseNote ? normalizeBookContextValue('pauseNote', input.pauseNote) : '';
+  const nextStop = input.nextStop ? normalizeBookContextValue('nextStop', input.nextStop) : '';
+
   return {
     id,
     title: input.title.trim(),
@@ -163,6 +174,9 @@ export function planNewBook(
         : {}),
       ...(input.status === 'finished' ? { finishedAt: nowIso } : {}),
       ...(input.coverUrl?.trim() ? { coverUrl: input.coverUrl.trim() } : {}),
+      ...(whyQueued ? { whyQueued } : {}),
+      ...(pauseNote ? { pauseNote } : {}),
+      ...(nextStop ? { nextStop } : {}),
       updatedAt: nowIso,
     },
   };
@@ -527,6 +541,18 @@ export function planUpdatedNote(
     ? findOverriddenMetaKeys(note.meta, options.baseMeta, existingNote?.meta, owned)
     : [];
 
+  const mergedMeta = mergeUnknownMetaKeys(note.meta, existingNote?.meta, owned);
+  const nextAttachments = owned.includes('attachments')
+    ? attachments
+    : Array.isArray(mergedMeta.attachments)
+      ? mergedMeta.attachments
+      : [];
+  const nextLinks = owned.includes('links')
+    ? mergedLinks
+    : Array.isArray(mergedMeta.links)
+      ? mergedMeta.links
+      : [];
+
   const updated: Note = {
     ...note,
     pos: nextPos,
@@ -535,10 +561,9 @@ export function planUpdatedNote(
     deltaTrigger: normalizeDeltaTrigger(note.deltaTrigger),
     deltaAction: normalizeDeltaAction(note.deltaAction),
     meta: {
-      // R2#1: re-merge non-editor keys (e.g. sparStage) a stale modal may lack.
-      ...mergeUnknownMetaKeys(note.meta, existingNote?.meta, owned),
-      attachments,
-      links: mergedLinks,
+      ...mergedMeta,
+      attachments: nextAttachments,
+      links: nextLinks,
     },
     updatedAt: options.preserveUpdatedAt ? note.updatedAt : nowIso,
   };
