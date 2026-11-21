@@ -27,9 +27,13 @@ import { ArchivedBanner } from '../common/ArchivedBanner';
 import { BookBookmarkBar } from '../common/BookBookmarkBar';
 import { BookChapterLine } from '../common/BookChapterLine';
 import { BookCover, REREADING_BADGE } from '../common/BookCover';
+import { BookNextStopLine } from '../common/BookNextStopLine';
 import { BookNoteCard } from '../common/BookNoteCard';
+import { BookReEntrySection } from '../common/BookReEntrySection';
 import { CapstoneSection } from '../common/CapstoneSection';
 import { ConfirmDialog } from '../common/ConfirmDialog';
+import { CrossBookEchoes } from '../common/CrossBookEchoes';
+import { ReadingQuestionsSection } from '../common/ReadingQuestionsSection';
 import { SessionsTrail } from '../common/SessionsTrail';
 import { BTN_PRIMARY, BTN_SECONDARY, BTN_TERTIARY_NEGATIVE, CARD } from '../common/uiClasses';
 import { CapstoneModal } from '../modals/CapstoneModal';
@@ -50,7 +54,7 @@ export const BookDetailView: React.FC<BookDetailViewProps> = ({
   onEditNote,
   onDeepenNote,
 }) => {
-  const { books, booksById, notes } = usePragyaData();
+  const { books, booksById, notes, sessions } = usePragyaData();
 
   const book = booksById.get(bookId) || null;
   const bookNotes = useMemo(
@@ -341,6 +345,8 @@ export const BookDetailView: React.FC<BookDetailViewProps> = ({
 
         <BookChapterLine book={book} />
 
+        <BookNextStopLine book={book} />
+
         <BookBookmarkBar
           book={book}
           hasCapstone={Boolean(capstone)}
@@ -357,6 +363,10 @@ export const BookDetailView: React.FC<BookDetailViewProps> = ({
         onOpenEditor={() => setCapstoneOpen(true)}
         onHide={handleHideCapstone}
       />
+
+      <BookReEntrySection key={`reentry-${book.id}`} book={book} notes={notes} sessions={sessions} />
+
+      <ReadingQuestionsSection key={`questions-${book.id}`} book={book} bookNotes={bookNotes} />
 
       <SessionsTrail book={book} />
 
@@ -394,6 +404,8 @@ export const BookDetailView: React.FC<BookDetailViewProps> = ({
           </div>
         )}
       </section>
+
+      <CrossBookEchoes key={`echoes-${book.id}`} book={book} allNotes={notes} allBooks={books} />
 
       <ConfirmDialog {...deleteDialogProps} />
       <CapstoneModal isOpen={capstoneOpen} onClose={() => setCapstoneOpen(false)} book={book} />

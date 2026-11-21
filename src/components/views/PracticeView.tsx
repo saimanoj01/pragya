@@ -44,6 +44,7 @@ import {
 } from '../../utils/takeawayShuffle';
 import { showToast } from '../../utils/toast';
 import { ChapterPosChip } from '../common/ChapterPosChip';
+import { CollisionCard } from '../common/CollisionCard';
 import { DeltaCheckInCard } from '../common/DeltaCheckInCard';
 import { PromptFallbackModal } from '../common/PromptFallbackModal';
 import { StreamThumbnail } from '../common/StreamThumbnail';
@@ -737,6 +738,9 @@ export const PracticeView: React.FC = () => {
           </div>
         )}
       </section>
+
+      {/* v2: Spark a Connection (Daily Two-Note Collision) */}
+      <CollisionCard notes={notes} books={books} todayDate={todayDate} />
 
       {/* Unlocked Fiction Predictions */}
       {unlockedPredictions.length > 0 && (

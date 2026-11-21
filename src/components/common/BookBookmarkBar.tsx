@@ -1,16 +1,19 @@
-import React, { useEffect, useState } from 'react';
-import { ArrowRight, CheckCircle2, Plus, RotateCcw } from 'lucide-react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { ArrowRight, CheckCircle2, Play, Plus, RotateCcw } from 'lucide-react';
 import type { Book } from '../../types/pragya';
 import { usePragya } from '../../context/PragyaContext';
 import { describeSyncError } from '../../utils/apiErrors';
 import { isArchived } from '../../utils/archive';
 import { sessionDateLabel } from '../../utils/bookSurfaces';
+import { getBookMetaString } from '../../utils/metaCodecs';
+import { navigateTo } from '../../utils/navigation';
+import { pickNextReadCandidates } from '../../utils/readingMomentum';
 import { getLocalDateString } from '../../utils/sessionCoalesce';
 import { formatPosDisplay, getQuickAdvanceSpec } from '../../utils/spoilerMath';
 import { showToast } from '../../utils/toast';
 import { ConfirmDialog } from './ConfirmDialog';
 import { SessionNoteEditor } from './SessionsTrail';
-import { BTN_TERTIARY } from './uiClasses';
+import { BTN_SECONDARY, BTN_TERTIARY, EYEBROW } from './uiClasses';
 
 export interface BookBookmarkBarProps {
   book: Book;
@@ -21,7 +24,7 @@ export interface BookBookmarkBarProps {
 
 /**
  * Bookmark advance controls (+N, exact position, manual override, post-advance session note),
- * Mark as Finished (+ Undo), and Read Again (+ confirm) extracted from BookDetailView.
+ * Mark as Finished (+ Undo + post-finish next-read chooser), and Read Again (+ confirm).
  */
 export const BookBookmarkBar: React.FC<BookBookmarkBarProps> = ({
   book,
@@ -30,10 +33,13 @@ export const BookBookmarkBar: React.FC<BookBookmarkBarProps> = ({
   onOpenCapstone,
 }) => {
   const {
+    books,
+    notes,
     sessions,
     advanceBookPosition,
     revertBookmarkAdvance,
     markBookFinished,
+    startReadingBook,
     restoreBook,
     startReread,
   } = usePragya();
@@ -44,6 +50,9 @@ export const BookBookmarkBar: React.FC<BookBookmarkBarProps> = ({
   const [postAdvanceEditing, setPostAdvanceEditing] = useState(false);
   const [rereadConfirmOpen, setRereadConfirmOpen] = useState(false);
   const [rereadBusy, setRereadBusy] = useState(false);
+  const [showUpNext, setShowUpNext] = useState(false);
+  const [finishing, setFinishing] = useState(false);
+  const [startingId, setStartingId] = useState<string | null>(null);
 
   useEffect(() => {
     setExactInput(String(book.currentPos));
@@ -52,7 +61,17 @@ export const BookBookmarkBar: React.FC<BookBookmarkBarProps> = ({
   useEffect(() => {
     setPostAdvanceSessionId(null);
     setPostAdvanceEditing(false);
+    setShowUpNext(false);
   }, [book.id]);
+
+  useEffect(() => {
+    if (book.status !== 'finished') setShowUpNext(false);
+  }, [book.status]);
+
+  const upNextCandidates = useMemo(
+    () => (showUpNext ? pickNextReadCandidates(books, notes, book) : []),
+    [book, books, notes, showUpNext]
+  );
 
   const { step, label: stepLabel } = getQuickAdvanceSpec(book.posUnit);
   const postAdvanceSession = postAdvanceSessionId
@@ -135,15 +154,24 @@ export const BookBookmarkBar: React.FC<BookBookmarkBarProps> = ({
   };
 
   const handleMarkFinished = async () => {
+    if (finishing) return;
     const prevBook = book;
+    setFinishing(true);
     try {
       const finished = await markBookFinished(book.id);
-      showToast(`"${book.title}" marked finished — predictions unlocked!`, 'success', {
+      if (!finished) return;
+      setShowUpNext(true);
+      const msg =
+        book.kind === 'fiction'
+          ? `"${book.title}" marked finished — predictions unlocked!`
+          : `"${book.title}" marked finished.`;
+      showToast(msg, 'success', {
         action: {
           label: 'Undo',
           testId: 'toast-undo-btn',
           onClick: () => {
-            void restoreBook(prevBook, { expectedBaseUpdatedAt: finished?.meta?.updatedAt })
+            setShowUpNext(false);
+            void restoreBook(prevBook, { expectedBaseUpdatedAt: finished.meta?.updatedAt })
               .then(() => showToast(`Restored "${prevBook.title}" to ${prevBook.status}`, 'info'))
               .catch(err =>
                 showToast(describeSyncError(err, 'Failed to undo mark finished'), 'error')
@@ -153,6 +181,24 @@ export const BookBookmarkBar: React.FC<BookBookmarkBarProps> = ({
       });
     } catch (err) {
       showToast(describeSyncError(err, 'Failed to mark finished'), 'error');
+    } finally {
+      setFinishing(false);
+    }
+  };
+
+  const handleStartNextBook = async (nextBook: Book) => {
+    if (startingId) return;
+    setStartingId(nextBook.id);
+    try {
+      const started = await startReadingBook(nextBook.id);
+      if (!started) return;
+      setShowUpNext(false);
+      showToast(`Started "${nextBook.title}".`, 'success');
+      navigateTo(`#/book/${encodeURIComponent(nextBook.id)}`);
+    } catch (err) {
+      showToast(describeSyncError(err, 'Failed to start reading book'), 'error');
+    } finally {
+      setStartingId(null);
     }
   };
 
@@ -247,8 +293,9 @@ export const BookBookmarkBar: React.FC<BookBookmarkBarProps> = ({
           <button
             type="button"
             data-testid="mark-finished-btn"
+            disabled={finishing}
             onClick={() => void handleMarkFinished()}
-            className="print:hidden h-11 sm:h-9 px-4 rounded-[10px] bg-positive/15 hover:bg-positive/25 border border-positive/30 text-label font-semibold text-positive inline-flex items-center gap-1.5 whitespace-nowrap self-start lg:self-center"
+            className="print:hidden h-11 sm:h-9 px-4 rounded-[10px] bg-positive/15 hover:bg-positive/25 disabled:opacity-50 border border-positive/30 text-label font-semibold text-positive inline-flex items-center gap-1.5 whitespace-nowrap self-start lg:self-center"
           >
             <CheckCircle2 className="w-4 h-4" />
             <span>Mark as Finished</span>
@@ -286,6 +333,56 @@ export const BookBookmarkBar: React.FC<BookBookmarkBarProps> = ({
           </div>
         )}
       </div>
+
+      {showUpNext && upNextCandidates.length > 0 && (
+        <div
+          data-testid="post-finish-up-next"
+          className="print:hidden pt-3 border-t border-border/60 space-y-2.5"
+        >
+          <div className="flex items-center justify-between gap-2">
+            <span className={EYEBROW}>Up next in your queue</span>
+            <button
+              type="button"
+              onClick={() => setShowUpNext(false)}
+              className={BTN_TERTIARY}
+            >
+              Dismiss
+            </button>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-2.5">
+            {upNextCandidates.map(({ book: cand, reason }) => {
+              const why = getBookMetaString(cand.meta, 'whyQueued');
+              return (
+                <div
+                  key={cand.id}
+                  data-testid={`up-next-card-${cand.id}`}
+                  className="min-w-0 rounded-[10px] bg-surface2/50 border border-border p-3 flex flex-col justify-between gap-2"
+                >
+                  <div className="space-y-1 min-w-0">
+                    <div className="text-[11px] font-medium text-muted-foreground">{reason}</div>
+                    <div className="text-body font-medium text-foreground truncate">
+                      {cand.title}
+                    </div>
+                    {why && (
+                      <p className="text-label text-muted-foreground italic line-clamp-2">{why}</p>
+                    )}
+                  </div>
+                  <button
+                    type="button"
+                    data-testid={`up-next-start-${cand.id}`}
+                    disabled={startingId === cand.id}
+                    onClick={() => void handleStartNextBook(cand)}
+                    className={`${BTN_SECONDARY} self-start`}
+                  >
+                    <Play className="w-3.5 h-3.5" aria-hidden="true" />
+                    <span>{startingId === cand.id ? 'Starting…' : 'Start Reading'}</span>
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       <ConfirmDialog
         isOpen={rereadConfirmOpen}

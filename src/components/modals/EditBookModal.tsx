@@ -1,6 +1,6 @@
 import React, { useEffect, useId, useState } from 'react';
 import { Archive, X } from 'lucide-react';
-import type { Book, BookFormat, BookKind, BookStatus, PosUnit } from '../../types/pragya';
+import type { Book, BookFormat, BookKind, BookMetaJson, BookStatus, PosUnit } from '../../types/pragya';
 import { usePragyaActions } from '../../context/PragyaContext';
 import { useArchiveActions } from '../../hooks/useArchiveActions';
 import { describeSyncError } from '../../utils/apiErrors';
@@ -8,7 +8,13 @@ import { isArchived } from '../../utils/archive';
 import { coverUrlError } from '../../utils/bookSurfaces';
 import { CHAPTER_MAX_LENGTH, withChapterKey } from '../../utils/chapterFormat';
 import { isSubmitShortcut } from '../../utils/keyboard';
-import { BOOK_CHAPTER_EDITOR_OWNED_META_KEYS } from '../../utils/metaCodecs';
+import {
+  BOOK_CHAPTER_EDITOR_OWNED_META_KEYS,
+  BOOK_CONTEXT_NOTE_MAX,
+  BOOK_NEXT_STOP_MAX,
+  getBookMetaString,
+} from '../../utils/metaCodecs';
+import { withBookContextField } from '../../utils/readingMomentum';
 import { navigateTo } from '../../utils/navigation';
 import { showToast } from '../../utils/toast';
 import { Modal } from '../common/Modal';
@@ -30,16 +36,20 @@ export const EditBookModal: React.FC<EditBookModalProps> = ({ book, onClose }) =
   const { updateBook } = usePragyaActions();
   const { archiveBook } = useArchiveActions();
   const [archiving, setArchiving] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
 
   const handleArchive = async () => {
-    if (!book) return;
+    if (!book || submitting || archiving) return;
     setArchiving(true);
-    const saved = await archiveBook(book);
-    setArchiving(false);
-    if (!saved) return;
-    onClose();
-    if (window.location.hash.startsWith(`#/book/${encodeURIComponent(book.id)}`)) {
-      navigateTo('#/shelf');
+    try {
+      const saved = await archiveBook(book);
+      if (!saved) return;
+      onClose();
+      if (window.location.hash.startsWith(`#/book/${encodeURIComponent(book.id)}`)) {
+        navigateTo('#/shelf');
+      }
+    } finally {
+      setArchiving(false);
     }
   };
   const uid = useId();
@@ -56,7 +66,12 @@ export const EditBookModal: React.FC<EditBookModalProps> = ({ book, onClose }) =
   const [docUrl, setDocUrl] = useState('');
   const [coverUrl, setCoverUrl] = useState('');
   const [currentChapter, setCurrentChapter] = useState('');
-  const [submitting, setSubmitting] = useState(false);
+  const [whyQueued, setWhyQueued] = useState('');
+  const [pauseNote, setPauseNote] = useState('');
+  const [nextStop, setNextStop] = useState('');
+  const [touchedContext, setTouchedContext] = useState<Set<'whyQueued' | 'pauseNote' | 'nextStop'>>(
+    () => new Set()
+  );
 
   useEffect(() => {
     if (!book) return;
@@ -73,12 +88,25 @@ export const EditBookModal: React.FC<EditBookModalProps> = ({ book, onClose }) =
     setCurrentChapter(
       typeof book.meta?.currentChapter === 'string' ? book.meta.currentChapter : ''
     );
+    setWhyQueued(getBookMetaString(book.meta, 'whyQueued'));
+    setPauseNote(getBookMetaString(book.meta, 'pauseNote'));
+    setNextStop(getBookMetaString(book.meta, 'nextStop'));
+    setTouchedContext(new Set());
     setSubmitting(false);
   }, [book]);
 
+  const markContextTouched = (key: 'whyQueued' | 'pauseNote' | 'nextStop') => {
+    setTouchedContext(prev => {
+      if (prev.has(key)) return prev;
+      const next = new Set(prev);
+      next.add(key);
+      return next;
+    });
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!book) return;
+    if (!book || submitting || archiving) return;
     if (!title.trim()) {
       showToast('Title cannot be empty', 'error');
       return;
@@ -94,6 +122,27 @@ export const EditBookModal: React.FC<EditBookModalProps> = ({ book, onClose }) =
       const nextTotal = Math.max(0, Number(totalPos) || 0);
       const nowIso = new Date().toISOString();
 
+      let nextMeta: BookMetaJson = {
+        ...withChapterKey(book.meta, 'currentChapter', currentChapter),
+        ...(status === 'reading' && !book.meta.startedAt ? { startedAt: nowIso } : {}),
+        ...(status === 'finished' && !book.meta.finishedAt ? { finishedAt: nowIso } : {}),
+        coverUrl: coverUrl.trim() || undefined,
+        updatedAt: nowIso,
+      };
+      const dynamicOwned: string[] = [...BOOK_CHAPTER_EDITOR_OWNED_META_KEYS];
+      if (touchedContext.has('whyQueued')) {
+        nextMeta = withBookContextField(nextMeta, 'whyQueued', whyQueued);
+        dynamicOwned.push('whyQueued');
+      }
+      if (touchedContext.has('pauseNote')) {
+        nextMeta = withBookContextField(nextMeta, 'pauseNote', pauseNote);
+        dynamicOwned.push('pauseNote');
+      }
+      if (touchedContext.has('nextStop')) {
+        nextMeta = withBookContextField(nextMeta, 'nextStop', nextStop);
+        dynamicOwned.push('nextStop');
+      }
+
       await updateBook(
         {
           ...book,
@@ -106,17 +155,11 @@ export const EditBookModal: React.FC<EditBookModalProps> = ({ book, onClose }) =
           totalPos: nextTotal,
           posUnit,
           docUrl: docUrl.trim(),
-          meta: {
-            ...withChapterKey(book.meta, 'currentChapter', currentChapter),
-            ...(status === 'reading' && !book.meta.startedAt ? { startedAt: nowIso } : {}),
-            ...(status === 'finished' && !book.meta.finishedAt ? { finishedAt: nowIso } : {}),
-            coverUrl: coverUrl.trim() || undefined,
-            updatedAt: nowIso,
-          },
+          meta: nextMeta,
         },
         {
           expectedBaseUpdatedAt: book.meta.updatedAt,
-          ownedMetaKeys: BOOK_CHAPTER_EDITOR_OWNED_META_KEYS,
+          ownedMetaKeys: dynamicOwned,
           baseMeta: book.meta,
         }
       );
@@ -305,6 +348,137 @@ export const EditBookModal: React.FC<EditBookModalProps> = ({ book, onClose }) =
           </p>
         </div>
 
+        {status === 'reading' && (
+          <div className="space-y-1.5">
+            <label htmlFor={fid('next-stop')} className={FIELD_LABEL}>
+              Next Stopping Point
+            </label>
+            <input
+              id={fid('next-stop')}
+              type="text"
+              maxLength={BOOK_NEXT_STOP_MAX}
+              data-testid="edit-book-next-stop-input"
+              value={nextStop}
+              onChange={e => {
+                setNextStop(e.target.value);
+                markContextTouched('nextStop');
+              }}
+              placeholder="e.g. Finish Part II · p. 180"
+              className={INPUT}
+            />
+          </div>
+        )}
+
+        {status === 'queued' && (
+          <div className="space-y-1.5">
+            <label htmlFor={fid('why-queued')} className={FIELD_LABEL}>
+              Why this book?
+            </label>
+            <input
+              id={fid('why-queued')}
+              type="text"
+              maxLength={BOOK_CONTEXT_NOTE_MAX}
+              data-testid="edit-book-why-queued-input"
+              value={whyQueued}
+              onChange={e => {
+                setWhyQueued(e.target.value);
+                markContextTouched('whyQueued');
+              }}
+              placeholder="e.g. Recommended by Sam; short weekend read"
+              className={INPUT}
+            />
+          </div>
+        )}
+
+        {status === 'paused' && (
+          <div className="space-y-1.5">
+            <label htmlFor={fid('pause-note')} className={FIELD_LABEL}>
+              Pause Note
+            </label>
+            <input
+              id={fid('pause-note')}
+              type="text"
+              maxLength={BOOK_CONTEXT_NOTE_MAX}
+              data-testid="edit-book-pause-note-input"
+              value={pauseNote}
+              onChange={e => {
+                setPauseNote(e.target.value);
+                markContextTouched('pauseNote');
+              }}
+              placeholder="e.g. Heavy for weeknights — save for vacation"
+              className={INPUT}
+            />
+          </div>
+        )}
+
+        <details className="rounded-[10px] bg-surface2/40 border border-border px-3 py-2 space-y-3">
+          <summary className="min-h-11 sm:min-h-0 flex items-center cursor-pointer text-label font-medium text-muted-foreground hover:text-foreground">
+            Other context &amp; landmarks
+          </summary>
+          <div className="space-y-3 pt-2">
+            {status !== 'reading' && (
+              <div className="space-y-1.5">
+                <label htmlFor={fid('other-next-stop')} className={FIELD_LABEL}>
+                  Next Stopping Point
+                </label>
+                <input
+                  id={fid('other-next-stop')}
+                  type="text"
+                  maxLength={BOOK_NEXT_STOP_MAX}
+                  data-testid="edit-book-next-stop-input"
+                  value={nextStop}
+                  onChange={e => {
+                    setNextStop(e.target.value);
+                    markContextTouched('nextStop');
+                  }}
+                  placeholder="e.g. Finish Part II · p. 180"
+                  className={INPUT}
+                />
+              </div>
+            )}
+            {status !== 'queued' && (
+              <div className="space-y-1.5">
+                <label htmlFor={fid('other-why-queued')} className={FIELD_LABEL}>
+                  Why this book?
+                </label>
+                <input
+                  id={fid('other-why-queued')}
+                  type="text"
+                  maxLength={BOOK_CONTEXT_NOTE_MAX}
+                  data-testid="edit-book-why-queued-input"
+                  value={whyQueued}
+                  onChange={e => {
+                    setWhyQueued(e.target.value);
+                    markContextTouched('whyQueued');
+                  }}
+                  placeholder="e.g. Recommended by Sam; short weekend read"
+                  className={INPUT}
+                />
+              </div>
+            )}
+            {status !== 'paused' && (
+              <div className="space-y-1.5">
+                <label htmlFor={fid('other-pause-note')} className={FIELD_LABEL}>
+                  Pause Note
+                </label>
+                <input
+                  id={fid('other-pause-note')}
+                  type="text"
+                  maxLength={BOOK_CONTEXT_NOTE_MAX}
+                  data-testid="edit-book-pause-note-input"
+                  value={pauseNote}
+                  onChange={e => {
+                    setPauseNote(e.target.value);
+                    markContextTouched('pauseNote');
+                  }}
+                  placeholder="e.g. Heavy for weeknights — save for vacation"
+                  className={INPUT}
+                />
+              </div>
+            )}
+          </div>
+        </details>
+
         <div className="space-y-1.5">
           <label htmlFor={fid('docurl')} className={FIELD_LABEL}>
             Companion Google Doc URL
@@ -366,7 +540,7 @@ export const EditBookModal: React.FC<EditBookModalProps> = ({ book, onClose }) =
             </button>
             <button
               type="submit"
-              disabled={submitting}
+              disabled={submitting || archiving}
               data-testid="edit-book-submit-btn"
               className="h-11 sm:h-10 px-5 rounded-[10px] bg-primary text-primary-foreground font-semibold text-body hover:opacity-90 disabled:opacity-50 transition-opacity"
             >

@@ -5,6 +5,7 @@ import { usePragyaActions } from '../../context/PragyaContext';
 import { describeSyncError } from '../../utils/apiErrors';
 import { coverUrlError } from '../../utils/bookSurfaces';
 import { isSubmitShortcut } from '../../utils/keyboard';
+import { BOOK_CONTEXT_NOTE_MAX, BOOK_NEXT_STOP_MAX } from '../../utils/metaCodecs';
 import { showToast } from '../../utils/toast';
 import { Modal } from '../common/Modal';
 import {
@@ -35,6 +36,9 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({ isOpen, onClose }) =
   const [posUnit, setPosUnit] = useState<PosUnit>('page');
   const [docUrl, setDocUrl] = useState('');
   const [coverUrl, setCoverUrl] = useState('');
+  const [whyQueued, setWhyQueued] = useState('');
+  const [pauseNote, setPauseNote] = useState('');
+  const [nextStop, setNextStop] = useState('');
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
@@ -49,6 +53,9 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({ isOpen, onClose }) =
     setPosUnit('page');
     setDocUrl('');
     setCoverUrl('');
+    setWhyQueued('');
+    setPauseNote('');
+    setNextStop('');
     setSubmitting(false);
   }, [isOpen]);
 
@@ -61,6 +68,7 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({ isOpen, onClose }) =
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (submitting) return;
     if (!title.trim()) {
       showToast('Please enter a book title', 'error');
       return;
@@ -86,6 +94,9 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({ isOpen, onClose }) =
         posUnit,
         docUrl,
         coverUrl: coverUrl.trim() || undefined,
+        whyQueued: status === 'queued' ? whyQueued : undefined,
+        pauseNote: status === 'paused' ? pauseNote : undefined,
+        nextStop: status === 'reading' ? nextStop : undefined,
       });
       showToast(`Added "${title.trim()}"`, 'success');
       onClose();
@@ -259,6 +270,60 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({ isOpen, onClose }) =
             </select>
           </div>
         </div>
+
+        {status === 'queued' && (
+          <div className="space-y-1.5">
+            <label htmlFor={fid('why-queued')} className={FIELD_LABEL}>
+              Why this book? (Optional)
+            </label>
+            <input
+              id={fid('why-queued')}
+              type="text"
+              maxLength={BOOK_CONTEXT_NOTE_MAX}
+              data-testid="add-book-why-queued-input"
+              value={whyQueued}
+              onChange={e => setWhyQueued(e.target.value)}
+              placeholder="e.g. Recommended by Sam; short weekend read"
+              className={INPUT}
+            />
+          </div>
+        )}
+
+        {status === 'reading' && (
+          <div className="space-y-1.5">
+            <label htmlFor={fid('next-stop')} className={FIELD_LABEL}>
+              Next Stopping Point (Optional)
+            </label>
+            <input
+              id={fid('next-stop')}
+              type="text"
+              maxLength={BOOK_NEXT_STOP_MAX}
+              data-testid="add-book-next-stop-input"
+              value={nextStop}
+              onChange={e => setNextStop(e.target.value)}
+              placeholder="e.g. Finish Part I · p. 60"
+              className={INPUT}
+            />
+          </div>
+        )}
+
+        {status === 'paused' && (
+          <div className="space-y-1.5">
+            <label htmlFor={fid('pause-note')} className={FIELD_LABEL}>
+              Pause Note (Optional)
+            </label>
+            <input
+              id={fid('pause-note')}
+              type="text"
+              maxLength={BOOK_CONTEXT_NOTE_MAX}
+              data-testid="add-book-pause-note-input"
+              value={pauseNote}
+              onChange={e => setPauseNote(e.target.value)}
+              placeholder="e.g. Heavy for weeknights — save for vacation"
+              className={INPUT}
+            />
+          </div>
+        )}
 
         <div className="space-y-1.5">
           <label htmlFor={fid('docurl')} className={FIELD_LABEL}>

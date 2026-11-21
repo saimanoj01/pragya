@@ -14,13 +14,26 @@ import {
   Plus,
   Sparkles,
   Unlock,
+  X,
 } from 'lucide-react';
 import type { Attachment, Note } from '../../types/pragya';
-import { usePragyaData } from '../../context/PragyaContext';
+import { usePragyaActions, usePragyaData } from '../../context/PragyaContext';
 import { isEditableElement } from '../../hooks/useKeyboardShortcuts';
-import { getRenderableAttachments } from '../../utils/metaCodecs';
+import { describeSyncError } from '../../utils/apiErrors';
+import {
+  getNoteBridgeNotes,
+  getNoteRelatedSlugs,
+  getRenderableAttachments,
+} from '../../utils/metaCodecs';
 import { formatWhenDoDisplay } from '../../utils/deltaFormat';
 import { isSafeHttpUrl, navigateTo, replaceHash } from '../../utils/navigation';
+import { handleNavLinkClick } from '../../utils/navLinks';
+import {
+  DEFAULT_NOTES_QUERY,
+  buildNotesHash,
+  normalizeTagToken,
+} from '../../utils/notesQuery';
+import { showToast } from '../../utils/toast';
 import {
   isSealedPrediction,
   isUnlockedPrediction,
@@ -91,6 +104,8 @@ export const NoteDetailView: React.FC<NoteDetailViewProps> = ({
   onOpenCapture,
 }) => {
   const { books, notes } = usePragyaData();
+  const { saveNoteBridge, restoreNoteBridge } = usePragyaActions();
+  const [unlinkingId, setUnlinkingId] = useState<string | null>(null);
   const [lightboxAttachment, setLightboxAttachment] = useState<
     Extract<Attachment, { type: 'image' }> | null
   >(null);
@@ -141,6 +156,69 @@ export const NoteDetailView: React.FC<NoteDetailViewProps> = ({
 
 
   const wikilinks = useMemo(() => (note ? extractNoteWikilinkTexts(note) : []), [note]);
+  const visibleBridges = useMemo(() => {
+    if (!note) return [];
+    const inlineTargetIds = new Set<string>();
+    for (const { text } of wikilinks) {
+      const t = resolveWikilinkTarget(notes, text);
+      if (t) inlineTargetIds.add(t.id);
+    }
+    const bridgeNotesMap = getNoteBridgeNotes(note.meta);
+    const seenIds = new Set<string>();
+    const out: Array<{ target: Note; targetBookTitle: string; why: string; alsoInline: boolean }> = [];
+    for (const relSlug of getNoteRelatedSlugs(note.meta)) {
+      const target = resolveWikilinkTarget(notes, relSlug);
+      if (!target || target.id === note.id || seenIds.has(target.id)) continue;
+      if (isArchived(target)) continue;
+      const targetBook = bookById.get(target.bookId);
+      if (!targetBook || isArchived(targetBook)) continue;
+      if (isShielded(target, targetBook) || isSealedPrediction(target, targetBook)) continue;
+      seenIds.add(target.id);
+      const why = bridgeNotesMap[relSlug] || bridgeNotesMap[target.slug] || '';
+      out.push({
+        target,
+        targetBookTitle: targetBook.title,
+        why,
+        alsoInline: inlineTargetIds.has(target.id),
+      });
+    }
+    return out;
+  }, [bookById, note, notes, wikilinks]);
+
+  const handleUnlinkBridge = useCallback(
+    async (target: Note) => {
+      if (!note || unlinkingId) return;
+      setUnlinkingId(target.id);
+      try {
+        const res = await saveNoteBridge(note.id, target.id, {
+          mode: 'unlink',
+          bidirectional: true,
+        });
+        if (res.changed) {
+          showToast('Bridge removed.', 'info', {
+            action: res.undo
+              ? {
+                  label: 'Undo',
+                  testId: 'toast-undo-btn',
+                  onClick: () => {
+                    void restoreNoteBridge(res.undo!)
+                      .then(() => showToast('Bridge restored.', 'info'))
+                      .catch(err =>
+                        showToast(describeSyncError(err, 'Failed to restore bridge'), 'error')
+                      );
+                  },
+                }
+              : undefined,
+          });
+        }
+      } catch (err) {
+        showToast(describeSyncError(err, 'Failed to remove bridge'), 'error');
+      } finally {
+        setUnlinkingId(null);
+      }
+    },
+    [note, restoreNoteBridge, saveNoteBridge, unlinkingId]
+  );
   // C1.1: archived notes don't appear as backlinks.
   const backlinks = useMemo(
     // CD C3.2: links to an old slug (alias) count as backlinks too.
@@ -572,36 +650,112 @@ export const NoteDetailView: React.FC<NoteDetailViewProps> = ({
           </div>
         )}
 
-        {wikilinks.length > 0 && (
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="text-eyebrow uppercase text-muted-foreground">Related Concepts:</span>
-            {wikilinks.map(({ slug, text }) => {
-              // R2-a: resolve from the typed text so legacy ASCII slugs still match.
-              const target = resolveWikilinkTarget(notes, text);
-              const exists = Boolean(target);
-              return (
-                <button
-                  key={slug}
-                  type="button"
-                  data-print-keep="true"
-                  data-testid={`wikilink-chip-${slug}`}
-                  onClick={() =>
-                    navigateTo(
-                      target
-                        ? noteHref(target, bookById.get(target.bookId))
-                        : `#/note/${encodeURIComponent(slug)}`
-                    )
-                  }
-                  className={`min-h-11 sm:min-h-0 inline-flex items-center px-2.5 py-1 rounded-[8px] border text-label font-mono transition-colors ${
-                    exists
-                      ? 'bg-surface2 border-border text-foreground hover:bg-secondary'
-                      : 'bg-background border-dashed border-border text-muted-foreground hover:text-foreground'
-                  }`}
-                >
-                  [[{slug}]]{!exists ? ' (missing)' : ''}
-                </button>
-              );
-            })}
+        {(wikilinks.length > 0 || visibleBridges.length > 0) && (
+          <div className="space-y-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-eyebrow uppercase text-muted-foreground">Related Concepts:</span>
+              {wikilinks.map(({ slug, text }) => {
+                // R2-a: resolve from the typed text so legacy ASCII slugs still match.
+                const target = resolveWikilinkTarget(notes, text);
+                const exists = Boolean(target);
+                const bridgeMatch = target
+                  ? visibleBridges.find(b => b.target.id === target.id)
+                  : undefined;
+                const btn = (
+                  <button
+                    key={slug}
+                    type="button"
+                    data-print-keep="true"
+                    data-testid={`wikilink-chip-${slug}`}
+                    onClick={() =>
+                      navigateTo(
+                        target
+                          ? noteHref(target, bookById.get(target.bookId))
+                          : `#/note/${encodeURIComponent(slug)}`
+                      )
+                    }
+                    className={`min-h-11 min-w-11 sm:min-h-0 sm:min-w-0 max-w-full inline-flex items-center px-2.5 py-1 text-label font-mono transition-colors break-all ${
+                      bridgeMatch
+                        ? 'text-foreground hover:bg-secondary'
+                        : exists
+                          ? 'rounded-[8px] border bg-surface2 border-border text-foreground hover:bg-secondary'
+                          : 'rounded-[8px] border bg-background border-dashed border-border text-muted-foreground hover:text-foreground'
+                    }`}
+                  >
+                    [[{slug}]]{!exists ? ' (missing)' : ''}
+                  </button>
+                );
+                if (!bridgeMatch || isArchived(note)) return btn;
+                return (
+                  <span
+                    key={slug}
+                    className="inline-flex items-center max-w-full rounded-[8px] bg-surface2 border border-border overflow-hidden"
+                  >
+                    {btn}
+                    <button
+                      type="button"
+                      data-testid={`bridge-unlink-btn-${bridgeMatch.target.slug}`}
+                      disabled={unlinkingId === bridgeMatch.target.id}
+                      aria-label={`Remove bridge to ${bridgeMatch.target.meta?.title || bridgeMatch.target.slug}`}
+                      title="Remove cross-note bridge"
+                      onClick={() => void handleUnlinkBridge(bridgeMatch.target)}
+                      className="print:hidden min-w-11 min-h-11 sm:min-w-0 sm:min-h-0 px-1.5 py-1 text-muted-foreground hover:text-foreground hover:bg-secondary inline-flex items-center justify-center border-l border-border/60 shrink-0"
+                    >
+                      <X className="w-3 h-3" aria-hidden="true" />
+                    </button>
+                  </span>
+                );
+              })}
+              {visibleBridges
+                .filter(b => !b.alsoInline)
+                .map(({ target }) => (
+                  <span
+                    key={target.id}
+                    data-testid={`bridge-chip-${target.slug}`}
+                    className="inline-flex items-center max-w-full rounded-[8px] bg-surface2 border border-border text-label text-foreground overflow-hidden"
+                  >
+                    <button
+                      type="button"
+                      data-print-keep="true"
+                      onClick={() => navigateTo(noteHref(target, bookById.get(target.bookId)))}
+                      className="min-h-11 min-w-11 sm:min-h-0 sm:min-w-0 max-w-full inline-flex items-center px-2.5 py-1 font-mono hover:bg-secondary transition-colors break-all"
+                    >
+                      [[{target.slug}]]
+                    </button>
+                    {!isArchived(note) && (
+                      <button
+                        type="button"
+                        data-testid={`bridge-unlink-btn-${target.slug}`}
+                        disabled={unlinkingId === target.id}
+                        aria-label={`Unlink ${target.meta?.title || target.slug}`}
+                        title="Unlink bridge"
+                        onClick={() => void handleUnlinkBridge(target)}
+                        className="print:hidden min-w-11 min-h-11 sm:min-w-0 sm:min-h-0 px-1.5 py-1 text-muted-foreground hover:text-foreground hover:bg-secondary inline-flex items-center justify-center border-l border-border/60 shrink-0"
+                      >
+                        <X className="w-3 h-3" aria-hidden="true" />
+                      </button>
+                    )}
+                  </span>
+                ))}
+            </div>
+
+            {visibleBridges.some(b => b.why) && (
+              <ul className="space-y-1 text-label text-muted-foreground pl-1">
+                {visibleBridges
+                  .filter(b => b.why)
+                  .map(({ target, targetBookTitle, why }) => (
+                    <li
+                      key={target.id}
+                      data-testid={`bridge-why-${target.slug}`}
+                      className="break-words"
+                    >
+                      <span className="font-mono text-foreground">[[{target.slug}]]</span>
+                      <span> ({targetBookTitle}): </span>
+                      <span>{why}</span>
+                    </li>
+                  ))}
+              </ul>
+            )}
           </div>
         )}
 
@@ -754,11 +908,21 @@ export const NoteDetailView: React.FC<NoteDetailViewProps> = ({
 
         {Array.isArray(note.tags) && note.tags.length > 0 && (
           <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-border/60">
-            {note.tags.map(tag => (
-              <span key={tag} className="text-label text-muted-foreground">
-                {tag}
-              </span>
-            ))}
+            {note.tags.map(tag => {
+              const t = normalizeTagToken(tag);
+              const href = buildNotesHash({ ...DEFAULT_NOTES_QUERY, tags: [t] });
+              return (
+                <a
+                  key={tag}
+                  href={href}
+                  data-testid={`note-detail-tag-${t.slice(1)}`}
+                  onClick={e => handleNavLinkClick(e, href)}
+                  className="min-h-11 min-w-11 sm:min-h-0 sm:min-w-0 px-1.5 sm:px-0 inline-flex items-center justify-center text-label text-muted-foreground hover:text-foreground hover:underline"
+                >
+                  {tag}
+                </a>
+              );
+            })}
           </div>
         )}
           </>

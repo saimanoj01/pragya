@@ -3,6 +3,7 @@ import {
   Calendar,
   Edit3,
   ExternalLink,
+  Flag,
   Plus,
   ArrowRight,
   CheckCircle2,
@@ -13,7 +14,16 @@ import type { Book } from '../../types/pragya';
 import { usePragya } from '../../context/PragyaContext';
 import { isSafeHttpUrl, navigateTo } from '../../utils/navigation';
 import { getLocalDateString } from '../../utils/sessionCoalesce';
-import { ACTIVITY_LEVEL_CLASSES, activityCountLabel, buildActivityDays } from '../../utils/bookSurfaces';
+import {
+  ACTIVITY_LEVEL_CLASSES,
+  activityCountLabel,
+  bookSessionsNewestFirst,
+  buildActivityDays,
+  sessionDateLabel,
+} from '../../utils/bookSurfaces';
+import { getBookMetaString } from '../../utils/metaCodecs';
+import { pickNextReadCandidates } from '../../utils/readingMomentum';
+import { toLocalDateKey } from '../../utils/takeawayShuffle';
 import { BookCover, REREADING_BADGE } from '../common/BookCover';
 import {
   computePercentDisplay,
@@ -21,13 +31,14 @@ import {
   getQuickAdvanceSpec,
   isEverFinished,
   isNoteSpoiler,
+  isSealedPrediction,
 } from '../../utils/spoilerMath';
 import { showToast } from '../../utils/toast';
 import { describeSyncError } from '../../utils/apiErrors';
 import { normalizeChapterInput } from '../../utils/chapterFormat';
 import { isArchived, onlyArchived, withoutArchived } from '../../utils/archive';
 import { useArchiveActions } from '../../hooks/useArchiveActions';
-import { BTN_SECONDARY, BTN_TERTIARY_NEGATIVE, EYEBROW } from '../common/uiClasses';
+import { BTN_SECONDARY, BTN_TERTIARY, BTN_TERTIARY_NEGATIVE, EYEBROW } from '../common/uiClasses';
 import { ConfirmDialog } from '../common/ConfirmDialog';
 import { useDeleteForever } from '../../hooks/useDeleteForever';
 
@@ -42,9 +53,19 @@ export const ShelfView: React.FC<ShelfViewProps> = ({
   onEditBook,
   onOpenCaptureForBook,
 }) => {
-  const { books, notes, sessions, advanceBookPosition, revertBookmarkAdvance, startReadingBook } =
-    usePragya();
+  const {
+    books,
+    notes,
+    sessions,
+    advanceBookPosition,
+    revertBookmarkAdvance,
+    startReadingBook,
+    markBookFinished,
+    restoreBook,
+  } = usePragya();
   const [exactInputs, setExactInputs] = useState<Record<string, string>>({});
+  const [showActivityDetails, setShowActivityDetails] = useState(false);
+  const [finishingBookId, setFinishingBookId] = useState<string | null>(null);
 
   // C1.1: archived books leave every Shelf section; they sit in the final disclosure.
   const shelfBooks = useMemo(() => withoutArchived(books), [books]);
@@ -56,21 +77,63 @@ export const ShelfView: React.FC<ShelfViewProps> = ({
   const finishedBooks = useMemo(() => shelfBooks.filter(b => b.status === 'finished'), [shelfBooks]);
   const pausedBooks = useMemo(() => shelfBooks.filter(b => b.status === 'paused'), [shelfBooks]);
 
+  const todayDate = getLocalDateString();
+
   // C2.2: 30 local days (index 0 = 29 days ago, index 29 = today), weighted by progress.
   const activityDays = useMemo(
-    () => buildActivityDays(sessions, books, getLocalDateString()),
-    [books, sessions]
+    () => buildActivityDays(sessions, books, todayDate),
+    [books, sessions, todayDate]
   );
 
+  // v2: recent active days with book titles for touch/keyboard inspection without changing dot role="img".
+  const recentActiveDays = useMemo(() => {
+    const bookMap = new Map(books.map(b => [b.id, b] as const));
+    const booksByDate = new Map<string, string[]>();
+    for (const s of sessions) {
+      const key = toLocalDateKey(s.date as unknown);
+      if (!key) continue;
+      const title = bookMap.get(s.bookId)?.title;
+      if (!title) continue;
+      const list = booksByDate.get(key) || [];
+      if (!list.includes(title)) list.push(title);
+      booksByDate.set(key, list);
+    }
+    return [...activityDays]
+      .reverse()
+      .filter(d => d.count > 0)
+      .slice(0, 7)
+      .map(d => ({ ...d, bookTitles: booksByDate.get(d.date) || [] }));
+  }, [activityDays, books, sessions]);
+
+  const emptyShelfPicks = useMemo(() => {
+    const queuedPicks = pickNextReadCandidates(books, notes);
+    const out: Array<{ book: Book; reason?: string }> = queuedPicks.map(p => ({
+      book: p.book,
+      reason: p.reason,
+    }));
+    const used = new Set(out.map(x => x.book.id));
+    for (const b of pausedBooks) {
+      if (out.length >= 3) break;
+      if (!used.has(b.id)) {
+        used.add(b.id);
+        out.push({ book: b, reason: 'Paused' });
+      }
+    }
+    return out;
+  }, [books, notes, pausedBooks]);
+
   const getReEntryContext = (book: Book) => {
-    const bookSessions = sessions
-      .filter(s => s.bookId === book.id)
-      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
-    const lastReadDate =
-      bookSessions[0]?.date || book.meta.updatedAt?.slice(0, 10) || getLocalDateString();
+    const bookSessions = bookSessionsNewestFirst(sessions, book.id);
+    const lastReadLabel = bookSessions[0] ? sessionDateLabel(bookSessions[0].date, todayDate) : null;
 
     const bookNotes = notes
-      .filter(n => n.bookId === book.id && !isArchived(n) && !isNoteSpoiler(n, book))
+      .filter(
+        n =>
+          n.bookId === book.id &&
+          !isArchived(n) &&
+          !isNoteSpoiler(n, book) &&
+          !isSealedPrediction(n, book)
+      )
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 
     const latestNote = bookNotes[0];
@@ -78,7 +141,7 @@ export const ShelfView: React.FC<ShelfViewProps> = ({
       ? latestNote.takeaway || latestNote.quote || ''
       : bookSessions[0]?.note || 'Ready to pick up where you left off.';
 
-    return { lastReadDate, snippet };
+    return { lastReadLabel, snippet };
   };
 
   const clearExactInput = (bookId: string) => {
@@ -187,6 +250,37 @@ export const ShelfView: React.FC<ShelfViewProps> = ({
     }
   };
 
+  const handleMarkFinishedFromShelf = async (book: Book) => {
+    if (finishingBookId) return;
+    const prevBook = book;
+    setFinishingBookId(book.id);
+    try {
+      const finished = await markBookFinished(book.id);
+      if (!finished) return;
+      const msg =
+        book.kind === 'fiction'
+          ? `"${book.title}" marked finished — predictions unlocked!`
+          : `"${book.title}" marked finished.`;
+      showToast(msg, 'success', {
+        action: {
+          label: 'Undo',
+          testId: 'toast-undo-btn',
+          onClick: () => {
+            void restoreBook(prevBook, { expectedBaseUpdatedAt: finished.meta?.updatedAt })
+              .then(() => showToast(`Restored "${prevBook.title}" to ${prevBook.status}`, 'info'))
+              .catch(err =>
+                showToast(describeSyncError(err, 'Failed to undo mark finished'), 'error')
+              );
+          },
+        },
+      });
+    } catch (err) {
+      showToast(describeSyncError(err, 'Failed to mark finished'), 'error');
+    } finally {
+      setFinishingBookId(null);
+    }
+  };
+
   return (
     <div data-testid="shelf-view" className="py-6 space-y-8">
       <ConfirmDialog {...deleteDialogProps} />
@@ -216,12 +310,25 @@ export const ShelfView: React.FC<ShelfViewProps> = ({
             <Calendar className="w-4 h-4 text-muted-foreground shrink-0" />
             <span>Reading Activity (Last 30 Days)</span>
           </div>
-          <span
-            data-testid="activity-count"
-            className="text-label text-muted-foreground num shrink-0"
-          >
-            {activityCountLabel(activityDays)}
-          </span>
+          <div className="flex items-center gap-3 shrink-0">
+            <span
+              data-testid="activity-count"
+              className="text-label text-muted-foreground num shrink-0"
+            >
+              {activityCountLabel(activityDays)}
+            </span>
+            {recentActiveDays.length > 0 && (
+              <button
+                type="button"
+                data-testid="activity-inspect-toggle"
+                aria-expanded={showActivityDetails}
+                onClick={() => setShowActivityDetails(prev => !prev)}
+                className={`print:hidden ${BTN_TERTIARY}`}
+              >
+                <span>{showActivityDetails ? 'Hide days' : 'Recent days'}</span>
+              </button>
+            )}
+          </div>
         </div>
 
         <div
@@ -236,11 +343,30 @@ export const ShelfView: React.FC<ShelfViewProps> = ({
               data-testid={`activity-dot-${idx}`}
               role="img"
               aria-label={day.label}
+              title={day.label}
               data-level={day.level}
               className={`w-full max-w-[14px] aspect-square rounded-full mx-auto transition-colors ${ACTIVITY_LEVEL_CLASSES[day.level]}`}
             />
           ))}
         </div>
+
+        {showActivityDetails && recentActiveDays.length > 0 && (
+          <ul
+            data-testid="activity-recent-days-list"
+            className="pt-2 border-t border-border/60 space-y-1 text-label text-muted-foreground"
+          >
+            {recentActiveDays.map(day => (
+              <li key={day.date} className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5">
+                <span className="text-foreground num">{day.label}</span>
+                {day.bookTitles.length > 0 && (
+                  <span className="truncate max-w-[260px] text-faint">
+                    {day.bookTitles.join(' · ')}
+                  </span>
+                )}
+              </li>
+            ))}
+          </ul>
+        )}
       </section>
 
       {/* Now Reading */}
@@ -267,16 +393,22 @@ export const ShelfView: React.FC<ShelfViewProps> = ({
                 <Plus className="w-4 h-4" />
                 <span>Add Book</span>
               </button>
-              {[...queuedBooks, ...pausedBooks].slice(0, 3).map(b => (
+              {emptyShelfPicks.map(({ book: b, reason }) => (
                 <button
                   key={b.id}
                   type="button"
                   data-testid={`empty-shelf-start-${b.id}`}
                   onClick={() => void handleStartReading(b.id)}
+                  title={reason ? `${reason}: ${b.title}` : b.title}
                   className="h-11 sm:h-10 px-3.5 rounded-full bg-surface2 hover:bg-secondary border border-border text-label font-medium text-foreground inline-flex items-center gap-1.5"
                 >
-                  <Play className="w-3.5 h-3.5" />
+                  <Play className="w-3.5 h-3.5 shrink-0" />
                   <span className="truncate max-w-[180px]">Start {b.title}</span>
+                  {reason && (
+                    <span className="hidden sm:inline text-[11px] text-muted-foreground">
+                      · {reason}
+                    </span>
+                  )}
                 </button>
               ))}
             </div>
@@ -288,6 +420,11 @@ export const ShelfView: React.FC<ShelfViewProps> = ({
               const reEntry = getReEntryContext(book);
               const inputValue = exactInputs[book.id] ?? String(book.currentPos);
               const { label: stepLabel } = getQuickAdvanceSpec(book.posUnit);
+              const nextStop = getBookMetaString(book.meta, 'nextStop');
+              const reachedEnd =
+                book.posUnit === 'percent'
+                  ? book.currentPos >= 100
+                  : book.totalPos > 0 && book.currentPos >= book.totalPos;
 
               return (
                 <article
@@ -372,12 +509,37 @@ export const ShelfView: React.FC<ShelfViewProps> = ({
                           style={{ width: `${pct}%` }}
                         />
                       </div>
+                      {nextStop && (
+                        <div
+                          data-testid={`shelf-next-stop-${book.id}`}
+                          className="inline-flex items-center gap-1.5 text-[11px] text-muted-foreground max-w-full"
+                        >
+                          <Flag className="w-3 h-3 shrink-0" aria-hidden="true" />
+                          <span className="truncate">Next stop: {nextStop}</span>
+                        </div>
+                      )}
+                      {reachedEnd && (
+                        <div className="pt-1 print:hidden">
+                          <button
+                            type="button"
+                            data-testid={`shelf-mark-finished-btn-${book.id}`}
+                            disabled={finishingBookId === book.id}
+                            onClick={() => void handleMarkFinishedFromShelf(book)}
+                            className="h-11 sm:h-8 px-3 rounded-[8px] bg-positive/15 hover:bg-positive/25 disabled:opacity-50 border border-positive/30 text-label font-semibold text-positive inline-flex items-center gap-1.5 whitespace-nowrap"
+                          >
+                            <CheckCircle2 className="w-3.5 h-3.5" aria-hidden="true" />
+                            <span>Mark as Finished</span>
+                          </button>
+                        </div>
+                      )}
                     </div>
 
                     {/* Re-Entry Context */}
                     <div className="rounded-[10px] bg-surface2/60 border border-border px-3.5 py-2.5 space-y-1">
                       <div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground num">
-                        Re-Entry Context (Last Read {reEntry.lastReadDate})
+                        {reEntry.lastReadLabel
+                          ? `Re-Entry Context (Last Read ${reEntry.lastReadLabel})`
+                          : 'Re-Entry Context · Ready to pick up'}
                       </div>
                       <p className="text-label text-muted-foreground italic line-clamp-2">
                         &ldquo;{reEntry.snippet}&rdquo;
@@ -460,49 +622,62 @@ export const ShelfView: React.FC<ShelfViewProps> = ({
             Queued ({queuedBooks.length})
           </h2>
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {queuedBooks.map(book => (
-              <article
-                key={book.id}
-                data-testid={`book-card-${book.id}`}
-                className="bg-card border border-border rounded-[14px] p-4 flex flex-col justify-between gap-3"
-              >
-                <div className="flex items-start justify-between gap-2">
-                  <div>
+            {queuedBooks.map(book => {
+              const whyQueued = getBookMetaString(book.meta, 'whyQueued');
+              return (
+                <article
+                  key={book.id}
+                  data-testid={`book-card-${book.id}`}
+                  className="bg-card border border-border rounded-[14px] p-4 flex flex-col justify-between gap-3"
+                >
+                  <div className="space-y-2">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <button
+                          type="button"
+                          data-print-keep="true"
+                          onClick={() => navigateTo(`#/book/${encodeURIComponent(book.id)}`)}
+                          className="min-h-11 sm:min-h-0 inline-flex items-center text-left text-heading text-foreground hover:underline"
+                        >
+                          {book.title}
+                        </button>
+                        <p className="text-label text-muted-foreground">{book.author}</p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => onEditBook(book)}
+                        aria-label={`Edit ${book.title}`}
+                        className="min-w-[44px] min-h-[44px] sm:min-w-0 sm:min-h-0 p-2 sm:p-1 flex items-center justify-center rounded-[8px] text-muted-foreground hover:text-foreground hover:bg-surface2"
+                      >
+                        <Edit3 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                    {whyQueued && (
+                      <p
+                        data-testid={`book-why-queued-${book.id}`}
+                        className="text-label text-muted-foreground italic line-clamp-2"
+                      >
+                        {whyQueued}
+                      </p>
+                    )}
+                  </div>
+
+                  <div className="flex items-center justify-between pt-2 border-t border-border/50 text-label">
+                    <span className="text-muted-foreground num">
+                      {book.totalPos > 0 ? `${book.totalPos} ${book.posUnit}` : book.format}
+                    </span>
                     <button
                       type="button"
-                      data-print-keep="true"
-                      onClick={() => navigateTo(`#/book/${encodeURIComponent(book.id)}`)}
-                      className="min-h-11 sm:min-h-0 inline-flex items-center text-left text-heading text-foreground hover:underline"
+                      data-testid={`book-start-btn-${book.id}`}
+                      onClick={() => void handleStartReading(book.id)}
+                      className="min-h-11 sm:min-h-0 font-semibold text-foreground hover:underline inline-flex items-center gap-1 whitespace-nowrap"
                     >
-                      {book.title}
+                      <span>Start Reading →</span>
                     </button>
-                    <p className="text-label text-muted-foreground">{book.author}</p>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => onEditBook(book)}
-                    aria-label={`Edit ${book.title}`}
-                    className="min-w-[44px] min-h-[44px] sm:min-w-0 sm:min-h-0 p-2 sm:p-1 flex items-center justify-center rounded-[8px] text-muted-foreground hover:text-foreground hover:bg-surface2"
-                  >
-                    <Edit3 className="w-3.5 h-3.5" />
-                  </button>
-                </div>
-
-                <div className="flex items-center justify-between pt-2 border-t border-border/50 text-label">
-                  <span className="text-muted-foreground num">
-                    {book.totalPos > 0 ? `${book.totalPos} ${book.posUnit}` : book.format}
-                  </span>
-                  <button
-                    type="button"
-                    data-testid={`book-start-btn-${book.id}`}
-                    onClick={() => void handleStartReading(book.id)}
-                    className="min-h-11 sm:min-h-0 font-semibold text-foreground hover:underline inline-flex items-center gap-1 whitespace-nowrap"
-                  >
-                    <span>Start Reading →</span>
-                  </button>
-                </div>
-              </article>
-            ))}
+                </article>
+              );
+            })}
           </div>
         </section>
       )}
@@ -514,39 +689,52 @@ export const ShelfView: React.FC<ShelfViewProps> = ({
             Paused ({pausedBooks.length})
           </h2>
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {pausedBooks.map(book => (
-              <article
-                key={book.id}
-                data-testid={`book-card-${book.id}`}
-                className="bg-card border border-border rounded-[14px] p-4 flex flex-col justify-between gap-3"
-              >
-                <div>
-                  <button
-                    type="button"
-                    data-print-keep="true"
-                    onClick={() => navigateTo(`#/book/${encodeURIComponent(book.id)}`)}
-                    className="min-h-11 sm:min-h-0 inline-flex items-center text-left text-heading text-foreground hover:underline"
-                  >
-                    {book.title}
-                  </button>
-                  <p className="text-label text-muted-foreground">{book.author}</p>
-                </div>
-                <div className="flex items-center justify-between pt-2 border-t border-border/50 text-label">
-                  <span className="text-muted-foreground num">
-                    {formatPosDisplay(book.currentPos, book.posUnit)}
-                  </span>
-                  <button
-                    type="button"
-                    data-testid={`book-start-btn-${book.id}`}
-                    onClick={() => void handleStartReading(book.id)}
-                    className="min-h-11 sm:min-h-0 font-semibold text-foreground hover:underline inline-flex items-center gap-1 whitespace-nowrap"
-                  >
-                    <Play className="w-3 h-3" />
-                    <span>Resume</span>
-                  </button>
-                </div>
-              </article>
-            ))}
+            {pausedBooks.map(book => {
+              const pauseNote = getBookMetaString(book.meta, 'pauseNote');
+              return (
+                <article
+                  key={book.id}
+                  data-testid={`book-card-${book.id}`}
+                  className="bg-card border border-border rounded-[14px] p-4 flex flex-col justify-between gap-3"
+                >
+                  <div className="space-y-2">
+                    <div>
+                      <button
+                        type="button"
+                        data-print-keep="true"
+                        onClick={() => navigateTo(`#/book/${encodeURIComponent(book.id)}`)}
+                        className="min-h-11 sm:min-h-0 inline-flex items-center text-left text-heading text-foreground hover:underline"
+                      >
+                        {book.title}
+                      </button>
+                      <p className="text-label text-muted-foreground">{book.author}</p>
+                    </div>
+                    {pauseNote && (
+                      <p
+                        data-testid={`book-pause-note-${book.id}`}
+                        className="text-label text-muted-foreground italic line-clamp-2"
+                      >
+                        {pauseNote}
+                      </p>
+                    )}
+                  </div>
+                  <div className="flex items-center justify-between pt-2 border-t border-border/50 text-label">
+                    <span className="text-muted-foreground num">
+                      {formatPosDisplay(book.currentPos, book.posUnit)}
+                    </span>
+                    <button
+                      type="button"
+                      data-testid={`book-start-btn-${book.id}`}
+                      onClick={() => void handleStartReading(book.id)}
+                      className="min-h-11 sm:min-h-0 font-semibold text-foreground hover:underline inline-flex items-center gap-1 whitespace-nowrap"
+                    >
+                      <Play className="w-3 h-3" />
+                      <span>Resume</span>
+                    </button>
+                  </div>
+                </article>
+              );
+            })}
           </div>
         </section>
       )}
