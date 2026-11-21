@@ -1,6 +1,6 @@
 ---
 name: pragya-companion
-description: Agent-side companion skill for Pragya — reading tracker, Socratic reflection sparring partner, spoiler-safe cross-book recall, OCR quote backfill, idempotent Markdown export, and Google Docs Book Companion synchronization.
+description: Agent-side companion skill for Pragya — reading tracker, curiosity anchors & Reading Questions, Socratic reflection sparring partner, spoiler-safe re-entry recaps & cross-book recall, atomic cross-book note bridges, Sunday Commonplace Salon & proactive Spark task rituals, OCR quote backfill, idempotent Markdown export, and Google Docs Book Companion synchronization.
 ---
 
 # Pragya Companion (`pragya-companion`)
@@ -10,7 +10,7 @@ description: Agent-side companion skill for Pragya — reading tracker, Socratic
 > [!IMPORTANT]
 > - **Hard Stage 2 Blocking Wait (`REFLECT`):** When running `reflect --stage 1`, ALWAYS stop after presenting the two Socratic questions and wait for the user's reply. NEVER auto-answer your own questions or run `--stage commit` in the same turn.
 > - **Voice-Fidelity & Anti-Slop Contract:** Keep `takeaway`, `quote`, and `reflection` faithful to the user's actual phrasing and insight. Never rewrite casual spoken thoughts into stiff corporate prose, invent unstated takeaways, or force artificial `WHEN -> DO` deltas onto memoir, history, biography, or fiction.
-> - **Spoiler-Safe Fiction Ceiling:** Never inspect, quote, or volunteer plot points/twists (including from your own parametric book knowledge) beyond `book.currentPos` / `book.normalizedPos` unless `book.status == "finished"`.
+> - **Spoiler-Safe Fiction Ceiling:** Never inspect, quote, or volunteer plot points/twists (including from your own parametric book knowledge) beyond `book.currentPos` / `book.normalizedPos` unless `book.status == "finished"` or `book.meta.everFinished == true`.
 > - **Active Behavioral Delta Cap (`<= 5`):** Never activate more than 5 concurrent `deltaStatus == "active"` notes across all books.
 > - **UUID-Resolved Sheet Writes & Clean `WHEN`/`DO`:** Always resolve row indices via `<Tab>!A:A` at write time; store `deltaTrigger`/`deltaAction` without `WHEN`/`DO` prefixes and render at most one prefix.
 > - **Calm Companion Voice:** Confirmations are 1–2 plain sentences. No exclamation-heavy praise ("Great insight!"), no streaks, no "you haven't…", no "don't forget", no counts of pending work. Questions are invitations, never homework. Any of *"just save it"*, *"skip"*, *"not now"*, *"later"*, *"no thanks"* ends sparring immediately with no follow-up.
@@ -41,7 +41,7 @@ python3 scripts/pragya_cli.py --state-file pragya-backup.json book-list
 
 If `gsheets`, `gdrive`, or `gdocs` binaries are missing from `PATH` (`pragya_cli.py` exits cleanly with `CliError` instructing Mode B fallback):
 1. Consult [`references/schema_and_ops.md`](references/schema_and_ops.md) for the exact 4-tab column layouts (`Books!A:L`, `Notes!A:R`, `Sessions!A:G`, `DeltaLogs!A:E`), normalized position math, UUID `A:A` lookup, and 30-min session coalescing rules.
-2. Read/write directly via your native Google Sheets / Drive / Docs connector.
+2. Read/write directly via your native Google Sheets / Drive / Docs connector. **Mode B Safety Boundary:** Mode B supports Sheets reads/writes (`recap`, `note-link`, `book-question`, book context fields, and read-only `salon`), and MUST **never** attempt silent in-place Google Doc marker replacement without `pragya_cli.py` (leave silent Doc sync to Mode A `salon --apply-maintenance`).
 3. **Offline / Disconnected Degradation Tier:** If neither Mode A CLIs nor Mode B Workspace connectors are reachable (or offline), offer `--state-file` snapshot editing or output a structured **Paste Card** for the PWA — never pretend a remote write succeeded.
 
 ---
@@ -67,15 +67,16 @@ Default to the lightest path that honors what the user said. Sparring is offered
 
 Route natural voice or text turns cleanly to the matching workflow:
 
-### 1. Shelf & Reading Progress (`book-list`, `book-add`, `book-update`, `progress`)
+### 1. Shelf, Curiosity Anchors & Reading Progress (`book-list`, `book-add`, `book-update`, `book-question`, `progress`)
 
 ```bash
 # List shelf + active delta count (N/5)
 python3 scripts/pragya_cli.py book-list --status reading
 
-# Add a new book (percent unit defaults totalPos=100; no synthetic session created)
+# Add a new book (percent unit defaults totalPos=100; optional curiosity spark / stopping point)
 python3 scripts/pragya_cli.py book-add \
-  --title "The Creative Act" --author "Rick Rubin" --kind nonfiction --format kindle --pos-unit percent
+  --title "The Creative Act" --author "Rick Rubin" --kind nonfiction --format kindle --pos-unit percent \
+  --status queued --why-queued "Recommended after our conversation on creative craft"
 
 # Advance reading progress (+delta, exact --pos, or --finish; coalesces 30-min sessions)
 python3 scripts/pragya_cli.py progress --book "Thinking in Systems" --delta 18 --session-note "Feedback delays ch. 2"
@@ -85,14 +86,23 @@ python3 scripts/pragya_cli.py progress --book "Exhalation" --finish
 # Chapter only: saves meta.currentChapter without moving the bookmark or creating a session
 python3 scripts/pragya_cli.py progress --book "Thinking in Systems" --chapter "Ch. 4"
 
-# Update metadata or status (returns unlockedPredictionsCount when finishing fiction)
+# Update metadata, context anchors (--why-queued, --pause-note, --next-stop), or status
 python3 scripts/pragya_cli.py book-update --book "book-exhalation" --status finished
+python3 scripts/pragya_cli.py book-update --book "Thinking in Systems" --next-stop "Finish Part II · p. 180"
 python3 scripts/pragya_cli.py book-update --book "Thinking in Systems" --chapter ""   # empty string clears
+
+# Manage per-book Reading Questions (<= 5 open cap; unknown entries preserved verbatim)
+python3 scripts/pragya_cli.py book-question --book "Thinking in Systems" --list
+python3 scripts/pragya_cli.py book-question --book "Thinking in Systems" --add "Why do well-meaning fixes cause oscillation?"
+python3 scripts/pragya_cli.py book-question --book "Thinking in Systems" --answer q_1a2b --text "Delays cause overshoot." --note delays-in-feedback-loops
+python3 scripts/pragya_cli.py book-question --book "Thinking in Systems" --reopen q_1a2b
+python3 scripts/pragya_cli.py book-question --book "Thinking in Systems" --remove q_1a2b
 ```
 
 - **Chapter / story anchors (`--chapter`):** accepted by `progress`, `book-update` (book `meta.currentChapter`), `capture`, `reflect --stage commit` and `note-update` (note `meta.chapter`). An empty string (`--chapter ""`) clears; omitting the flag leaves the value untouched. `progress --chapter` alone is valid (re-sending the same value is a no-op, `chapterChanged: false`).
+- **Curiosity & anti-slump anchors:** `book-add` and `book-update` accept `--why-queued` (`<= 240` chars), `--pause-note` (`<= 240` chars), and `--next-stop` (`<= 120` chars). Empty string clears; omitting leaves untouched. `book-question` manages `Books.metaJson.readingQuestions` (`<= 5` open cap; `--note` refuses cross-book, archived, spoiler-shielded, or sealed-prediction notes).
 - **Chapter label rule:** a purely ASCII-numeric value (`3`) renders as `Ch. 3`; anything else is shown verbatim (`Ch. 3: Run`, `The Lifecycle of Software Objects`). The badge is `[Ch. 3 · p. 42]` (`[Run · 10%]` for percent books; `[p. 42]` with no chapter).
-- `progress` always returns `unlockedPredictionsCount` (0 unless this call finished a fiction book); `book-update` returns it too.
+- `progress` always returns `unlockedPredictionsCount` (0 unless this call finished a fiction book); `book-update` returns it too. When finishing a book with answered Reading Questions and `capstonePending: true`, the finish payload also carries `answeredQuestions` (spoiler-safe).
 
 #### Finishing a Book (`progress --finish` / `book-update --status finished`)
 
@@ -219,7 +229,7 @@ python3 scripts/pragya_cli.py book-list --include-archived
 
 Never archive on the user's behalf without asking; confirm in one sentence afterwards ("Archived it. It's hidden from your lists and can be restored anytime.").
 
-### 4. Inspecting Notes, Behavioral Delta Status, Recall, Check-In & Shuffle (`note-list`, `note-get`, `delta-status`, `recall`)
+### 4. Inspecting Notes, Cross-Book Bridges, Deltas, Recall, Recap & Salon (`note-list`, `note-get`, `note-link`, `delta-status`, `recall`, `recap`, `salon`)
 
 ```bash
 # List notes (shields spoilers & archived notes by default)
@@ -229,6 +239,11 @@ python3 scripts/pragya_cli.py note-list --delta-status active --include-archived
 # Inspect one note by UUID, slug, or old slug alias (spoiler-shielded unless --include-spoilers / --reveal)
 python3 scripts/pragya_cli.py note-get --note delays-in-feedback-loops
 python3 scripts/pragya_cli.py note-get --note future-plot-note --reveal
+
+# Atomically link/unlink two notes via meta.relatedSlugs + bridgeNotes (never edits takeaway prose)
+python3 scripts/pragya_cli.py note-link --note delays-in-feedback-loops --to ecological-lag --why "Both show long feedback lags punishing impatience."
+python3 scripts/pragya_cli.py note-link --note delays-in-feedback-loops --to ecological-lag --unlink
+python3 scripts/pragya_cli.py note-link --note delays-in-feedback-loops --to ecological-lag --one-way
 
 # View active/paused/graduated Behavioral Deltas (5-cap excludes archived) or transition one note
 python3 scripts/pragya_cli.py delta-status
@@ -252,15 +267,27 @@ python3 scripts/pragya_cli.py recall --mode checkin \
 # Deterministic daily Takeaway Shuffle + mark reviewed (preserves updatedAt)
 python3 scripts/pragya_cli.py recall --mode shuffle --limit 3
 python3 scripts/pragya_cli.py recall --mode shuffle --mark-reviewed delays-in-feedback-loops
+
+# Spoiler-safe Re-Entry Brief (for interactive catch-ups & Evening Whisper tasks)
+python3 scripts/pragya_cli.py recap
+python3 scripts/pragya_cli.py recap --book "Thinking in Systems" --today 2026-11-20
+
+# Sunday Commonplace Salon digest + optional silent Companion Doc maintenance (existing Docs only)
+python3 scripts/pragya_cli.py salon --days 7
+python3 scripts/pragya_cli.py salon --days 7 --apply-maintenance --max-doc-syncs 3
 ```
 
 - **`note-list` / `note-get` spoiler shield:** notes ahead of an unfinished book's bookmark (and sealed fiction predictions) are excluded from `note-list` (`shieldedCount`) and returned as redacted stubs (`shielded: true`, zero title/slug/quote/takeaway/delta text) from `note-get` unless `--include-spoilers` / `--reveal` is passed.
+- **`note-link`:** atomically updates both notes via `save_notes_batch` with pre-write `updatedAt` conflict guard on both rows, canonicalizes stale aliases to the target's live slug, keeps `takeaway`/`quote` prose 100% untouched, caps `relatedSlugs` at `<= 20`, and refuses self, archived-note, archived-book, or spoiler-shielded/sealed-prediction links (unless `--include-spoilers` / `--reveal` is passed). Always ask the user before linking two notes on their behalf.
 - **`delta-status`:** with no `--note`/`--status`, returns grouped `active`, `paused`, `graduated` lists plus `activeCount` / `cap` / `remainingSlots` (5, ignoring archived notes; pass `--include-archived` to include archived items; shielded deltas are redacted unless `--include-spoilers` / `--reveal`). Passing `--note <id|slug|alias> --status active|paused|graduated|none` (optionally with `--trigger` / `--action`) transitions the note (enforcing non-archived, `atomic`, WHEN/DO, and the 5-cap on `active`, plus the row conflict guard, and redacting shielded notes in the response unless `--include-spoilers` / `--reveal`).
+- **`recap`:** returns a single spoiler-safe JSON payload (`readToday`, `allActiveBooksCount`, `selectedBook`, `currentChapter`, `nextStop`, `sittingPace`, `lastNotes`, strictly redacted `openPredictions: {count, items: [{id, pos, posDisplay}]}`, `openQuestions`, `crossBookEchoes`, `queuedContrast`). Refuses archived `--book`.
+- **`salon`:** returns `weeklyCaptures`, `pendingOcrNoteIds` (excluding archived and spoiler-shielded notes), `unsyncedDocBooks` (non-archived books with an existing `docUrl`), `bridgeCandidates` (top 1–3 unlinked cross-book pairs sharing specific `#tags`), and `collisionPair` (exact FNV-1a parity with PWA `CollisionCard`). Passing `--apply-maintenance` loads the workspace **once**, syncs at most `--max-doc-syncs` (default 3) books that already have a `docUrl` (never auto-creating new Docs), and records any per-book `CliError` (e.g. `429`) in `maintenance.failedDocs` instead of aborting.
 
 ### 5. Media Transcription, Markdown Export & Companion Docs (`ocr-backfill`, `export-md`, `book-doc-sync`)
 
 ```bash
 python3 scripts/pragya_cli.py ocr-backfill --ocr-cmd "tesseract {path} stdout"
+python3 scripts/pragya_cli.py ocr-backfill --note future-plot-note --ocr-text "Passage" --include-spoilers
 python3 scripts/pragya_cli.py export-md --output-dir ./reading-notes
 python3 scripts/pragya_cli.py book-doc-sync --book "Thinking in Systems"
 # Opt-ins (both commands): also include inbox/in-reflection drafts, or notes ahead of the bookmark
@@ -268,18 +295,49 @@ python3 scripts/pragya_cli.py book-doc-sync --book "Thinking in Systems" --inclu
 python3 scripts/pragya_cli.py export-md --output-dir ./reading-notes --include-spoilers
 ```
 
-**`book-doc-sync` — Companion Doc `Pragya · <Book Title>`:**
-- **Two-tier timeline** in reading order `(normalizedPos, pos, createdAt)`:
-  - **Atomic** → `HEADING_2` `[<badge>] <Title> [note:<uuid>]`, then only the non-empty lines among `Quote:`, `Takeaway:`, `Mechanism:`, `WHEN …`, `DO …`, `Critique:` (in that order).
-  - **Saved** → `HEADING_3` with only `Quote:` / `Takeaway:` (never Layer 2). Untitled saved title = the takeaway's first 8 words (`…` appended only when cut); `Quick Note` when the takeaway is empty. A derived title drops one trailing `.`, and the `Takeaway:` line is omitted when the heading already carries the whole takeaway.
-  - `--include-drafts` adds inbox / in-reflection notes as saved-tier (`HEADING_3`) entries.
-- **Capstone block:** `## Whole-Book Picture [capstone:<bookId>]` sits directly under the header (`Thesis:` / `Arc:`, `Key Learnings:` + `• ` lines, `How My Thinking Shifted:`, `Written YYYY-MM-DD`); absent without a capstone.
-- **Spoiler shield (default):** for an unfinished book, notes ahead of the bookmark and sealed predictions are left out and counted in `shieldedCount`; `--include-spoilers` opts in. A block already in the Doc is never deleted because it became shielded.
-- **True in-place sync:** only Pragya marker blocks (`[note:<uuid>]` / `[capstone:<bookId>]` heading + its Pragya field lines) are replaced or inserted, via one `gdocs mutate raw-batch` guarded by `writeControl.requiredRevisionId`. If the revision was rejected (the user edited concurrently), it re-reads and re-plans once; otherwise it falls back to append-only from a fresh read, with a warning. Everything outside markers is byte-preserved; new notes are backfilled in reading order.
-- **Result keys:** `mode` (`DOC_SYNC_MODES`: `created`, `in-place`, `append`, `append-fallback`, `unchanged`), `capstone` (`CAPSTONE_SYNC_STATES`: `absent`, `unchanged`, `added`, `updated`, `removed`, `skipped`), `addedNoteIds`, `updatedNoteIds`, `syncedNoteIds`, `syncedNoteCount` (= added + updated), `shieldedCount`, `warnings`. Relay any `warnings` plainly.
-- **Advise the user:** when writing their own notes under a Pragya entry in the Companion Doc, leave a **blank line** first so the text is never mistaken for a Pragya field line. Text they type after a `[note:…]` marker in a heading is kept on re-sync.
+- **`ocr-backfill`:** skips archived notes, notes in archived books, and spoiler-shielded / sealed-prediction notes by default (reporting `shieldedCount` without leaking shielded slugs into `skippedSlugs`). Pass `--include-spoilers` / `--reveal` only for explicit interactive backfill on an ahead-of-bookmark photo.
+- **`book-doc-sync` — Companion Doc `Pragya · <Book Title>`:**
+  - **Two-tier timeline** in reading order `(normalizedPos, pos, createdAt)`:
+    - **Atomic** → `HEADING_2` `[<badge>] <Title> [note:<uuid>]`, then only the non-empty lines among `Quote:`, `Takeaway:`, `Mechanism:`, `WHEN …`, `DO …`, `Critique:` (in that order).
+    - **Saved** → `HEADING_3` with only `Quote:` / `Takeaway:` (never Layer 2). Untitled saved title = the takeaway's first 8 words (`…` appended only when cut); `Quick Note` when the takeaway is empty. A derived title drops one trailing `.`, and the `Takeaway:` line is omitted when the heading already carries the whole takeaway.
+    - `--include-drafts` adds inbox / in-reflection notes as saved-tier (`HEADING_3`) entries.
+  - **Capstone block:** `## Whole-Book Picture [capstone:<bookId>]` sits directly under the header (`Thesis:` / `Arc:`, `Key Learnings:` + `• ` lines, `How My Thinking Shifted:`, `Written YYYY-MM-DD`); absent without a capstone.
+  - **Spoiler shield (default):** for an unfinished book, notes ahead of the bookmark and sealed predictions are left out and counted in `shieldedCount`; `--include-spoilers` opts in. A block already in the Doc is never deleted because it became shielded.
+  - **True in-place sync:** only Pragya marker blocks (`[note:<uuid>]` / `[capstone:<bookId>]` heading + its Pragya field lines) are replaced or inserted, via one `gdocs mutate raw-batch` guarded by `writeControl.requiredRevisionId`. If the revision was rejected (the user edited concurrently), it re-reads and re-plans once; otherwise it falls back to append-only from a fresh read, with a warning. Everything outside markers is byte-preserved; new notes are backfilled in reading order.
+  - **Result keys:** `mode` (`DOC_SYNC_MODES`: `created`, `in-place`, `append`, `append-fallback`, `unchanged`), `capstone` (`CAPSTONE_SYNC_STATES`: `absent`, `unchanged`, `added`, `updated`, `removed`, `skipped`), `addedNoteIds`, `updatedNoteIds`, `syncedNoteIds`, `syncedNoteCount` (= added + updated), `shieldedCount`, `warnings`. Relay any `warnings` plainly.
+  - **Advise the user:** when writing their own notes under a Pragya entry in the Companion Doc, leave a **blank line** first so the text is never mistaken for a Pragya field line. Text they type after a `[note:…]` marker in a heading is kept on re-sync.
+- **`export-md`:** writes per-note `<slug>.md` files for **atomic notes only** (incremental via `exportedAt`), including spoiler/archive-safe `relatedSlugs` frontmatter and `bridgeNotes` under `## Related Concepts`, plus a per-book index `books/<book-slug>.md` (front-matter incl. `currentChapter`, Whole-Book Picture, spoiler-safe answered `## Reading Questions`, `##` atomic entries linking `[[slug]]`, `###` saved entries inline). Same `--include-drafts` / `--include-spoilers` opt-ins and `shieldedCount`.
 
-**`export-md`:** writes per-note `<slug>.md` files for **atomic notes only** (incremental via `exportedAt`), plus a per-book index `books/<book-slug>.md` (front-matter incl. `currentChapter`, Whole-Book Picture, `##` atomic entries linking `[[slug]]`, `###` saved entries inline). Same `--include-drafts` / `--include-spoilers` opt-ins and `shieldedCount`.
+---
+
+## Proactive Scheduled Task Recipes (Gemini Spark / Tasks)
+
+Use these 3 calm, zero-guilt, opt-in recipes when the user sets up recurring Gemini Spark / scheduled Tasks. Every recipe obeys the **Calm Companion Voice** (no streaks, no "you haven't…", no pending-work counts, strict silence when nothing genuinely applies).
+
+### Recipe 1: Morning Calendar-Matched Delta Priming + Quiet Reading Pocket (~8:30 AM)
+
+1. Run `delta-status` (Mode A) or read active `Notes` (`deltaStatus == "active"`, non-archived, unshielded) in Mode B. Also run `recap` (to check `readToday` and `selectedBook` / `nextStop`).
+2. Check today's Google Calendar via `gcalendar` (if `gcalendar` is not connected, skip calendar matching gracefully and do **not** nag the user to connect it).
+3. **Genuine delta matches only:** compare today's calendar events against each active delta's `WHEN` trigger. Surface **only** genuine situational matches (0–2 lines, neutral phrasing like *"Before your 2:00 PM Architecture Review — from Thinking in Systems: WHEN …, DO …"*). Never force a weak match.
+4. **Quiet Reading Pocket (at most 1):** if `readToday === false` and `allActiveBooksCount > 0`, spot at most one open `>= 30 min` daylight gap on today's calendar and mention it once calmly alongside `selectedBook.title` + `nextStop` (if set).
+5. **Silence rule:** if there are **zero** genuine delta matches AND no suitable reading pocket (or `readToday === true`), stay completely silent / send no message.
+
+### Recipe 2: Evening Re-Entry Whisper (~8:30 PM)
+
+1. Run `recap` (Mode A) or compute the same spoiler-safe brief from `Books`/`Notes`/`Sessions` (Mode B).
+2. **Silence rule:** if `readToday === true` OR `allActiveBooksCount === 0`, stop immediately and send **nothing**.
+3. Otherwise send **at most 3 short lines** for `selectedBook` only:
+   - **Line 1 (Anchor):** `selectedBook.title`, where they left off (`currentChapter` + `selectedBook.posDisplay`), and `nextStop` or `sittingPace.label` (if present).
+   - **Line 2 (Memory thread):** 1 concise line from their most recent safe note (`lastNotes`) or an open Reading Question (`openQuestions`) — strictly grounded in `<= currentPos` with zero outside plot/chapter info.
+   - **Line 3 (Optional sealed count or echo):** Only if `openPredictions.count > 0` (mention count + page/percent only — **never** prediction text) OR a single `crossBookEchoes[0]` hook.
+
+### Recipe 3: Sunday Commonplace Salon + Silent Maintenance (Sunday Evening)
+
+1. **Mode A:** run `salon --days 7 --apply-maintenance --max-doc-syncs 3`.
+   - **Mode B safety boundary:** run **read-only** `salon` logic over Sheets only — **never** attempt silent in-place Google Doc marker replacement without `pragya_cli.py`.
+2. **Silent maintenance line (only if changed):** if `maintenance.updatedDocCount > 0` or `maintenance.failedDocs` is non-empty, include a single calm 1-line summary (e.g. *"Synced 2 Companion Docs."* or note any failed doc plainly). If nothing changed, say nothing about maintenance. If `pendingOcrNoteIds` is non-empty (already filtered to non-archived, non-shielded images), offer once to transcribe them on reply.
+3. **Cross-Book Collision (1 pair):** present `collisionPair` (2 unlinked notes from 2 different books) with a single open question (*"Do these two ideas push against each other or reinforce each other?"*).
+4. **Bridge Proposals (1–2 pairs):** if `bridgeCandidates` is non-empty, propose 1–2 concrete cross-book links (citing shared `#tags` and a suggested 1-line `--why`), explicitly asking for the user's approval before running `note-link`. **Never** link automatically without approval and **never** rewrite `takeaway` or `quote` prose.
 
 ---
 
@@ -287,5 +345,6 @@ python3 scripts/pragya_cli.py export-md --output-dir ./reading-notes --include-s
 
 - **Unit Mismatch Guard:** Before logging `progress` or `capture --pos`, check `book.posUnit` (`page` vs `percent` vs `loc`). If the user says `"45%"` on a `page`-tracked book, confirm or convert (`0.45 * totalPos`) rather than writing `45` as page 45.
 - **Backward Bookmark Guard:** `progress` and `book-update` reject lowering `currentPos` unless `--force-pos` is explicitly confirmed by the user. (`capture --pos` on an earlier page logs the note cleanly at that page without lowering the book bookmark.)
-- **Attachment & Image Hygiene:** Enforce `<= 3` attachments per note before uploading. When a user uploads a mobile camera photo (HEIC/JPEG), convert/compress to `<= 1600px` `.webp` when tooling permits, and use multimodal vision OCR to populate `quote` cleanly (or run `ocr-backfill`).
+- **Attachment & Image Hygiene:** Enforce `<= 3` attachments per note before uploading. When a user uploads a mobile camera photo (HEIC/JPEG), convert/compress to `<= 1600px` `.webp` when tooling permits, and use multimodal vision OCR to populate `quote` cleanly (or run `ocr-backfill`, which excludes archived and spoiler-shielded notes by default).
 - **Google Docs Formatting:** `book-doc-sync` writes `HEADING_1` (book), `HEADING_2` (Whole-Book Picture + atomic notes), `HEADING_3` (saved notes); replaces `[note:<uuid>]` / `[capstone:<bookId>]` blocks in place, in reading order, so re-runs never duplicate Docs or entries.
+
