@@ -761,8 +761,8 @@ class TestPragyaCli(unittest.TestCase):
                         "bookId": "book-systems",
                         "createdAt": _iso_days_ago(1),
                         "updatedAt": _iso_days_ago(1),
-                        "pos": 150,
-                        "normalizedPos": 150 / 218,
+                        "pos": 130,
+                        "normalizedPos": 130 / 218,
                         "status": "saved",
                         "source": "app",
                         "tags": [],
@@ -792,8 +792,8 @@ class TestPragyaCli(unittest.TestCase):
                         "bookId": "book-systems",
                         "createdAt": _iso_days_ago(1),
                         "updatedAt": _iso_days_ago(1),
-                        "pos": 151,
-                        "normalizedPos": 151 / 218,
+                        "pos": 131,
+                        "normalizedPos": 131 / 218,
                         "status": "saved",
                         "source": "app",
                         "tags": [],
@@ -1198,7 +1198,7 @@ class TestPragyaCli(unittest.TestCase):
             fail_drive_download = True
             with contextlib.redirect_stderr(io.StringIO()):
                 rc_ocr_fail = pragya_cli.main(
-                    ["ocr-backfill", "--note", str(captured_row[0]), "--ocr-cmd", ocr_cmd],
+                    ["ocr-backfill", "--note", str(captured_row[0]), "--ocr-cmd", ocr_cmd, "--include-spoilers"],
                     runner=fake_runner,
                 )
             self.assertNotEqual(rc_ocr_fail, 0)
@@ -1208,7 +1208,7 @@ class TestPragyaCli(unittest.TestCase):
             ocr_out = io.StringIO()
             with contextlib.redirect_stdout(ocr_out):
                 rc_ocr = pragya_cli.main(
-                    ["ocr-backfill", "--note", str(captured_row[0]), "--ocr-cmd", ocr_cmd],
+                    ["ocr-backfill", "--note", str(captured_row[0]), "--ocr-cmd", ocr_cmd, "--include-spoilers"],
                     runner=fake_runner,
                 )
             self.assertEqual(rc_ocr, 0)

@@ -6,14 +6,18 @@ Supports:
   - book-add
   - book-update
   - book-capstone
+  - book-question
   - progress
   - capture
   - note-list
   - note-get
   - note-update
+  - note-link
   - delta-status
   - reflect (--stage 1 | --stage commit)
   - recall (--mode qa | checkin | shuffle)
+  - recap
+  - salon
   - ocr-backfill
   - export-md
   - book-doc-sync
@@ -369,6 +373,22 @@ def generate_unique_slug(
 
 
 NOTE_ALIAS_CAP = 10
+NOTE_RELATED_SLUGS_CAP = 20
+
+
+def note_related_slugs(note: dict[str, Any]) -> list[str]:
+    """v2: approved cross-note bridges in ``meta.relatedSlugs`` (slugified, deduped, <= 20)."""
+    raw = ((note.get("meta") or {}).get("relatedSlugs")) or []
+    out: list[str] = []
+    if isinstance(raw, list):
+        for item in raw:
+            if isinstance(item, str) and item.strip():
+                s = slugify_or_none(item)
+                if s and s not in out:
+                    out.append(s)
+                    if len(out) >= NOTE_RELATED_SLUGS_CAP:
+                        break
+    return out
 
 
 def note_aliases(note: dict[str, Any]) -> list[str]:
@@ -460,7 +480,11 @@ def extract_note_wikilinks(note: dict[str, Any]) -> list[str]:
             note.get("quote") or "",
         ]
     )
-    return extract_wikilinks(combined)
+    out = extract_wikilinks(combined)
+    for rel in note_related_slugs(note):
+        if rel not in out:
+            out.append(rel)
+    return out
 
 
 def extract_wikilink_keys(text: str) -> set[str]:
@@ -486,7 +510,20 @@ def extract_note_wikilink_keys(note: dict[str, Any]) -> set[str]:
             note.get("quote") or "",
         ]
     )
-    return extract_wikilink_keys(combined)
+    keys = extract_wikilink_keys(combined)
+    raw_related = ((note.get("meta") or {}).get("relatedSlugs")) or []
+    if isinstance(raw_related, list):
+        count = 0
+        for item in raw_related:
+            if not isinstance(item, str) or not item.strip():
+                continue
+            if slugify_or_none(item) is None:
+                continue
+            keys.update(wikilink_keys(item))
+            count += 1
+            if count >= NOTE_RELATED_SLUGS_CAP:
+                break
+    return keys
 
 
 def fnv1a_32(text: str) -> int:
@@ -844,6 +881,790 @@ def has_book_capstone(meta: Any) -> bool:
     if view is None:
         return False
     return bool(view["arcOrThesis"] or view["keyLearnings"] or view["perspectiveShift"])
+
+
+# ---------------------------------------------------------------------------
+# Pragya v2: Curiosity Anchors, Sitting Pace & Cross-Book Synthesis (TS parity)
+# ---------------------------------------------------------------------------
+
+BOOK_CONTEXT_NOTE_MAX = 240
+BOOK_NEXT_STOP_MAX = 120
+READING_QUESTION_MAX = 240
+READING_ANSWER_MAX = 500
+MAX_OPEN_READING_QUESTIONS = 5
+BRIDGE_NOTE_MAX = 240
+
+GENERIC_SYNTHESIS_TAGS = frozenset(
+    {
+        "#favorite",
+        "#favorites",
+        "#fiction",
+        "#nonfiction",
+        "#prediction",
+        "#quote",
+        "#book",
+        "#reading",
+    }
+)
+
+
+def _clamp_text(value: Any, max_len: int) -> str:
+    trimmed = str(value or "").strip()
+    if not trimmed:
+        return ""
+    if len(trimmed) <= max_len:
+        return trimmed
+    return trimmed[:max_len].strip()
+
+
+def normalize_book_context_value(key: str, value: Any) -> str:
+    limit = BOOK_NEXT_STOP_MAX if key == "nextStop" else BOOK_CONTEXT_NOTE_MAX
+    return _clamp_text(value, limit)
+
+
+def _apply_book_context_field(meta: dict[str, Any], key: str, value: str) -> bool:
+    cleaned = normalize_book_context_value(key, value)
+    if cleaned:
+        if meta.get(key) == cleaned:
+            return False
+        meta[key] = cleaned
+        return True
+    if key in meta:
+        del meta[key]
+        return True
+    return False
+
+
+def get_book_meta_string(meta: Any, key: str) -> str:
+    """v2: render-safe trimmed string for whyQueued, pauseNote, or nextStop."""
+    if not isinstance(meta, dict):
+        return ""
+    coerced = _coerce_meta_string(meta.get(key))
+    return coerced.strip() if coerced else ""
+
+
+def get_book_reading_questions(meta: Any) -> list[dict[str, Any]]:
+    """v2: typed, render-safe view of Books.metaJson.readingQuestions (stored list verbatim)."""
+    raw = meta.get("readingQuestions") if isinstance(meta, dict) else None
+    if not isinstance(raw, list):
+        return []
+    out: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        qid = (_coerce_meta_string(item.get("id")) or "").strip()
+        qtext = (_coerce_meta_string(item.get("question")) or "").strip()
+        if not qid or not qtext or qid in seen_ids:
+            continue
+        seen_ids.add(qid)
+        status = "answered" if item.get("status") == "answered" else "open"
+        answer = (_coerce_meta_string(item.get("answer")) or "").strip()
+        note_id = (_coerce_meta_string(item.get("noteId")) or "").strip()
+        created_at = (_coerce_meta_string(item.get("createdAt")) or "").strip()
+        answered_at = (_coerce_meta_string(item.get("answeredAt")) or "").strip()
+        entry: dict[str, Any] = {
+            "id": qid,
+            "question": qtext,
+            "status": status,
+            "createdAt": created_at,
+        }
+        if answer:
+            entry["answer"] = answer
+        if note_id:
+            entry["noteId"] = note_id
+        if status == "answered" and answered_at:
+            entry["answeredAt"] = answered_at
+        out.append(entry)
+    return out
+
+
+def get_note_related_slugs(meta: Any) -> list[str]:
+    """v2: render-safe view of Notes.metaJson.relatedSlugs (slugified, deduped, <= 20)."""
+    return note_related_slugs({"meta": meta if isinstance(meta, dict) else {}})
+
+
+def get_note_bridge_notes(meta: Any) -> dict[str, str]:
+    """v2: render-safe view of Notes.metaJson.bridgeNotes (slug-normalized key -> 1-line note)."""
+    raw = meta.get("bridgeNotes") if isinstance(meta, dict) else None
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, str] = {}
+    for raw_key, raw_val in raw.items():
+        if not isinstance(raw_key, str):
+            continue
+        key = slugify_or_none(raw_key)
+        val = (_coerce_meta_string(raw_val) or "").strip()
+        if key and val:
+            out[key] = val
+    return out
+
+
+def create_reading_question_id() -> str:
+    return f"q_{uuid.uuid4().hex[:8]}"
+
+
+def _resolve_raw_question_index(raw_list: list[Any], id_or_prefix: str) -> int:
+    needle = (id_or_prefix or "").strip()
+    if not needle:
+        raise CliError("Reading question ID or prefix is required.")
+    for idx, item in enumerate(raw_list):
+        if isinstance(item, dict) and isinstance(item.get("id"), str) and item["id"].strip() == needle:
+            return idx
+    prefix_matches: list[int] = []
+    for idx, item in enumerate(raw_list):
+        if isinstance(item, dict) and isinstance(item.get("id"), str) and item["id"].strip().startswith(needle):
+            prefix_matches.append(idx)
+    if len(prefix_matches) == 1:
+        return prefix_matches[0]
+    if len(prefix_matches) > 1:
+        matched_ids = [raw_list[i]["id"] for i in prefix_matches]
+        raise CliError(f"Ambiguous reading question prefix '{needle}': {matched_ids}")
+    raise CliError(f"Reading question not found: {needle}")
+
+
+def add_reading_question(
+    existing_raw: Any,
+    question_text: str,
+    now_iso: str | None = None,
+    question_id: str | None = None,
+) -> tuple[list[Any], dict[str, Any]]:
+    cleaned = _clamp_text(question_text, READING_QUESTION_MAX)
+    if not cleaned:
+        raise CliError("Reading question cannot be empty.")
+    existing = list(existing_raw) if isinstance(existing_raw, list) else []
+    parsed = get_book_reading_questions({"readingQuestions": existing})
+    open_count = sum(1 for q in parsed if q["status"] == "open")
+    if open_count >= MAX_OPEN_READING_QUESTIONS:
+        raise CliError(
+            f"Open reading question limit ({MAX_OPEN_READING_QUESTIONS}) reached for this book. "
+            "Answer or remove one first."
+        )
+    taken = {q["id"] for q in parsed}
+    qid = (question_id or "").strip() or create_reading_question_id()
+    while qid in taken:
+        qid = create_reading_question_id()
+    entry: dict[str, Any] = {
+        "id": qid,
+        "question": cleaned,
+        "status": "open",
+        "createdAt": now_iso or now_iso_utc(),
+    }
+    return [*existing, entry], entry
+
+
+def answer_reading_question(
+    existing_raw: Any,
+    id_or_prefix: str,
+    *,
+    answer: str | None = None,
+    note_id: str | None = None,
+    now_iso: str | None = None,
+) -> tuple[list[Any], dict[str, Any]]:
+    existing = list(existing_raw) if isinstance(existing_raw, list) else []
+    idx = _resolve_raw_question_index(existing, id_or_prefix)
+    current = dict(existing[idx])
+    prev_answered = (_coerce_meta_string(current.get("answeredAt")) or "").strip()
+    current["status"] = "answered"
+    current["answeredAt"] = prev_answered or (now_iso or now_iso_utc())
+    if answer is not None:
+        cleaned_ans = _clamp_text(answer, READING_ANSWER_MAX)
+        if cleaned_ans:
+            current["answer"] = cleaned_ans
+        else:
+            current.pop("answer", None)
+    if note_id is not None:
+        cleaned_nid = note_id.strip()
+        if cleaned_nid:
+            current["noteId"] = cleaned_nid
+        else:
+            current.pop("noteId", None)
+    existing[idx] = current
+    return existing, current
+
+
+def reopen_reading_question(existing_raw: Any, id_or_prefix: str) -> tuple[list[Any], dict[str, Any]]:
+    existing = list(existing_raw) if isinstance(existing_raw, list) else []
+    idx = _resolve_raw_question_index(existing, id_or_prefix)
+    current = dict(existing[idx])
+    open_count = sum(
+        1 for q in get_book_reading_questions({"readingQuestions": existing}) if q["status"] == "open"
+    )
+    if current.get("status") == "answered" and open_count >= MAX_OPEN_READING_QUESTIONS:
+        raise CliError(
+            f"Open reading question limit ({MAX_OPEN_READING_QUESTIONS}) reached for this book."
+        )
+    current["status"] = "open"
+    current.pop("answeredAt", None)
+    existing[idx] = current
+    return existing, current
+
+
+def remove_reading_question(existing_raw: Any, id_or_prefix: str) -> tuple[list[Any] | None, dict[str, Any]]:
+    existing = list(existing_raw) if isinstance(existing_raw, list) else []
+    idx = _resolve_raw_question_index(existing, id_or_prefix)
+    removed = dict(existing.pop(idx))
+    return (existing if existing else None), removed
+
+
+def _session_belongs_to_current_read(session: dict[str, Any], started_at: str | None) -> bool:
+    if not started_at or not started_at.strip():
+        return True
+    started_s = started_at.strip()
+    sess_updated_s = str(session.get("updatedAt") or "").strip()
+    if "T" in started_s and "T" in sess_updated_s:
+        started_dt = parse_iso_utc(started_s)
+        sess_updated_dt = parse_iso_utc(sess_updated_s)
+        if started_dt is not None and sess_updated_dt is not None:
+            return sess_updated_dt >= started_dt - timedelta(seconds=60)
+    start_day = to_local_date_key(started_s)
+    sess_day = to_local_date_key(session.get("date"))
+    if start_day and sess_day:
+        return sess_day >= start_day
+    return True
+
+
+def _format_pace_unit(delta: float, pos_unit: str) -> str:
+    if pos_unit == "percent":
+        rounded = max(0.1, math.floor(delta * 10.0 + 0.5) / 10.0)
+        return f"{clean_num(rounded)}%"
+    rounded_int = max(1, int(math.floor(delta + 0.5)))
+    if pos_unit == "loc":
+        return f"{rounded_int} {'loc' if rounded_int == 1 else 'locs'}"
+    return f"{rounded_int} {'page' if rounded_int == 1 else 'pages'}"
+
+
+def compute_sitting_pace(book: dict[str, Any], sessions: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Parity with computeSittingPace in src/utils/readingMomentum.ts."""
+    if book.get("status") != "reading":
+        return None
+    pos_unit = book.get("posUnit") or "page"
+    effective_total = 100.0 if pos_unit == "percent" else _safe_float(book.get("totalPos"), 0.0)
+    if not math.isfinite(effective_total) or effective_total <= 0:
+        return None
+    current = max(0.0, _safe_float(book.get("currentPos"), 0.0))
+    if current >= effective_total:
+        return None
+    meta = book.get("meta") or {}
+    started_at = meta.get("startedAt") if isinstance(meta.get("startedAt"), str) else None
+    deltas: list[float] = []
+    for s in sessions:
+        if s.get("bookId") != book.get("id"):
+            continue
+        if not _session_belongs_to_current_read(s, started_at):
+            continue
+        d = _safe_float(s.get("endPos"), 0.0) - _safe_float(s.get("startPos"), 0.0)
+        if math.isfinite(d) and d > 0:
+            deltas.append(d)
+    if len(deltas) < 2:
+        return None
+    deltas.sort()
+    mid = len(deltas) // 2
+    median_delta = deltas[mid] if len(deltas) % 2 == 1 else (deltas[mid - 1] + deltas[mid]) / 2.0
+    if not math.isfinite(median_delta) or median_delta <= 0:
+        return None
+    remaining = effective_total - current
+    sittings_left = max(1, int(math.ceil(remaining / median_delta)))
+    unit_label = _format_pace_unit(median_delta, pos_unit)
+    sitting_label = "about 1 sitting left" if sittings_left == 1 else f"about {sittings_left} sittings left"
+    return {
+        "medianDelta": clean_num(median_delta),
+        "sittingsLeft": sittings_left,
+        "sessionCount": len(deltas),
+        "label": f"~{unit_label} a sitting · {sitting_label}",
+    }
+
+
+def _word_tokens(text: str) -> set[str]:
+    return {t for t in re.split(r"[^a-z0-9-]+", (text or "").lower()) if t}
+
+
+def pick_next_read_candidates(
+    books: list[dict[str, Any]],
+    notes: list[dict[str, Any]],
+    reference_book: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    """Parity with pickNextReadCandidates in src/utils/readingMomentum.ts."""
+    all_books_by_id = {b["id"]: b for b in books}
+    live_books = [b for b in books if not is_archived(b)]
+    queued = [b for b in live_books if b.get("status") == "queued"]
+    if not queued:
+        return []
+    active_reading = [b for b in live_books if b.get("status") == "reading"]
+    ref_kind = (reference_book or {}).get("kind") or (active_reading[0].get("kind") if active_reading else None)
+
+    recent_tags: list[str] = []
+    recent_tags_seen: set[str] = set()
+    recent_authors: set[str] = set()
+    live_notes = [
+        n
+        for n in notes
+        if not is_archived(n)
+        and (nb := all_books_by_id.get(n.get("bookId", ""))) is not None
+        and not is_archived(nb)
+        and not is_note_spoiler(n, nb)
+        and not is_sealed_prediction(n, nb)
+    ]
+    live_notes.sort(key=lambda n: str(n.get("updatedAt") or ""), reverse=True)
+    for n in live_notes[:15]:
+        for tag in n.get("tags") or []:
+            lower = str(tag or "").strip().lower()
+            if lower and lower not in GENERIC_SYNTHESIS_TAGS:
+                stripped = lower.lstrip("#")
+                if stripped and stripped not in recent_tags_seen:
+                    recent_tags_seen.add(stripped)
+                    recent_tags.append(stripped)
+        nb = all_books_by_id.get(n.get("bookId", ""))
+        author = str((nb or {}).get("author") or "").strip().lower()
+        if author and author != "unknown author":
+            recent_authors.add(author)
+
+    picked: list[dict[str, Any]] = []
+    used_ids: set[str] = set()
+
+    def take(b: dict[str, Any] | None, role: str, reason: str) -> None:
+        if not b or b["id"] in used_ids:
+            return
+        used_ids.add(b["id"])
+        picked.append({"book": b, "role": role, "reason": reason})
+
+    if ref_kind:
+        opposite = sorted(
+            [b for b in queued if b.get("kind") != ref_kind],
+            key=lambda b: (0 if get_book_meta_string(b.get("meta"), "whyQueued") else 1, str(b.get("title") or "").lower()),
+        )
+        if opposite:
+            cand = opposite[0]
+            take(
+                cand,
+                "contrast",
+                "Change of pace · Fiction" if cand.get("kind") == "fiction" else "Change of pace · Non-fiction",
+            )
+
+    shortest = sorted(
+        [
+            b
+            for b in queued
+            if b["id"] not in used_ids
+            and _safe_float(b.get("totalPos"), 0.0) > 0
+            and (b.get("posUnit") or "page") != "percent"
+        ],
+        key=lambda b: (
+            0 if (b.get("posUnit") or "page") == "page" else 1,
+            _safe_float(b.get("totalPos"), 0.0),
+            str(b.get("title") or "").lower(),
+        ),
+    )
+    if shortest:
+        cand = shortest[0]
+        unit_word = "locs" if cand.get("posUnit") == "loc" else "pages"
+        take(cand, "short", f"Shorter read · {clean_num(cand.get('totalPos'))} {unit_word}")
+
+    remaining = [b for b in queued if b["id"] not in used_ids]
+    if remaining:
+        scored: list[tuple[int, str, dict[str, Any], str, str, bool]] = []
+        for b in remaining:
+            why = get_book_meta_string(b.get("meta"), "whyQueued")
+            tokens = _word_tokens(f"{b.get('title') or ''} {b.get('author') or ''} {why}")
+            score = 2 if why else 0
+            matched_tag = ""
+            author_matched = str(b.get("author") or "").strip().lower() in recent_authors
+            if author_matched:
+                score += 3
+            for t in recent_tags:
+                if len(t) >= 4 and t in tokens:
+                    score += 2
+                    if not matched_tag:
+                        matched_tag = f"#{t}"
+            scored.append((-score, str(b.get("title") or "").lower(), b, why, matched_tag, author_matched))
+        scored.sort(key=lambda item: (item[0], item[1]))
+        _, _, best_b, best_why, best_tag, best_author = scored[0]
+        if best_tag:
+            reason = f"Echoes {best_tag}"
+        elif best_author:
+            reason = f"Same author · {best_b.get('author')}"
+        elif best_why:
+            reason = "Your spark note"
+        else:
+            reason = "In your queue"
+        take(best_b, "spark", reason)
+
+    fallback = sorted(
+        queued,
+        key=lambda b: (0 if get_book_meta_string(b.get("meta"), "whyQueued") else 1, str(b.get("title") or "").lower()),
+    )
+    for b in fallback:
+        if len(picked) >= 3:
+            break
+        take(b, "spark", "Your spark note" if get_book_meta_string(b.get("meta"), "whyQueued") else "In your queue")
+
+    return picked
+
+
+def _specific_note_tags(note: dict[str, Any]) -> list[str]:
+    out: list[str] = []
+    for raw in note.get("tags") or []:
+        lower = str(raw or "").strip().lower()
+        if not lower or lower in GENERIC_SYNTHESIS_TAGS:
+            continue
+        norm = lower if lower.startswith("#") else f"#{lower}"
+        if norm not in GENERIC_SYNTHESIS_TAGS and norm not in out:
+            out.append(norm)
+    return out
+
+
+def _note_identity_keys(note: dict[str, Any]) -> set[str]:
+    slug = str(note.get("slug") or "")
+    keys: set[str] = {slug} if slug else set()
+    canon = slugify_or_none(slug)
+    if canon:
+        keys.add(canon)
+    keys.update(note_aliases(note))
+    return keys
+
+
+def are_notes_linked(note_a: dict[str, Any], note_b: dict[str, Any]) -> bool:
+    if note_a.get("id") == note_b.get("id"):
+        return True
+    a_keys = extract_note_wikilink_keys(note_a)
+    if a_keys & _note_identity_keys(note_b):
+        return True
+    b_keys = extract_note_wikilink_keys(note_b)
+    if b_keys & _note_identity_keys(note_a):
+        return True
+    return False
+
+
+def find_cross_book_echoes(
+    book: dict[str, Any],
+    all_notes: list[dict[str, Any]],
+    all_books: list[dict[str, Any]],
+    limit: int = 3,
+) -> list[dict[str, Any]]:
+    """Parity with findCrossBookEchoes in src/utils/crossBookSynthesis.ts."""
+    book_map = {b["id"]: b for b in all_books}
+    book_notes = [
+        n
+        for n in all_notes
+        if n.get("bookId") == book.get("id")
+        and not is_archived(n)
+        and not is_note_spoiler(n, book)
+        and not is_sealed_prediction(n, book)
+    ]
+    if not book_notes:
+        return []
+
+    book_link_keys: set[str] = set()
+    book_self_keys: set[str] = set()
+    book_tags: set[str] = set()
+    for n in book_notes:
+        book_link_keys.update(extract_note_wikilink_keys(n))
+        book_self_keys.update(_note_identity_keys(n))
+        book_tags.update(_specific_note_tags(n))
+
+    echoes: list[dict[str, Any]] = []
+    for cand in all_notes:
+        if cand.get("bookId") == book.get("id") or is_archived(cand):
+            continue
+        cand_book = book_map.get(cand.get("bookId", ""))
+        if not cand_book or is_archived(cand_book):
+            continue
+        if is_note_spoiler(cand, cand_book) or is_sealed_prediction(cand, cand_book):
+            continue
+        if not (cand.get("takeaway") or "").strip() and not (cand.get("quote") or "").strip():
+            continue
+
+        linked = bool(_note_identity_keys(cand) & book_link_keys) or bool(
+            extract_note_wikilink_keys(cand) & book_self_keys
+        )
+        shared_tags = [t for t in _specific_note_tags(cand) if t in book_tags]
+        score = (5 if linked else 0) + len(shared_tags) * 2
+        if score <= 0:
+            continue
+
+        if linked:
+            reason = f"Linked · shares {', '.join(shared_tags[:2])}" if shared_tags else "Linked note"
+        else:
+            reason = f"Shares {', '.join(shared_tags[:2])}"
+
+        echoes.append(
+            {
+                "note": cand,
+                "book": cand_book,
+                "score": score,
+                "linked": linked,
+                "sharedTags": shared_tags,
+                "reason": reason,
+            }
+        )
+
+    # Sort: score desc, updatedAt desc, id asc
+    echoes.sort(key=lambda e: str(e["note"].get("id") or ""))
+    echoes.sort(key=lambda e: str(e["note"].get("updatedAt") or ""), reverse=True)
+    echoes.sort(key=lambda e: e["score"], reverse=True)
+    return echoes[: max(0, limit)]
+
+
+def collision_pair_key(id_a: str, id_b: str) -> str:
+    return f"{id_a}::{id_b}" if id_a < id_b else f"{id_b}::{id_a}"
+
+
+def select_daily_collision_pair(
+    notes: list[dict[str, Any]],
+    books: list[dict[str, Any]],
+    today_date: str,
+    *,
+    seed_offset: int = 0,
+    skipped_keys: set[str] | None = None,
+) -> dict[str, Any] | None:
+    """Parity with selectDailyCollisionPair in src/utils/crossBookSynthesis.ts."""
+    book_map = {b["id"]: b for b in books}
+    eligible: list[dict[str, Any]] = []
+    for n in notes:
+        if is_archived(n):
+            continue
+        b = book_map.get(n.get("bookId", ""))
+        if not b or is_archived(b):
+            continue
+        if is_note_spoiler(n, b) or is_sealed_prediction(n, b):
+            continue
+        if (n.get("takeaway") or "").strip() or (n.get("quote") or "").strip():
+            eligible.append(n)
+    eligible.sort(key=lambda n: str(n.get("id") or ""))
+    if len(eligible) < 2:
+        return None
+
+    skipped = skipped_keys or set()
+    offset = max(0, int(seed_offset))
+    pairs: list[tuple[dict[str, Any], dict[str, Any], str]] = []
+    for i in range(len(eligible)):
+        for j in range(i + 1, len(eligible)):
+            a = eligible[i]
+            b = eligible[j]
+            if a.get("bookId") == b.get("bookId"):
+                continue
+            key = collision_pair_key(str(a["id"]), str(b["id"]))
+            if key in skipped:
+                continue
+            if are_notes_linked(a, b):
+                continue
+            pairs.append((a, b, key))
+    if not pairs:
+        return None
+
+    pairs.sort(key=lambda p: (fnv1a_32(f"{today_date}:{p[2]}"), p[2]))
+    a, b, pair_key = pairs[offset % len(pairs)]
+    return {
+        "noteA": a,
+        "bookA": book_map[a["bookId"]],
+        "noteB": b,
+        "bookB": book_map[b["bookId"]],
+        "pairKey": pair_key,
+        "totalCandidates": len(pairs),
+    }
+
+
+def find_bridge_candidates(
+    notes: list[dict[str, Any]],
+    books: list[dict[str, Any]],
+    limit: int = 3,
+) -> list[dict[str, Any]]:
+    """Top unlinked cross-book pairs sharing specific #tags for Sunday Salon review."""
+    book_map = {b["id"]: b for b in books}
+    eligible: list[tuple[dict[str, Any], dict[str, Any], list[str]]] = []
+    for n in notes:
+        if is_archived(n):
+            continue
+        b = book_map.get(n.get("bookId", ""))
+        if not b or is_archived(b):
+            continue
+        if is_note_spoiler(n, b) or is_sealed_prediction(n, b):
+            continue
+        if not ((n.get("takeaway") or "").strip() or (n.get("quote") or "").strip()):
+            continue
+        tags = _specific_note_tags(n)
+        if tags:
+            eligible.append((n, b, tags))
+    eligible.sort(key=lambda item: str(item[0].get("id") or ""))
+
+    candidates: list[dict[str, Any]] = []
+    for i in range(len(eligible)):
+        na, ba, tags_a = eligible[i]
+        set_a = set(tags_a)
+        for j in range(i + 1, len(eligible)):
+            nb, bb, tags_b = eligible[j]
+            if na.get("bookId") == nb.get("bookId"):
+                continue
+            shared = [t for t in tags_b if t in set_a]
+            if not shared:
+                continue
+            if are_notes_linked(na, nb):
+                continue
+            pair_key = collision_pair_key(str(na["id"]), str(nb["id"]))
+            latest_ts = max(str(na.get("updatedAt") or ""), str(nb.get("updatedAt") or ""))
+            candidates.append(
+                {
+                    "pairKey": pair_key,
+                    "sharedTags": shared,
+                    "score": len(shared) * 2,
+                    "latestUpdatedAt": latest_ts,
+                    "noteA": na,
+                    "bookA": ba,
+                    "noteB": nb,
+                    "bookB": bb,
+                }
+            )
+    candidates.sort(key=lambda c: c["pairKey"])
+    candidates.sort(key=lambda c: c["latestUpdatedAt"], reverse=True)
+    candidates.sort(key=lambda c: c["score"], reverse=True)
+    return candidates[: max(0, limit)]
+
+
+def _resolve_wikilink_target_optional(notes: list[dict[str, Any]], raw_slug: str) -> dict[str, Any] | None:
+    q = (raw_slug or "").strip()
+    if not q:
+        return None
+    for n in notes:
+        if n.get("slug") == q:
+            return n
+    ql = slugify_or_none(q)
+    if ql:
+        for n in notes:
+            if n.get("slug") == ql:
+                return n
+    legacy = legacy_slugify(q)
+    if legacy:
+        for n in notes:
+            if n.get("slug") == legacy:
+                return n
+    for n in notes:
+        aliases = note_aliases(n)
+        if (ql and ql in aliases) or (legacy and legacy in aliases):
+            return n
+    return None
+
+
+def _apply_directed_bridge(
+    source: dict[str, Any],
+    target: dict[str, Any],
+    all_notes: list[dict[str, Any]],
+    mode: str,
+    why: str | None,
+    now_iso: str,
+) -> tuple[dict[str, Any], bool]:
+    target_slug = str(target.get("slug") or "").strip() or slugify(str(target.get("slug") or ""))
+    existing_slugs = get_note_related_slugs(source.get("meta"))
+    existing_bridge_notes = get_note_bridge_notes(source.get("meta"))
+
+    def points_to_target(raw_slug: str) -> bool:
+        resolved = _resolve_wikilink_target_optional(all_notes, raw_slug)
+        if resolved is not None:
+            return resolved.get("id") == target.get("id")
+        return raw_slug in _note_identity_keys(target)
+
+    carried_why = ""
+    kept_slugs: list[str] = []
+    first_target_idx = -1
+    had_target = False
+    for s in existing_slugs:
+        if points_to_target(s):
+            if not had_target:
+                first_target_idx = len(kept_slugs)
+            had_target = True
+            if not carried_why and existing_bridge_notes.get(s):
+                carried_why = existing_bridge_notes[s]
+            continue
+        if s not in kept_slugs:
+            kept_slugs.append(s)
+
+    next_bridge_notes: dict[str, str] = {}
+    for k, v in existing_bridge_notes.items():
+        if points_to_target(k):
+            if not carried_why:
+                carried_why = v
+            continue
+        if k in kept_slugs:
+            next_bridge_notes[k] = v
+
+    if mode == "link":
+        if not had_target and len(kept_slugs) >= NOTE_RELATED_SLUGS_CAP:
+            raise CliError(
+                f"A note can hold at most {NOTE_RELATED_SLUGS_CAP} linked bridges. Unlink one first."
+            )
+        if had_target and first_target_idx >= 0:
+            next_slugs = kept_slugs[:first_target_idx] + [target_slug] + kept_slugs[first_target_idx:]
+        else:
+            next_slugs = kept_slugs + [target_slug]
+        resolved_why = why if why is not None else carried_why
+        if resolved_why:
+            next_bridge_notes[target_slug] = resolved_why
+    else:
+        next_slugs = kept_slugs
+
+    if next_slugs == existing_slugs and next_bridge_notes == existing_bridge_notes:
+        return source, False
+
+    updated = json.loads(json.dumps(source))
+    meta = updated.setdefault("meta", {})
+    if next_slugs:
+        meta["relatedSlugs"] = next_slugs
+    else:
+        meta.pop("relatedSlugs", None)
+    if next_bridge_notes:
+        meta["bridgeNotes"] = next_bridge_notes
+    else:
+        meta.pop("bridgeNotes", None)
+    updated["updatedAt"] = now_iso
+    return updated, True
+
+
+def plan_note_bridge_ops(
+    note_a: dict[str, Any],
+    note_b: dict[str, Any],
+    all_notes: list[dict[str, Any]],
+    books: list[dict[str, Any]],
+    *,
+    mode: str = "link",
+    bidirectional: bool = True,
+    why: str | None = None,
+    allow_shielded: bool = False,
+    now_iso: str | None = None,
+) -> list[tuple[dict[str, Any], str | None]]:
+    """Parity with planNoteBridgeOps in src/utils/crossBookSynthesis.ts."""
+    if note_a.get("id") == note_b.get("id"):
+        raise CliError("Cannot link a note to itself.")
+    if is_archived(note_a) or is_archived(note_b):
+        raise CliError("Cannot modify bridges on an archived note. Restore it first.")
+    book_map = {b["id"]: b for b in books}
+    ba = book_map.get(note_a.get("bookId", ""))
+    bb = book_map.get(note_b.get("bookId", ""))
+    if (ba and is_archived(ba)) or (bb and is_archived(bb)):
+        raise CliError(
+            "Cannot modify bridges on a note belonging to an archived book. Restore the book first."
+        )
+    if not allow_shielded:
+        if (
+            is_note_spoiler(note_a, ba)
+            or is_sealed_prediction(note_a, ba)
+            or is_note_spoiler(note_b, bb)
+            or is_sealed_prediction(note_b, bb)
+        ):
+            raise CliError(
+                "Cannot bridge a spoiler-shielded or sealed-prediction note without --include-spoilers."
+            )
+
+    ts = now_iso or now_iso_utc()
+    cleaned_why = None if why is None else _clamp_text(why, BRIDGE_NOTE_MAX)
+    updates: list[tuple[dict[str, Any], str | None]] = []
+
+    next_a, changed_a = _apply_directed_bridge(note_a, note_b, all_notes, mode, cleaned_why, ts)
+    if changed_a:
+        updates.append((next_a, note_a.get("updatedAt")))
+    if bidirectional:
+        next_b, changed_b = _apply_directed_bridge(note_b, note_a, all_notes, mode, cleaned_why, ts)
+        if changed_b:
+            updates.append((next_b, note_b.get("updatedAt")))
+    return updates
 
 
 def _parse_meta_input(raw: Any) -> dict[str, Any]:
@@ -2737,6 +3558,36 @@ def build_notes_summary(
     return out, omitted
 
 
+def _safe_answered_questions(
+    book: dict[str, Any], notes: list[dict[str, Any]], *, include_spoilers: bool = False
+) -> list[dict[str, Any]]:
+    answered = [q for q in get_book_reading_questions(book.get("meta")) if q["status"] == "answered"]
+    if not answered:
+        return []
+    note_map = {n["id"]: n for n in notes}
+    out: list[dict[str, Any]] = []
+    for q in answered:
+        entry: dict[str, Any] = {
+            "id": q["id"],
+            "question": q["question"],
+        }
+        if q.get("answer"):
+            entry["answer"] = q["answer"]
+        nid = q.get("noteId")
+        if nid:
+            linked = note_map.get(nid)
+            if (
+                linked is not None
+                and linked.get("bookId") == book.get("id")
+                and not is_archived(linked)
+                and (include_spoilers or not _is_timeline_shielded(linked, book))
+            ):
+                entry["noteId"] = linked["id"]
+                entry["noteSlug"] = linked["slug"]
+        out.append(entry)
+    return out
+
+
 def finish_transition_extras(
     prev_status: Any, book: dict[str, Any], notes: list[dict[str, Any]]
 ) -> dict[str, Any]:
@@ -2757,6 +3608,9 @@ def finish_transition_extras(
         summary, omitted = build_notes_summary(book, notes)
         extras["notesSummary"] = summary
         extras["notesSummaryOmittedCount"] = omitted
+        answered_qs = _safe_answered_questions(book, notes)
+        if answered_qs:
+            extras["answeredQuestions"] = answered_qs
     return extras
 
 
@@ -2853,6 +3707,14 @@ def cmd_book_add(args: argparse.Namespace, backend: WorkspaceBackend) -> dict[st
     elif status == "finished":
         meta["startedAt"] = now_iso
         meta["finishedAt"] = now_iso
+    for attr_name, meta_key in (
+        ("why_queued", "whyQueued"),
+        ("pause_note", "pauseNote"),
+        ("next_stop", "nextStop"),
+    ):
+        raw_val = getattr(args, attr_name, None)
+        if raw_val is not None:
+            _apply_book_context_field(meta, meta_key, raw_val)
 
     new_book = {
         "id": str(uuid.uuid4()),
@@ -2885,13 +3747,16 @@ def cmd_book_update(args: argparse.Namespace, backend: WorkspaceBackend) -> dict
         args.doc_url,
         args.cover_url,
         getattr(args, "chapter", None),
+        getattr(args, "why_queued", None),
+        getattr(args, "pause_note", None),
+        getattr(args, "next_stop", None),
     )
     archive_flag = bool(getattr(args, "archive", False))
     unarchive_flag = bool(getattr(args, "unarchive", False))
     if all(v is None for v in mutable_values) and not (archive_flag or unarchive_flag):
         raise CliError(
             "Provide at least one mutable field to update "
-            "(e.g. --status, --pos, --total-pos, --title, --chapter, --archive)."
+            "(e.g. --status, --pos, --total-pos, --title, --chapter, --next-stop, --archive)."
         )
 
     if args.title is not None and not args.title.strip():
@@ -2941,6 +3806,14 @@ def cmd_book_update(args: argparse.Namespace, backend: WorkspaceBackend) -> dict
     chapter = _chapter_arg(getattr(args, "chapter", None))
     if chapter is not None:
         _apply_chapter(meta, "currentChapter", chapter)
+    for attr_name, meta_key in (
+        ("why_queued", "whyQueued"),
+        ("pause_note", "pauseNote"),
+        ("next_stop", "nextStop"),
+    ):
+        raw_val = getattr(args, attr_name, None)
+        if raw_val is not None:
+            _apply_book_context_field(meta, meta_key, raw_val)
     if archive_flag and not is_archived(updated):
         meta["archivedAt"] = now_iso_utc()
     elif unarchive_flag:
@@ -4064,6 +4937,8 @@ def cmd_ocr_backfill(args: argparse.Namespace, backend: WorkspaceBackend) -> dic
         # B4.4: one literal OCR string must never be applied to every image note.
         raise CliError("--ocr-text applies to a single note; pass --note <slug|id> with it.")
     ws = backend.load_workspace()
+    book_map = {b["id"]: b for b in ws["books"]}
+    include_spoilers = bool(getattr(args, "include_spoilers", False))
     ocr_map: dict[str, str] = {}
     if args.ocr_map_json:
         map_path = Path(args.ocr_map_json)
@@ -4083,6 +4958,7 @@ def cmd_ocr_backfill(args: argparse.Namespace, backend: WorkspaceBackend) -> dic
 
     pending_updates: list[tuple[dict[str, Any], str | None]] = []
     skipped_notes: list[str] = []
+    shielded_count = 0
 
     for n in ws["notes"]:
         if target_note_id and n["id"] != target_note_id:
@@ -4090,6 +4966,14 @@ def cmd_ocr_backfill(args: argparse.Namespace, backend: WorkspaceBackend) -> dic
         meta = n.get("meta") or {}
         img_attachments = [a for a in renderable_attachments(meta) if a.get("type") == "image"]
         if not img_attachments:
+            continue
+        if is_archived(n):
+            continue
+        book = book_map.get(n.get("bookId", ""))
+        if book and is_archived(book):
+            continue
+        if not include_spoilers and (is_note_spoiler(n, book) or is_sealed_prediction(n, book)):
+            shielded_count += 1
             continue
         if (n.get("quote") or "").strip():
             skipped_notes.append(n["slug"])
@@ -4154,6 +5038,7 @@ def cmd_ocr_backfill(args: argparse.Namespace, backend: WorkspaceBackend) -> dic
         "updatedCount": len(updated_notes),
         "updatedSlugs": [u["slug"] for u in updated_notes],
         "skippedSlugs": skipped_notes,
+        "shieldedCount": shielded_count,
     }
 
 
@@ -4174,7 +5059,14 @@ def _needs_md_export(note: dict[str, Any]) -> bool:
     return str(note.get("updatedAt") or "") > str(exported_raw)
 
 
-def _render_note_markdown(note: dict[str, Any], book: dict[str, Any] | None) -> str:
+def _render_note_markdown(
+    note: dict[str, Any],
+    book: dict[str, Any] | None,
+    *,
+    all_notes: list[dict[str, Any]] | None = None,
+    book_map: dict[str, dict[str, Any]] | None = None,
+    include_spoilers: bool = False,
+) -> str:
     meta = note.get("meta") or {}
     title = meta.get("title") or note["slug"]
     book_title = (book or {}).get("title") or "Unknown Book"
@@ -4185,7 +5077,48 @@ def _render_note_markdown(note: dict[str, Any], book: dict[str, Any] | None) -> 
         note.get("deltaTrigger") or "",
         note.get("deltaAction") or "",
     )
-    wikilinks = extract_note_wikilinks(note)
+    inline_wikilinks = extract_wikilinks(
+        "\n".join(
+            [
+                note.get("takeaway") or "",
+                note.get("contextMechanism") or "",
+                note.get("critique") or "",
+                note.get("quote") or "",
+            ]
+        )
+    )
+    raw_related = get_note_related_slugs(meta)
+    raw_bridge_notes = get_note_bridge_notes(meta)
+    safe_related: list[str] = []
+    safe_bridge_notes: dict[str, str] = {}
+    if all_notes is not None and book_map is not None:
+        seen_target_ids: set[str] = set()
+        for rel in raw_related:
+            target = _resolve_wikilink_target_optional(all_notes, rel)
+            if target is None or target.get("id") == note.get("id"):
+                continue
+            if target["id"] in seen_target_ids or is_archived(target):
+                continue
+            tbook = book_map.get(target.get("bookId", ""))
+            if not tbook or is_archived(tbook):
+                continue
+            if not include_spoilers and (is_note_spoiler(target, tbook) or is_sealed_prediction(target, tbook)):
+                continue
+            seen_target_ids.add(target["id"])
+            canon = str(target.get("slug") or rel)
+            if canon not in safe_related:
+                safe_related.append(canon)
+            why = raw_bridge_notes.get(rel) or raw_bridge_notes.get(canon) or ""
+            if why:
+                safe_bridge_notes[canon] = why
+    else:
+        safe_related = raw_related
+        safe_bridge_notes = raw_bridge_notes
+
+    wikilinks = list(inline_wikilinks)
+    for rel in safe_related:
+        if rel not in wikilinks:
+            wikilinks.append(rel)
     attachments = renderable_attachments(meta)
 
     def yaml_str(val: str) -> str:
@@ -4200,12 +5133,18 @@ def _render_note_markdown(note: dict[str, Any], book: dict[str, Any] | None) -> 
         f"author: {yaml_str(author)}",
         f"pos: {yaml_str(pos_display)}",
         f"tags: [{', '.join(yaml_str(t) for t in tags)}]",
-        f"updatedAt: {yaml_str(str(note.get('updatedAt') or ''))}",
-        "---",
-        "",
-        f"# {title}",
-        "",
     ]
+    if safe_related:
+        lines.append(f"relatedSlugs: [{', '.join(yaml_str(s) for s in safe_related)}]")
+    lines.extend(
+        [
+            f"updatedAt: {yaml_str(str(note.get('updatedAt') or ''))}",
+            "---",
+            "",
+            f"# {title}",
+            "",
+        ]
+    )
 
     if (note.get("quote") or "").strip():
         lines.extend(["## Quote", "", f"> {note['quote'].strip()}", ""])
@@ -4241,6 +5180,11 @@ def _render_note_markdown(note: dict[str, Any], book: dict[str, Any] | None) -> 
     if wikilinks:
         lines.extend(["## Related Concepts", ""])
         lines.append(", ".join(f"[[{wl}]]" for wl in wikilinks))
+        bridge_reasons = [(wl, safe_bridge_notes[wl]) for wl in wikilinks if wl in safe_bridge_notes]
+        if bridge_reasons:
+            lines.append("")
+            for wl, why in bridge_reasons:
+                lines.append(f"- [[{wl}]]: {why}")
         lines.append("")
 
     return "\n".join(lines).rstrip() + "\n"
@@ -4252,6 +5196,7 @@ def cmd_export_md(args: argparse.Namespace, backend: WorkspaceBackend) -> dict[s
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     out_dir_resolved = out_dir.resolve()
+    include_spoilers = bool(getattr(args, "include_spoilers", False))
 
     exported_files: list[str] = []
     pending_stamps: list[tuple[dict[str, Any], str | None]] = []
@@ -4263,7 +5208,13 @@ def cmd_export_md(args: argparse.Namespace, backend: WorkspaceBackend) -> dict[s
             continue
 
         book = book_map.get(n.get("bookId", ""))
-        md_content = _render_note_markdown(n, book)
+        md_content = _render_note_markdown(
+            n,
+            book,
+            all_notes=ws["notes"],
+            book_map=book_map,
+            include_spoilers=include_spoilers,
+        )
         safe_slug = slugify(str(n.get("slug") or n.get("id") or "note"))
         dest_file = out_dir / f"{safe_slug}.md"
         if not dest_file.resolve().is_relative_to(out_dir_resolved):
@@ -4310,14 +5261,17 @@ def cmd_export_md(args: argparse.Namespace, backend: WorkspaceBackend) -> dict[s
             ws["notes"], book, include_drafts, include_spoilers
         )
         shielded_total += shielded
-        if timeline or has_book_capstone(book.get("meta")):
+        answered_qs = _safe_answered_questions(book, ws["notes"], include_spoilers=include_spoilers)
+        if timeline or has_book_capstone(book.get("meta")) or answered_qs:
             pending.append((book, timeline))
     slugs = assign_book_index_slugs([b for b, _ in pending])
     for book, timeline in pending:
         dest = books_dir / f"{slugs[str(book.get('id'))]}.md"
         if not dest.resolve().is_relative_to(books_dir_resolved):
             raise CliError(f"Unsafe book index path for: {book.get('title')}")
-        content = render_book_index_md(book, timeline)
+        content = render_book_index_md(
+            book, timeline, all_notes=ws["notes"], include_spoilers=include_spoilers
+        )
         if dest.exists() and dest.read_text(encoding="utf-8") == content:
             index_unchanged += 1
             continue
@@ -5061,7 +6015,13 @@ def assign_book_index_slugs(books: list[dict[str, Any]]) -> dict[str, str]:
     return out
 
 
-def render_book_index_md(book: dict[str, Any], timeline: list[dict[str, Any]]) -> str:
+def render_book_index_md(
+    book: dict[str, Any],
+    timeline: list[dict[str, Any]],
+    *,
+    all_notes: list[dict[str, Any]] | None = None,
+    include_spoilers: bool = False,
+) -> str:
     """A1.5 / ux_spec E.2: per-book Markdown index (front-matter, capstone, both tiers)."""
     meta = book.get("meta") or {}
     lines = [
@@ -5097,6 +6057,21 @@ def render_book_index_md(book: dict[str, Any], timeline: list[dict[str, Any]]) -
         written = _iso_date(cap.get("completedAt"))
         if written:
             lines.extend(["", f"*Written {written}*"])
+
+    answered_qs = _safe_answered_questions(
+        book,
+        all_notes if all_notes is not None else timeline,
+        include_spoilers=include_spoilers,
+    )
+    if answered_qs:
+        lines.extend(["", "## Reading Questions"])
+        for q in answered_qs:
+            q_line = f"- **Q:** {_one_line(q['question'])}"
+            if q.get("answer"):
+                q_line += f" — {_one_line(q['answer'])}"
+            if q.get("noteSlug"):
+                q_line += f" ([[{q['noteSlug']}]])"
+            lines.append(q_line)
 
     for note in timeline:
         atomic = note.get("status") == "atomic"
@@ -5278,34 +6253,31 @@ def _sync_existing_doc(
     return _fallback_append(backend, doc_id, book, timeline, DOC_INPLACE_FAILED_WARNING, plan.capstone)
 
 
-def cmd_book_doc_sync(args: argparse.Namespace, backend: WorkspaceBackend) -> dict[str, Any]:
-    """A1.1-A1.4: two-tier timeline sync with true in-place block replacement (OQ-2).
-
-    `mode` is one of DOC_SYNC_MODES:
-    - created: a new Doc was created with the full timeline.
-    - in-place: planned block replacements/insertions (doc-out text, or one
-      revision-guarded Docs batchUpdate).
-    - append: only tail additions / an empty existing Doc (sent through the append ops).
-    - append-fallback: structure unsafe, no revisionId, or the in-place write failed ->
-      append-only by marker from a fresh read + a warning.
-    - unchanged: nothing to write.
-    `capstone` is one of CAPSTONE_SYNC_STATES.
-    """
-    ws = backend.load_workspace()
-    book = resolve_book(ws["books"], args.book)
+def _sync_book_doc_with_ws(
+    ws: dict[str, Any],
+    book: dict[str, Any],
+    backend: WorkspaceBackend,
+    *,
+    include_drafts: bool = False,
+    include_spoilers: bool = False,
+    doc_out_path: Path | None = None,
+    force: bool = False,
+    allow_create: bool = True,
+) -> dict[str, Any]:
     timeline, shielded_count = select_book_timeline_with_shield(
         ws["notes"],
         book,
-        bool(getattr(args, "include_drafts", False)),
-        bool(getattr(args, "include_spoilers", False)),
+        include_drafts,
+        include_spoilers,
     )
 
     existing_doc_url = (book.get("docUrl") or "").strip()
     doc_id = parse_doc_id(existing_doc_url)
-    doc_out_path = Path(args.doc_out) if getattr(args, "doc_out", None) else None
     created_doc = False
 
     if not doc_id:
+        if not allow_create:
+            raise CliError(f"Book '{book.get('title')}' has no linked Companion Doc.")
         doc_id, new_url = backend.create_companion_doc(f"Pragya · {book['title']}", "", book_id=book["id"])
         created_doc = True
         updated_book = json.loads(json.dumps(book))
@@ -5314,7 +6286,7 @@ def cmd_book_doc_sync(args: argparse.Namespace, backend: WorkspaceBackend) -> di
         backend.save_book(
             updated_book,
             expected_base_updated_at=(book.get("meta") or {}).get("updatedAt"),
-            force=bool(getattr(args, "force", False)),
+            force=force,
         )
         full = lines_to_text(render_full_companion_doc(book, timeline)) + "\n"
         backend.append_doc_text(doc_id, full)
@@ -5351,6 +6323,519 @@ def cmd_book_doc_sync(args: argparse.Namespace, backend: WorkspaceBackend) -> di
         "capstone": outcome.capstone,
         "shieldedCount": shielded_count,
         "warnings": outcome.warnings,
+    }
+
+
+def cmd_book_doc_sync(args: argparse.Namespace, backend: WorkspaceBackend) -> dict[str, Any]:
+    """A1.1-A1.4: two-tier timeline sync with true in-place block replacement (OQ-2).
+
+    `mode` is one of DOC_SYNC_MODES:
+    - created: a new Doc was created with the full timeline.
+    - in-place: planned block replacements/insertions (doc-out text, or one
+      revision-guarded Docs batchUpdate).
+    - append: only tail additions / an empty existing Doc (sent through the append ops).
+    - append-fallback: structure unsafe, no revisionId, or the in-place write failed ->
+      append-only by marker from a fresh read + a warning.
+    - unchanged: nothing to write.
+    `capstone` is one of CAPSTONE_SYNC_STATES.
+    """
+    ws = backend.load_workspace()
+    book = resolve_book(ws["books"], args.book)
+    doc_out_path = Path(args.doc_out) if getattr(args, "doc_out", None) else None
+    return _sync_book_doc_with_ws(
+        ws,
+        book,
+        backend,
+        include_drafts=bool(getattr(args, "include_drafts", False)),
+        include_spoilers=bool(getattr(args, "include_spoilers", False)),
+        doc_out_path=doc_out_path,
+        force=bool(getattr(args, "force", False)),
+        allow_create=True,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Pragya v2 Commands: book-question, note-link, recap, salon
+# ---------------------------------------------------------------------------
+
+
+def _validate_today_arg(raw: str | None) -> str:
+    if not raw or not raw.strip():
+        return local_date_str()
+    val = raw.strip()
+    if not re.match(r"^\d{4}-\d{2}-\d{2}$", val) or parse_date_only_utc(val) is None:
+        raise CliError(f"Invalid --today date (expected YYYY-MM-DD): {val}")
+    return val
+
+
+def _summarize_note_brief(note: dict[str, Any], book: dict[str, Any] | None) -> dict[str, Any]:
+    meta = note.get("meta") or {}
+    unit = (book or {}).get("posUnit") or "page"
+    pos = clean_num(note.get("pos"), 0)
+    chapter = (_coerce_meta_string(meta.get("chapter")) or "").strip()
+    return {
+        "id": note["id"],
+        "slug": note["slug"],
+        "bookId": note.get("bookId") or "",
+        "bookTitle": (book or {}).get("title") or "",
+        "pos": pos,
+        "posDisplay": format_pos_display(pos, unit),
+        "chapter": chapter,
+        "title": (_coerce_meta_string(meta.get("title")) or "").strip(),
+        "quote": _truncate_summary_text(note.get("quote")),
+        "takeaway": _truncate_summary_text(note.get("takeaway")),
+        "tags": list(note.get("tags") or []),
+        "updatedAt": str(note.get("updatedAt") or ""),
+    }
+
+
+def cmd_book_question(args: argparse.Namespace, backend: WorkspaceBackend) -> dict[str, Any]:
+    add_text = getattr(args, "add", None)
+    answer_id = getattr(args, "answer", None)
+    reopen_id = getattr(args, "reopen", None)
+    remove_id = getattr(args, "remove", None)
+    answer_text = getattr(args, "text", None)
+    answer_note = getattr(args, "note", None)
+
+    if (answer_text is not None or answer_note is not None) and not answer_id:
+        raise CliError("--text and --note can only be used together with --answer <id|prefix>.")
+
+    ws = backend.load_workspace()
+    book = resolve_book(ws["books"], args.book)
+
+    mutating = any(x is not None for x in (add_text, answer_id, reopen_id, remove_id))
+    if not mutating:
+        qs = get_book_reading_questions(book.get("meta"))
+        return {
+            "bookId": book["id"],
+            "bookTitle": book["title"],
+            "questions": qs,
+            "openCount": sum(1 for q in qs if q["status"] == "open"),
+            "openCap": MAX_OPEN_READING_QUESTIONS,
+        }
+
+    if is_archived(book):
+        raise CliError(
+            f"Book '{book.get('title')}' is archived. Restore it first with "
+            f"`book-update --book {book.get('id')} --unarchive`."
+        )
+
+    base_updated_at = (book.get("meta") or {}).get("updatedAt")
+    now_iso = now_iso_utc()
+    updated = json.loads(json.dumps(book))
+    meta = updated.setdefault("meta", {})
+    existing_raw = meta.get("readingQuestions")
+
+    action = ""
+    touched_q: dict[str, Any]
+    if add_text is not None:
+        next_raw, touched_q = add_reading_question(existing_raw, add_text, now_iso=now_iso)
+        meta["readingQuestions"] = next_raw
+        action = "added"
+    elif answer_id is not None:
+        resolved_note_id: str | None = None
+        if answer_note is not None:
+            if answer_note.strip():
+                linked = resolve_note(ws["notes"], answer_note)
+                if linked.get("bookId") != book["id"]:
+                    raise CliError(
+                        f"Note '{linked['slug']}' belongs to a different book and cannot be linked to a question on '{book['title']}'."
+                    )
+                if is_archived(linked):
+                    raise CliError(f"Note '{linked['slug']}' is archived and cannot be linked.")
+                if is_note_spoiler(linked, book) or is_sealed_prediction(linked, book):
+                    raise CliError(
+                        "Cannot link a spoiler-shielded or sealed-prediction note to a reading question."
+                    )
+                resolved_note_id = linked["id"]
+            else:
+                resolved_note_id = ""
+        next_raw, touched_q = answer_reading_question(
+            existing_raw,
+            answer_id,
+            answer=answer_text,
+            note_id=resolved_note_id,
+            now_iso=now_iso,
+        )
+        meta["readingQuestions"] = next_raw
+        action = "answered"
+    elif reopen_id is not None:
+        next_raw, touched_q = reopen_reading_question(existing_raw, reopen_id)
+        meta["readingQuestions"] = next_raw
+        action = "reopened"
+    else:
+        assert remove_id is not None
+        next_raw_opt, touched_q = remove_reading_question(existing_raw, remove_id)
+        if next_raw_opt:
+            meta["readingQuestions"] = next_raw_opt
+        else:
+            meta.pop("readingQuestions", None)
+        action = "removed"
+
+    meta["updatedAt"] = now_iso
+    backend.save_book(
+        updated,
+        expected_base_updated_at=base_updated_at,
+        force=bool(getattr(args, "force", False)),
+    )
+    qs = get_book_reading_questions(updated.get("meta"))
+    return {
+        "action": action,
+        "book": updated,
+        "question": touched_q,
+        "questions": qs,
+        "openCount": sum(1 for q in qs if q["status"] == "open"),
+        "openCap": MAX_OPEN_READING_QUESTIONS,
+    }
+
+
+def cmd_note_link(args: argparse.Namespace, backend: WorkspaceBackend) -> dict[str, Any]:
+    ws = backend.load_workspace()
+    note_a = resolve_note(ws["notes"], args.note)
+    note_b = resolve_note(ws["notes"], args.to)
+    mode = "unlink" if bool(getattr(args, "unlink", False)) else "link"
+    bidirectional = not bool(getattr(args, "one_way", False))
+    include_spoilers = bool(getattr(args, "include_spoilers", False))
+    why = getattr(args, "why", None)
+
+    updates = plan_note_bridge_ops(
+        note_a,
+        note_b,
+        ws["notes"],
+        ws["books"],
+        mode=mode,
+        bidirectional=bidirectional,
+        why=why,
+        allow_shielded=include_spoilers,
+    )
+    saved = (
+        backend.save_notes_batch(
+            updates,
+            force=bool(getattr(args, "force", False)),
+            update_only=True,
+        )
+        if updates
+        else []
+    )
+    return {
+        "changed": bool(updates),
+        "mode": mode,
+        "bidirectional": bidirectional,
+        "noteA": {"id": note_a["id"], "slug": note_a["slug"]},
+        "noteB": {"id": note_b["id"], "slug": note_b["slug"]},
+        "updatedNoteIds": [u["id"] for u in saved],
+        "notes": saved,
+    }
+
+
+def cmd_recap(args: argparse.Namespace, backend: WorkspaceBackend) -> dict[str, Any]:
+    today = _validate_today_arg(getattr(args, "today", None))
+    ws = backend.load_workspace()
+    books = ws["books"]
+    notes = ws["notes"]
+    sessions = ws.get("sessions") or []
+
+    live_book_ids = {b["id"] for b in books if not is_archived(b)}
+    read_today = any(
+        s.get("bookId") in live_book_ids and to_local_date_key(s.get("date")) == today
+        for s in sessions
+    )
+
+    active_books = [b for b in books if not is_archived(b) and b.get("status") == "reading"]
+    book_arg = getattr(args, "book", None)
+    selected_book: dict[str, Any] | None = None
+    if book_arg:
+        selected_book = resolve_book(books, book_arg)
+        if is_archived(selected_book):
+            raise CliError(
+                f"Book '{selected_book.get('title')}' is archived. Restore it first with "
+                f"`book-update --book {selected_book.get('id')} --unarchive`."
+            )
+    elif active_books:
+        latest_day_by_book: dict[str, str] = {}
+        for b in active_books:
+            b_days = [
+                d
+                for s in sessions
+                if s.get("bookId") == b["id"] and (d := to_local_date_key(s.get("date")))
+            ]
+            latest_day_by_book[b["id"]] = max(b_days) if b_days else ""
+        max_day = max(latest_day_by_book.values())
+        tied = sorted(
+            [b for b in active_books if latest_day_by_book[b["id"]] == max_day],
+            key=lambda b: str(b.get("id") or ""),
+        )
+        selected_book = tied[0] if len(tied) == 1 else tied[fnv1a_32(today) % len(tied)]
+
+    queued_contrast = [
+        {
+            "bookId": c["book"]["id"],
+            "title": c["book"]["title"],
+            "author": c["book"].get("author") or "",
+            "kind": c["book"].get("kind") or "nonfiction",
+            "role": c["role"],
+            "reason": c["reason"],
+            "whyQueued": get_book_meta_string(c["book"].get("meta"), "whyQueued"),
+        }
+        for c in pick_next_read_candidates(books, notes, selected_book)
+    ]
+
+    if selected_book is None:
+        return {
+            "date": today,
+            "readToday": read_today,
+            "allActiveBooksCount": len(active_books),
+            "selectedBook": None,
+            "currentChapter": "",
+            "nextStop": "",
+            "sittingPace": None,
+            "lastNotes": [],
+            "openPredictions": {"count": 0, "items": []},
+            "openQuestions": [],
+            "crossBookEchoes": [],
+            "queuedContrast": queued_contrast,
+        }
+
+    meta = selected_book.get("meta") or {}
+    unit = selected_book.get("posUnit") or "page"
+    current_chapter = format_chapter_label(meta.get("currentChapter"))
+    next_stop = get_book_meta_string(meta, "nextStop")
+    sitting_pace = compute_sitting_pace(selected_book, sessions)
+
+    safe_book_notes = [
+        n
+        for n in notes
+        if n.get("bookId") == selected_book["id"]
+        and not is_archived(n)
+        and not is_note_spoiler(n, selected_book)
+        and not is_sealed_prediction(n, selected_book)
+        and ((n.get("takeaway") or "").strip() or (n.get("quote") or "").strip())
+    ]
+    safe_book_notes.sort(key=lambda n: str(n.get("updatedAt") or ""), reverse=True)
+    recent_three = safe_book_notes[:3]
+    recent_three.sort(key=lambda n: (_safe_float(n.get("pos"), 0.0), str(n.get("createdAt") or "")))
+    last_notes = [_summarize_note_brief(n, selected_book) for n in recent_three]
+
+    sealed_preds = [
+        n
+        for n in notes
+        if n.get("bookId") == selected_book["id"]
+        and not is_archived(n)
+        and is_sealed_prediction(n, selected_book)
+    ]
+    sealed_preds.sort(key=lambda n: (_safe_float(n.get("pos"), 0.0), str(n.get("id") or "")))
+    # STRICT SPOILER REDACTION: never expose sealed prediction text, title, or slug.
+    open_predictions = {
+        "count": len(sealed_preds),
+        "items": [
+            {
+                "id": p["id"],
+                "pos": clean_num(p.get("pos"), 0),
+                "posDisplay": format_pos_display(_safe_float(p.get("pos"), 0.0), unit),
+            }
+            for p in sealed_preds
+        ],
+    }
+
+    open_questions = [
+        {
+            "id": q["id"],
+            "question": q["question"],
+            "status": "open",
+            "createdAt": q["createdAt"],
+        }
+        for q in get_book_reading_questions(meta)
+        if q["status"] == "open"
+    ]
+
+    echoes_raw = find_cross_book_echoes(selected_book, notes, books, limit=3)
+    cross_book_echoes = [
+        {
+            "note": _summarize_note_brief(e["note"], e["book"]),
+            "score": e["score"],
+            "linked": e["linked"],
+            "sharedTags": e["sharedTags"],
+            "reason": e["reason"],
+        }
+        for e in echoes_raw
+    ]
+
+    return {
+        "date": today,
+        "readToday": read_today,
+        "allActiveBooksCount": len(active_books),
+        "selectedBook": {
+            "id": selected_book["id"],
+            "title": selected_book["title"],
+            "author": selected_book.get("author") or "",
+            "kind": selected_book.get("kind") or "nonfiction",
+            "status": selected_book.get("status") or "reading",
+            "currentPos": clean_num(selected_book.get("currentPos"), 0),
+            "totalPos": clean_num(selected_book.get("totalPos"), 0),
+            "posUnit": unit,
+            "posDisplay": format_pos_display(_safe_float(selected_book.get("currentPos"), 0.0), unit),
+            "normalizedPos": selected_book.get("normalizedPos") or 0,
+        },
+        "currentChapter": current_chapter,
+        "nextStop": next_stop,
+        "sittingPace": sitting_pace,
+        "lastNotes": last_notes,
+        "openPredictions": open_predictions,
+        "openQuestions": open_questions,
+        "crossBookEchoes": cross_book_echoes,
+        "queuedContrast": queued_contrast,
+    }
+
+
+def cmd_salon(args: argparse.Namespace, backend: WorkspaceBackend) -> dict[str, Any]:
+    today = _validate_today_arg(getattr(args, "today", None))
+    days = int(getattr(args, "days", 7))
+    if days < 1:
+        raise CliError("--days must be at least 1.")
+    max_doc_syncs = int(getattr(args, "max_doc_syncs", 3))
+    if max_doc_syncs < 0:
+        raise CliError("--max-doc-syncs cannot be negative.")
+    apply_maintenance = bool(getattr(args, "apply_maintenance", False))
+
+    today_dt = parse_date_only_utc(today)
+    assert today_dt is not None
+    window_start = (today_dt - timedelta(days=days - 1)).strftime("%Y-%m-%d")
+
+    ws = backend.load_workspace()
+    books = ws["books"]
+    notes = ws["notes"]
+    book_map = {b["id"]: b for b in books}
+
+    weekly_captures: list[dict[str, Any]] = []
+    pending_ocr_note_ids: list[str] = []
+
+    for n in notes:
+        if is_archived(n):
+            continue
+        b = book_map.get(n.get("bookId", ""))
+        if not b or is_archived(b):
+            continue
+        if is_note_spoiler(n, b) or is_sealed_prediction(n, b):
+            continue
+
+        created_day = to_local_date_key(n.get("createdAt"))
+        if created_day and window_start <= created_day <= today:
+            weekly_captures.append(_summarize_note_brief(n, b))
+
+        meta = n.get("meta") or {}
+        img_atts = [a for a in renderable_attachments(meta) if a.get("type") == "image"]
+        if img_atts and not (n.get("quote") or "").strip() and not meta.get("ocrBackfilled"):
+            pending_ocr_note_ids.append(n["id"])
+
+    weekly_captures.sort(key=lambda item: (item["updatedAt"], item["id"]), reverse=True)
+    pending_ocr_note_ids.sort()
+
+    # Books with an existing linked Companion Doc that have syncable unshielded content.
+    doc_candidates: list[tuple[str, str, dict[str, Any], int]] = []
+    for b in books:
+        if is_archived(b):
+            continue
+        doc_id = parse_doc_id((b.get("docUrl") or "").strip())
+        if not doc_id:
+            continue
+        timeline, _ = select_book_timeline_with_shield(notes, b, include_drafts=False, include_spoilers=False)
+        if not timeline and not has_book_capstone(b.get("meta")):
+            continue
+        latest_ts = str((b.get("meta") or {}).get("updatedAt") or "")
+        for n in timeline:
+            nts = str(n.get("updatedAt") or "")
+            if nts > latest_ts:
+                latest_ts = nts
+        doc_candidates.append((latest_ts, b["id"], b, len(timeline)))
+
+    doc_candidates.sort(key=lambda item: item[1])
+    doc_candidates.sort(key=lambda item: item[0], reverse=True)
+    unsynced_doc_books = [
+        {
+            "bookId": b["id"],
+            "title": b["title"],
+            "docUrl": b.get("docUrl") or "",
+            "timelineCount": tcount,
+            "latestUpdatedAt": latest_ts,
+        }
+        for latest_ts, _, b, tcount in doc_candidates
+    ]
+
+    bridge_raw = find_bridge_candidates(notes, books, limit=3)
+    bridge_candidates = [
+        {
+            "pairKey": c["pairKey"],
+            "sharedTags": c["sharedTags"],
+            "score": c["score"],
+            "noteA": _summarize_note_brief(c["noteA"], c["bookA"]),
+            "noteB": _summarize_note_brief(c["noteB"], c["bookB"]),
+        }
+        for c in bridge_raw
+    ]
+
+    collision_raw = select_daily_collision_pair(notes, books, today)
+    collision_pair = (
+        {
+            "pairKey": collision_raw["pairKey"],
+            "totalCandidates": collision_raw["totalCandidates"],
+            "noteA": _summarize_note_brief(collision_raw["noteA"], collision_raw["bookA"]),
+            "noteB": _summarize_note_brief(collision_raw["noteB"], collision_raw["bookB"]),
+        }
+        if collision_raw
+        else None
+    )
+
+    synced_docs: list[dict[str, Any]] = []
+    failed_docs: list[dict[str, Any]] = []
+    if apply_maintenance and max_doc_syncs > 0:
+        force = bool(getattr(args, "force", False))
+        for _, _, b, _ in doc_candidates[:max_doc_syncs]:
+            try:
+                res = _sync_book_doc_with_ws(
+                    ws,
+                    b,
+                    backend,
+                    include_drafts=False,
+                    include_spoilers=False,
+                    force=force,
+                    allow_create=False,
+                )
+                synced_docs.append(
+                    {
+                        "bookId": b["id"],
+                        "title": b["title"],
+                        "mode": res["mode"],
+                        "syncedNoteCount": res["syncedNoteCount"],
+                        "capstone": res["capstone"],
+                        "warnings": res["warnings"],
+                    }
+                )
+            except CliError as exc:
+                failed_docs.append(
+                    {
+                        "bookId": b["id"],
+                        "title": b["title"],
+                        "error": str(exc),
+                    }
+                )
+
+    return {
+        "date": today,
+        "days": days,
+        "windowStart": window_start,
+        "weeklyCapturesCount": len(weekly_captures),
+        "weeklyCaptures": weekly_captures,
+        "pendingOcrNoteIds": pending_ocr_note_ids,
+        "unsyncedDocBooks": unsynced_doc_books,
+        "bridgeCandidates": bridge_candidates,
+        "collisionPair": collision_pair,
+        "maintenance": {
+            "applied": apply_maintenance,
+            "maxDocSyncs": max_doc_syncs,
+            "updatedDocCount": sum(1 for d in synced_docs if d.get("mode") != "unchanged"),
+            "syncedDocs": synced_docs,
+            "failedDocs": failed_docs,
+        },
     }
 
 
@@ -5420,6 +6905,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_badd.add_argument("--pos-unit", "--unit", dest="pos_unit", default="page", choices=["page", "percent", "loc"], help="Position unit.")
     p_badd.add_argument("--doc-url", default="", help="Optional companion Google Doc URL.")
     p_badd.add_argument("--cover-url", default="", help="Optional cover image URL.")
+    p_badd.add_argument("--why-queued", default=None, help="Optional curiosity spark for why you queued this book (<= 240 chars).")
+    p_badd.add_argument("--pause-note", default=None, help="Optional guilt-free pause context (<= 240 chars).")
+    p_badd.add_argument("--next-stop", default=None, help="Optional next reading landmark (<= 120 chars).")
     p_badd.add_argument("--allow-duplicate", action="store_true", help="Allow adding a book with an existing title.")
 
     # 0c. book-update
@@ -5437,6 +6925,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_bupd.add_argument("--cover-url", default=None, help="Updated cover image URL.")
     p_bupd.add_argument("--force-pos", action="store_true", help="Allow lowering currentPos below current bookmark.")
     p_bupd.add_argument("--chapter", default=None, help="Set meta.currentChapter (empty string clears).")
+    p_bupd.add_argument("--why-queued", default=None, help="Set meta.whyQueued (empty string clears).")
+    p_bupd.add_argument("--pause-note", default=None, help="Set meta.pauseNote (empty string clears).")
+    p_bupd.add_argument("--next-stop", default=None, help="Set meta.nextStop (empty string clears).")
     g_barch = p_bupd.add_mutually_exclusive_group()
     g_barch.add_argument("--archive", action="store_true", help="Soft-archive the book (sets meta.archivedAt).")
     g_barch.add_argument("--unarchive", action="store_true", help="Restore a soft-archived book.")
@@ -5449,6 +6940,18 @@ def build_parser() -> argparse.ArgumentParser:
     p_bcap.add_argument("--shift", required=True, help="How your perspective shifted.")
     p_bcap.add_argument("--completed-at", default=None, help="Override completedAt (ISO-8601).")
     p_bcap.add_argument("--allow-unfinished", action="store_true", help="Allow a capstone on a book that is not finished.")
+
+    # 0c3. book-question
+    p_bq = sub.add_parser("book-question", parents=[common], help="Manage per-book Reading Questions curiosity anchors (<= 5 open).")
+    p_bq.add_argument("--book", required=True, help="Book UUID or title.")
+    g_bq = p_bq.add_mutually_exclusive_group()
+    g_bq.add_argument("--list", action="store_true", help="List reading questions on the book (default).")
+    g_bq.add_argument("--add", default=None, help="Add a new open reading question (<= 240 chars).")
+    g_bq.add_argument("--answer", default=None, help="Mark a reading question answered by ID or unique prefix.")
+    g_bq.add_argument("--reopen", default=None, help="Reopen an answered reading question by ID or unique prefix.")
+    g_bq.add_argument("--remove", default=None, help="Remove a reading question by ID or unique prefix.")
+    p_bq.add_argument("--text", default=None, help="Optional short answer text (used with --answer; empty clears).")
+    p_bq.add_argument("--note", default=None, help="Optional note UUID/slug/alias from this book (used with --answer; empty clears).")
 
     # 0d. progress
     p_prog = sub.add_parser("progress", parents=[common], help="Advance reading bookmark and log a coalesced session.")
@@ -5516,6 +7019,15 @@ def build_parser() -> argparse.ArgumentParser:
     g_narch.add_argument("--archive", action="store_true", help="Soft-archive the note (an active delta is paused).")
     g_narch.add_argument("--unarchive", action="store_true", help="Restore a soft-archived note (reactivates a delta archiving paused, if under the cap).")
 
+    # 1b2. note-link
+    p_nlink = sub.add_parser("note-link", parents=[common], help="Atomically link or unlink two notes via meta.relatedSlugs + bridgeNotes (never alters takeaway prose).")
+    p_nlink.add_argument("--note", required=True, help="Source note UUID, slug, or alias.")
+    p_nlink.add_argument("--to", required=True, help="Target note UUID, slug, or alias.")
+    p_nlink.add_argument("--why", default=None, help="Optional 1-line bridge note explaining the connection (<= 240 chars; empty clears).")
+    p_nlink.add_argument("--unlink", action="store_true", help="Remove the bridge between the two notes.")
+    p_nlink.add_argument("--one-way", action="store_true", help="Only update --note without updating --to.")
+    p_nlink.add_argument("--include-spoilers", "--reveal", dest="include_spoilers", action="store_true", help="Allow linking spoiler-shielded or sealed-prediction notes.")
+
     # 1c. delta-status
     p_dstat = sub.add_parser("delta-status", parents=[common], help="View active/paused/graduated Behavioral Deltas (5-cap) or transition a note's deltaStatus.")
     p_dstat.add_argument("--note", default=None, help="Note UUID, slug, or alias to transition (requires --status).")
@@ -5554,12 +7066,25 @@ def build_parser() -> argparse.ArgumentParser:
     p_rec.add_argument("--limit", type=int, default=3, help="Max shuffle candidates.")
     p_rec.add_argument("--mark-reviewed", default="", help="Mark note reviewed for today in shuffle mode.")
 
+    # 3b. recap
+    p_recap = sub.add_parser("recap", parents=[common], help="Spoiler-safe re-entry brief for Spark & Evening Whisper rituals.")
+    p_recap.add_argument("--book", default=None, help="Optional book UUID or title (defaults to most recently read active book).")
+    p_recap.add_argument("--today", default=None, help="Optional YYYY-MM-DD local date override.")
+
+    # 3c. salon
+    p_salon = sub.add_parser("salon", parents=[common], help="Sunday Commonplace Salon digest, cross-book collision, bridge candidates, and optional silent Doc sync.")
+    p_salon.add_argument("--days", type=int, default=7, help="Lookback window in days (default: 7).")
+    p_salon.add_argument("--today", default=None, help="Optional YYYY-MM-DD local date override.")
+    p_salon.add_argument("--apply-maintenance", action="store_true", help="Sync existing linked Companion Docs (capped by --max-doc-syncs; never creates new Docs).")
+    p_salon.add_argument("--max-doc-syncs", type=int, default=3, help="Max existing Companion Docs to sync when --apply-maintenance is passed (default: 3).")
+
     # 4. ocr-backfill
-    p_ocr = sub.add_parser("ocr-backfill", parents=[common], help="Lazy OCR quote backfill for image notes.")
+    p_ocr = sub.add_parser("ocr-backfill", parents=[common], help="Lazy OCR quote backfill for image notes (excludes archived & spoiler-shielded notes by default).")
     p_ocr.add_argument("--note", default="", help="Optional note UUID or slug filter.")
     p_ocr.add_argument("--ocr-text", default="", help="Direct OCR text to apply (requires --note).")
     p_ocr.add_argument("--ocr-map-json", default="", help="JSON mapping note/attachment keys to OCR text.")
     p_ocr.add_argument("--ocr-cmd", default="", help="External OCR command template with {path}.")
+    p_ocr.add_argument("--include-spoilers", "--reveal", dest="include_spoilers", action="store_true", help="Also allow OCR backfill on spoiler-shielded or sealed-prediction image notes.")
 
     # 5. export-md
     p_exp = sub.add_parser("export-md", parents=[common], help="Idempotent 1-way Markdown export.")
@@ -5598,14 +7123,18 @@ def main(argv: list[str] | None = None, runner: Callable[[list[str]], tuple[int,
         "book-add": cmd_book_add,
         "book-update": cmd_book_update,
         "book-capstone": cmd_book_capstone,
+        "book-question": cmd_book_question,
         "note-list": cmd_note_list,
         "note-get": cmd_note_get,
         "note-update": cmd_note_update,
+        "note-link": cmd_note_link,
         "delta-status": cmd_delta_status,
         "progress": cmd_progress,
         "capture": cmd_capture,
         "reflect": cmd_reflect,
         "recall": cmd_recall,
+        "recap": cmd_recap,
+        "salon": cmd_salon,
         "ocr-backfill": cmd_ocr_backfill,
         "export-md": cmd_export_md,
         "book-doc-sync": cmd_book_doc_sync,
