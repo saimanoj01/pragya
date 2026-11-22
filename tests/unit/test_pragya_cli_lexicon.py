@@ -614,6 +614,21 @@ class TestPragyaCliLexicon(unittest.TestCase):
         self.assertEqual(len(res_sp["words"][0]["encounters"]), 3)
         self.assertIn(add_exh["note"]["id"], [e["noteId"] for e in res_sp["words"][0]["encounters"]])
 
+    def test_load_sheet_ids_accepts_gsheets_cli_id_field(self):
+        backend = pragya_cli.GoogleWorkspaceBackend(spreadsheet_id="sid-test")
+        backend._run_json = lambda _cmd: [
+            {"id": 0, "title": "Books"},
+            {"id": 452503551, "title": "Notes"},
+            {"properties": {"sheetId": 774057865, "title": "Sessions"}},
+            {"sheetId": 1881551810, "title": "DeltaLogs"},
+        ]
+        titles = backend._load_sheet_ids("sid-test")
+        self.assertEqual(titles, {"Books", "Notes", "Sessions", "DeltaLogs"})
+        self.assertEqual(backend._sheet_id("Books"), 0)
+        self.assertEqual(backend._sheet_id("Notes"), 452503551)
+        self.assertEqual(backend._sheet_id("Sessions"), 774057865)
+        self.assertEqual(backend._sheet_id("DeltaLogs"), 1881551810)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -3009,8 +3009,8 @@ class GoogleWorkspaceBackend(WorkspaceBackend):
     def _load_sheet_ids(self, sid: str) -> set[str]:
         """Returns tab titles from list-sheets and REPLACES the tab -> sheetId cache.
 
-        Accepts both `{"properties": {"title", "sheetId"}}` and top-level
-        `{"title", "sheetId"}` entries; sheetId 0 is valid.
+        Accepts `{"properties": {"title", "sheetId"}}`, top-level `{"title", "sheetId"}`,
+        and the gsheets CLI's `{"id", "title"}` shape; numeric id 0 is valid.
         """
         sheets_raw = self._run_json(["gsheets", "readonly", "list-sheets", sid, "--json"])
         titles: set[str] = set()
@@ -3021,7 +3021,13 @@ class GoogleWorkspaceBackend(WorkspaceBackend):
             if not t:
                 continue
             titles.add(str(t))
-            raw_id = props.get("sheetId", entry.get("sheetId"))
+            raw_id = props.get("sheetId")
+            if raw_id is None:
+                raw_id = entry.get("sheetId")
+            if raw_id is None:
+                raw_id = props.get("id")
+            if raw_id is None:
+                raw_id = entry.get("id")
             if isinstance(raw_id, bool):
                 continue
             try:

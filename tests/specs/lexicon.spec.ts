@@ -1,8 +1,15 @@
 import { test, expect, type Page } from '@playwright/test';
 import path from 'node:path';
 
-const SCREENSHOT_DIR =
-  '/home/antigravity/.gemini/jetski/brain/v1/default/jetski_remote_agents_3p_devbox/a275b0d1-086a-445d-803f-706bd007fd52/scratch/lexicon_screens';
+const SCREENSHOT_DIR = process.env.LEXICON_SCREENSHOT_DIR;
+
+async function maybeScreenshot(page: Page, fileName: string, fullPage = false) {
+  if (!SCREENSHOT_DIR) return;
+  await page.screenshot({
+    path: path.join(SCREENSHOT_DIR, fileName),
+    fullPage,
+  });
+}
 
 async function enterDemoMode(page: Page) {
   await page.goto('/');
@@ -40,9 +47,7 @@ test.describe('Lexicon feature — Demo Mode E2E & visual verification', () => {
       .getByTestId('capture-word-example-input')
       .fill('An engineering team seeks equilibrium between shipping speed and reliability.');
 
-    await page.screenshot({
-      path: path.join(SCREENSHOT_DIR, 'quick-capture-word.png'),
-    });
+    await maybeScreenshot(page, 'quick-capture-word.png');
 
     await page.getByTestId('capture-submit-btn').click();
     await expect(page.getByTestId('capture-word-input')).toHaveCount(0);
@@ -63,10 +68,7 @@ test.describe('Lexicon feature — Demo Mode E2E & visual verification', () => {
     await expect(shieldedCard).toContainText('Shielded word · Exhalation: Stories · p. 284');
     await expect(shieldedCard).not.toContainText('Palimpsest');
 
-    await page.screenshot({
-      path: path.join(SCREENSHOT_DIR, 'lexicon-desktop.png'),
-      fullPage: true,
-    });
+    await maybeScreenshot(page, 'lexicon-desktop.png', true);
 
     // 4. Click encounter book link -> lands on BookDetailView with ?note= highlighted card & Words met strip
     const bookLink = eqCard.locator('[data-testid^="lexicon-encounter-book-"]').first();
@@ -87,10 +89,7 @@ test.describe('Lexicon feature — Demo Mode E2E & visual verification', () => {
     await expect(highlightedCard).toContainText('Equilibrium');
 
     await wordsStrip.scrollIntoViewIfNeeded();
-    await page.screenshot({
-      path: path.join(SCREENSHOT_DIR, 'book-words-strip.png'),
-      fullPage: true,
-    });
+    await maybeScreenshot(page, 'book-words-strip.png', true);
 
     // 5. Visit #/practice and verify Lexicon Stroll section + tap reveal + screenshot
     await page.getByTestId('nav-item-practice').click();
@@ -103,10 +102,7 @@ test.describe('Lexicon feature — Demo Mode E2E & visual verification', () => {
     await revealBtn.click();
 
     await strollSection.scrollIntoViewIfNeeded();
-    await page.screenshot({
-      path: path.join(SCREENSHOT_DIR, 'practice-lexicon-stroll.png'),
-      fullPage: true,
-    });
+    await maybeScreenshot(page, 'practice-lexicon-stroll.png', true);
 
     // 6. Switch to mobile viewport (390x844) -> verify BottomNav keeps 5 slots & Lexicon mobile layout
     await page.setViewportSize({ width: 390, height: 844 });
@@ -122,9 +118,6 @@ test.describe('Lexicon feature — Demo Mode E2E & visual verification', () => {
     await expect(page.getByTestId('lexicon-card-oscillation')).toBeVisible();
     await expect(page.getByTestId('lexicon-card-shielded-note-word-palimpsest')).toBeVisible();
 
-    await page.screenshot({
-      path: path.join(SCREENSHOT_DIR, 'lexicon-mobile.png'),
-      fullPage: true,
-    });
+    await maybeScreenshot(page, 'lexicon-mobile.png', true);
   });
 });
