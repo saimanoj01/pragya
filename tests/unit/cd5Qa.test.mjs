@@ -259,9 +259,12 @@ test('CD5 QA static invariants: conflict guards, 7 WikilinkTextarea sites, and 4
   const read = rel => fs.readFileSync(path.join(repoRoot, rel), 'utf8');
 
   // Conflict-guard invariants across all 4 note/book editors touched by Batch 5
-  for (const [rel, fnName, ownedConst] of [
-    ['src/components/modals/EditNoteModal.tsx', 'updateNote', 'NOTE_CHAPTER_EDITOR_OWNED_META_KEYS'],
-    ['src/components/modals/EditNoteModal.tsx', 'updateNote', 'NOTE_LEXICON_OWNED_META_KEYS'],
+  for (const [rel, fnName, ownedExpr] of [
+    [
+      'src/components/modals/EditNoteModal.tsx',
+      'updateNote',
+      'wordNote ? NOTE_LEXICON_OWNED_META_KEYS : NOTE_CHAPTER_EDITOR_OWNED_META_KEYS',
+    ],
     ['src/components/modals/DeepenNoteModal.tsx', 'updateNote', 'NOTE_CHAPTER_EDITOR_OWNED_META_KEYS'],
     ['src/components/modals/CapstoneModal.tsx', 'updateBook', 'CAPSTONE_OWNED_META_KEYS'],
     ['src/components/common/BookChapterLine.tsx', 'updateBook', 'BOOK_DETAIL_CHAPTER_OWNED_META_KEYS'],
@@ -269,7 +272,7 @@ test('CD5 QA static invariants: conflict guards, 7 WikilinkTextarea sites, and 4
     const src = read(rel);
     assert.ok(src.includes(fnName), `${rel} calls ${fnName}`);
     assert.ok(src.includes('expectedBaseUpdatedAt:'), `${rel} passes expectedBaseUpdatedAt`);
-    assert.ok(src.includes(ownedConst), `${rel} passes ${ownedConst}`);
+    assert.ok(src.includes(`ownedMetaKeys: ${ownedExpr}`), `${rel} passes ${ownedExpr}`);
     assert.ok(src.includes('baseMeta:'), `${rel} passes baseMeta`);
   }
 

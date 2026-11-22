@@ -454,19 +454,18 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
           </h2>
           {hasBooks && !initialSlug && (
             <div
-              role="tablist"
+              role="group"
               aria-label="Capture mode"
-              className="ml-2 inline-flex items-center p-0.5 rounded-[9px] bg-surface2 border border-border"
+              className="ml-2 inline-flex items-center p-0.5 rounded-[9px] bg-surface2 border border-border gap-0.5"
             >
               <button
                 type="button"
-                role="tab"
-                aria-selected={captureMode === 'note'}
+                aria-pressed={captureMode === 'note'}
                 data-testid="capture-mode-note"
                 onClick={() => setCaptureMode('note')}
-                className={`h-7 px-2.5 rounded-[7px] text-label font-medium transition-colors ${
+                className={`h-7 px-2.5 rounded-[7px] text-label font-semibold transition-colors ${
                   captureMode === 'note'
-                    ? 'bg-card text-foreground shadow-sm border border-border/60'
+                    ? 'bg-primary text-primary-foreground shadow-sm'
                     : 'text-muted-foreground hover:text-foreground'
                 }`}
               >
@@ -474,13 +473,12 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
               </button>
               <button
                 type="button"
-                role="tab"
-                aria-selected={captureMode === 'word'}
+                aria-pressed={captureMode === 'word'}
                 data-testid="capture-mode-word"
                 onClick={() => setCaptureMode('word')}
-                className={`h-7 px-2.5 rounded-[7px] text-label font-medium transition-colors ${
+                className={`h-7 px-2.5 rounded-[7px] text-label font-semibold transition-colors ${
                   captureMode === 'word'
-                    ? 'bg-card text-foreground shadow-sm border border-border/60'
+                    ? 'bg-primary text-primary-foreground shadow-sm'
                     : 'text-muted-foreground hover:text-foreground'
                 }`}
               >

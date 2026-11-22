@@ -21,7 +21,10 @@ test.describe('Lexicon feature — Demo Mode E2E & visual verification', () => {
     // 2. Open Quick Capture -> switch to Word mode -> save a word in Thinking in Systems
     await page.getByTestId('sidebar-capture-btn').click();
     await expect(page.getByTestId('quick-capture-modal')).toBeVisible();
+    await expect(page.getByTestId('capture-mode-note')).toHaveAttribute('aria-pressed', 'true');
     await page.getByTestId('capture-mode-word').click();
+    await expect(page.getByTestId('capture-mode-word')).toHaveAttribute('aria-pressed', 'true');
+    await expect(page.getByTestId('capture-mode-note')).toHaveAttribute('aria-pressed', 'false');
     await expect(page.getByTestId('capture-word-input')).toBeVisible();
 
     await page.getByTestId('capture-book-select').selectOption('book-systems');

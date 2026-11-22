@@ -116,37 +116,40 @@ export const WordCaptureFields: React.FC<WordCaptureFieldsProps> = ({
         />
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        <div className="space-y-1.5">
-          <label htmlFor={meaningFieldId} className={FIELD_LABEL}>
-            Meaning (Optional)
-          </label>
-          <input
-            id={meaningFieldId}
-            type="text"
-            maxLength={400}
-            data-testid="capture-word-meaning-input"
-            value={meaning}
-            onChange={e => onMeaningChange(e.target.value)}
-            placeholder="Short sense in your words — or enrich later"
-            className={INPUT}
-          />
-        </div>
-        <div className="space-y-1.5">
-          <label htmlFor={exampleFieldId} className={FIELD_LABEL}>
-            My Example (Optional)
-          </label>
-          <input
-            id={exampleFieldId}
-            type="text"
-            maxLength={400}
-            data-testid="capture-word-example-input"
-            value={example}
-            onChange={e => onExampleChange(e.target.value)}
-            placeholder="One sentence using it in your life"
-            className={INPUT}
-          />
-        </div>
+      <div className="space-y-1.5">
+        <label htmlFor={meaningFieldId} className={FIELD_LABEL}>
+          Meaning (Optional)
+        </label>
+        <textarea
+          id={meaningFieldId}
+          rows={2}
+          maxLength={1200}
+          data-testid="capture-word-meaning-input"
+          value={meaning}
+          onChange={e => {
+            onMeaningChange(e.target.value);
+            e.currentTarget.style.height = 'auto';
+            e.currentTarget.style.height = `${e.currentTarget.scrollHeight}px`;
+          }}
+          placeholder="Short sense in your words — or enrich later"
+          className="w-full p-3 rounded-[10px] bg-surface2/50 border border-input text-base sm:text-body text-foreground placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-ring/40 resize-y"
+        />
+      </div>
+
+      <div className="space-y-1.5">
+        <label htmlFor={exampleFieldId} className={FIELD_LABEL}>
+          My Example (Optional)
+        </label>
+        <input
+          id={exampleFieldId}
+          type="text"
+          maxLength={400}
+          data-testid="capture-word-example-input"
+          value={example}
+          onChange={e => onExampleChange(e.target.value)}
+          placeholder="One sentence using it in your life"
+          className={INPUT}
+        />
       </div>
 
       <div className="space-y-1.5">
