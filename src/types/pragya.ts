@@ -131,8 +131,8 @@ export interface NoteMetaJson {
   bridgeNotes?: Record<string, string>;
   /** v2 Lexicon: marks a Note row as a contextual vocabulary entry (`'word'`). */
   entryKind?: 'word';
-  /** v2 Lexicon: structured word metadata when `entryKind === 'word'`. */
-  lexicon?: WordLexicon;
+  /** v2 Lexicon: structured word metadata when `entryKind === 'word'` (read via `getWordLexicon()`). */
+  lexicon?: unknown;
   /** Unknown keys (e.g. written by the CLI/skill) are preserved verbatim on round-trip. */
   [extraKey: string]: unknown;
 }

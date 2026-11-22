@@ -129,6 +129,35 @@ export function getWordLexicon(note: Pick<Note, 'meta'> | null | undefined): Wor
 }
 
 /**
+ * Syncs an edited note title back into `meta.lexicon.word` for word entries.
+ * Recomputes `lemma` only when it previously equaled `normalizeLemma(oldWord)`, preserving
+ * intentional base-form lemmas (e.g. inflected surface word -> base lemma).
+ */
+export function syncWordTitleOnLexiconEdit(
+  note: Pick<Note, 'meta'>,
+  nextTitleRaw: string
+): WordLexicon | null {
+  if (!isWordNote(note)) return null;
+  const nextWord = nextTitleRaw.trim();
+  if (!nextWord) return null;
+  const existing = getWordLexicon(note);
+  const rawLex = isPlainObject(note.meta?.lexicon) ? note.meta.lexicon : undefined;
+  const rawWord = typeof rawLex?.word === 'string' ? rawLex.word.trim() : '';
+  const prevWord = existing?.word ?? rawWord;
+  const prevLemma =
+    existing?.lemma ?? (typeof rawLex?.lemma === 'string' ? normalizeLemma(rawLex.lemma) : '');
+  const nextLemma =
+    !prevWord || !prevLemma || prevLemma === normalizeLemma(prevWord)
+      ? normalizeLemma(nextWord)
+      : prevLemma;
+  return normalizeWordLexicon({
+    ...(existing ?? { word: nextWord }),
+    word: nextWord,
+    lemma: nextLemma,
+  });
+}
+
+/**
  * Shared validity invariant: normal notes need takeaway, quote, or attachment;
  * word notes (`entryKind === 'word'`) are valid with `meta.lexicon.word` alone.
  */
@@ -238,10 +267,10 @@ export function groupWordsByLemma(
       updatedAt: note.updatedAt,
     };
 
-    // Keep unshielded or multi-encounter visible lemmas grouped by lemma.
-    // Redacted encounters still join their lemma if the user already met that lemma elsewhere;
-    // if ALL encounters of a lemma are redacted, we collapse them safely with empty text.
-    const bucketKey = lex.lemma;
+    // Keep unshielded encounters grouped by lowercase lemma, but isolate every redacted
+    // encounter under its own unique bucket so a shielded future book encounter can never
+    // leak by joining an already-visible lemma card (or another hidden word's card).
+    const bucketKey = redact ? `shielded:${note.id}` : lex.lemma;
     const existing = buckets.get(bucketKey);
     if (existing) {
       existing.encounters.push(encounter);

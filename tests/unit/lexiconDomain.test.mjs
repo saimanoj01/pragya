@@ -537,3 +537,171 @@ test('Lexicon demoSeed & shortcuts: seeded words exercise unshielded, incomplete
   assert.ok(goRow);
   assert.equal(shortcutKeysText(goRow.keys, 'Linux'), 'G then S / N / P / W');
 });
+
+const noteVisMod = await load('src/utils/noteVisibility.ts');
+const { buildNoteSearchHaystack } = noteVisMod;
+const { syncWordTitleOnLexiconEdit } = lexiconMod;
+
+test('groupWordsByLemma isolates shielded encounters per note ID (no spoiler-by-association leak)', () => {
+  const nonfiction = makeBook({ id: 'b-sys', title: 'Thinking in Systems', kind: 'nonfiction', currentPos: 150 });
+  const fiction = makeBook({ id: 'b-exh', title: 'Exhalation', kind: 'fiction', currentPos: 100 });
+  const notes = [
+    makeWordNote(
+      { word: 'pandemonium', definition: 'Wild uproar.' },
+      {
+        id: 'w-sys-pandemonium',
+        bookId: 'b-sys',
+        pos: 40,
+        createdAt: '2026-10-10T10:00:00Z',
+      }
+    ),
+    makeWordNote(
+      { word: 'Pandemonium', definition: 'Future fiction encounter.' },
+      {
+        id: 'w-exh-pandemonium',
+        bookId: 'b-exh',
+        pos: 300,
+        createdAt: '2026-10-11T10:00:00Z',
+      }
+    ),
+    makeWordNote(
+      { word: 'ephemeral' },
+      {
+        id: 'w-exh-future-b',
+        bookId: 'b-exh',
+        pos: 310,
+        createdAt: '2026-10-12T10:00:00Z',
+      }
+    ),
+    makeWordNote(
+      { word: 'pandemonium' },
+      {
+        id: 'w-exh-future-pandemonium-2',
+        bookId: 'b-exh',
+        pos: 320,
+        createdAt: '2026-10-13T10:00:00Z',
+      }
+    ),
+  ];
+
+  const groups = groupWordsByLemma(notes, [nonfiction, fiction]);
+  assert.equal(groups.length, 4);
+
+  const visiblePandemonium = groups.find(g => !g.allShielded && g.lemma === 'pandemonium');
+  assert.ok(visiblePandemonium);
+  // Must contain ONLY the nonfiction encounter, never the shielded fiction encounter
+  assert.equal(visiblePandemonium.encounters.length, 1);
+  assert.equal(visiblePandemonium.encounters[0].note.id, 'w-sys-pandemonium');
+
+  // Every redacted encounter must sit on its own anonymous standalone card
+  const shielded = groups.filter(g => g.allShielded);
+  assert.equal(shielded.length, 3);
+  for (const s of shielded) {
+    assert.equal(s.lemma, '');
+    assert.equal(s.word, '');
+    assert.equal(s.encounters.length, 1);
+    assert.equal(s.encounters[0].shielded, true);
+    assert.equal(s.encounters[0].word, '');
+  }
+
+  // Querying "pandemonium" matches only the visible group, never hidden cards
+  const queried = groupWordsByLemma(notes, [nonfiction, fiction], { query: 'pandemonium' });
+  assert.equal(queried.length, 1);
+  assert.equal(queried[0].encounters[0].note.id, 'w-sys-pandemonium');
+
+  // Revealing w-exh-pandemonium merges it back into the visible pandemonium lemma group
+  const revealed = groupWordsByLemma(notes, [nonfiction, fiction], {
+    revealedNoteIds: new Set(['w-exh-pandemonium']),
+  });
+  const merged = revealed.find(g => g.lemma === 'pandemonium');
+  assert.ok(merged);
+  assert.deepEqual(
+    merged.encounters.map(e => e.note.id),
+    ['w-exh-pandemonium', 'w-sys-pandemonium']
+  );
+  assert.equal(revealed.filter(g => g.allShielded).length, 2);
+});
+
+test('Malformed meta.lexicon never crashes getWordLexicon, buildNoteSearchHaystack, or groupWordsByLemma', () => {
+  const book = makeBook({ id: 'b-sys', currentPos: 150 });
+  const malformedCases = [
+    null,
+    'not-an-object',
+    42,
+    [],
+    {},
+    { word: 123, definition: { nested: true } },
+    { word: '   ' },
+  ];
+
+  const badNotes = malformedCases.map((badLex, idx) =>
+    makeNote({
+      id: `bad-${idx}`,
+      bookId: book.id,
+      pos: 10 + idx,
+      meta: { entryKind: 'word', lexicon: badLex },
+    })
+  );
+
+  for (const n of badNotes) {
+    assert.equal(getWordLexicon(n), null);
+    const haystack = buildNoteSearchHaystack(n, book);
+    assert.equal(typeof haystack, 'string');
+    assert.ok(!haystack.includes('[object Object]'));
+  }
+
+  const mixedNotes = [
+    ...badNotes,
+    makeNote({
+      id: 'bad-optional-types',
+      bookId: book.id,
+      pos: 40,
+      meta: {
+        entryKind: 'word',
+        lexicon: {
+          word: 'Resilience',
+          definition: { invalid: true },
+          etymology: 99,
+        },
+      },
+    }),
+  ];
+  const groups = groupWordsByLemma(mixedNotes, [book]);
+  assert.equal(groups.length, 1);
+  assert.equal(groups[0].word, 'Resilience');
+  assert.equal(groups[0].definition, undefined);
+});
+
+test('syncWordTitleOnLexiconEdit syncs title -> lexicon.word and preserves custom base lemmas', () => {
+  const autoLemmaNote = makeWordNote(
+    {
+      word: 'Oscillation',
+      lemma: 'oscillation',
+      definition: 'Back-and-forth swing.',
+      pronunciation: '/ˌɒsɪˈleɪʃən/',
+      partOfSpeech: 'noun',
+    },
+    { id: 'w-auto' }
+  );
+  const syncedAuto = syncWordTitleOnLexiconEdit(autoLemmaNote, 'Oscillations');
+  assert.equal(syncedAuto?.word, 'Oscillations');
+  assert.equal(syncedAuto?.lemma, 'oscillations');
+  assert.equal(syncedAuto?.definition, 'Back-and-forth swing.');
+  assert.equal(syncedAuto?.pronunciation, '/ˌɒsɪˈleɪʃən/');
+  assert.equal(syncedAuto?.partOfSpeech, 'noun');
+
+  const customLemmaNote = makeWordNote(
+    {
+      word: 'oscillating',
+      lemma: 'oscillate',
+      definition: 'Swinging periodically.',
+    },
+    { id: 'w-custom' }
+  );
+  const syncedCustom = syncWordTitleOnLexiconEdit(customLemmaNote, 'oscillated');
+  assert.equal(syncedCustom?.word, 'oscillated');
+  assert.equal(syncedCustom?.lemma, 'oscillate');
+  assert.equal(syncedCustom?.definition, 'Swinging periodically.');
+
+  assert.equal(syncWordTitleOnLexiconEdit(autoLemmaNote, '   '), null);
+});

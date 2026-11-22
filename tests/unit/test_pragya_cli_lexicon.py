@@ -498,6 +498,122 @@ class TestPragyaCliLexicon(unittest.TestCase):
             self.assertEqual(py_groups[0]["lemma"], ts_out["lemma"])
             self.assertEqual(py_groups[0]["word"], ts_out["word"])
 
+    def test_word_list_no_spoiler_by_association_leak(self) -> None:
+        # Visible encounter in nonfiction at bookmark (b-sys is at pos 142)
+        rc1, _, _ = _run_cli(
+            [
+                "--state-file",
+                str(self.state_path),
+                "word-add",
+                "--book",
+                "b-sys",
+                "--pos",
+                "60",
+                "--word",
+                "pandemonium",
+                "--definition",
+                "Wild uproar.",
+            ]
+        )
+        self.assertEqual(rc1, 0)
+
+        # Fiction encounter at p. 300 while b-exh is temporarily at p. 300, then force bookmark back to p. 100
+        _run_cli(
+            [
+                "--state-file",
+                str(self.state_path),
+                "book-update",
+                "--book",
+                "b-exh",
+                "--pos",
+                "300",
+            ]
+        )
+        rc2, add_exh, _ = _run_cli(
+            [
+                "--state-file",
+                str(self.state_path),
+                "word-add",
+                "--book",
+                "b-exh",
+                "--pos",
+                "300",
+                "--word",
+                "Pandemonium",
+                "--quote",
+                "Pandemonium broke across the archive.",
+            ]
+        )
+        self.assertEqual(rc2, 0)
+        rc3, _, _ = _run_cli(
+            [
+                "--state-file",
+                str(self.state_path),
+                "word-add",
+                "--book",
+                "b-exh",
+                "--pos",
+                "315",
+                "--word",
+                "Pandemonium",
+            ]
+        )
+        self.assertEqual(rc3, 0)
+        rc_rewind, _, _ = _run_cli(
+            [
+                "--state-file",
+                str(self.state_path),
+                "book-update",
+                "--book",
+                "b-exh",
+                "--pos",
+                "100",
+                "--force-pos",
+            ]
+        )
+        self.assertEqual(rc_rewind, 0)
+
+        # Default word-list must NOT nest shielded fiction encounters under visible pandemonium card,
+        # nor group the two shielded fiction encounters together.
+        rc_list, res, _ = _run_cli(["--state-file", str(self.state_path), "word-list"])
+        self.assertEqual(rc_list, 0)
+        self.assertEqual(res["count"], 3)
+        self.assertEqual(res["shieldedCount"], 2)
+
+        visible_cards = [g for g in res["words"] if not g["allShielded"]]
+        shielded_cards = [g for g in res["words"] if g["allShielded"]]
+        self.assertEqual(len(visible_cards), 1)
+        self.assertEqual(len(shielded_cards), 2)
+        self.assertEqual(visible_cards[0]["lemma"], "pandemonium")
+        self.assertEqual(len(visible_cards[0]["encounters"]), 1)
+        self.assertEqual(visible_cards[0]["encounters"][0]["bookId"], "b-sys")
+
+        for card in shielded_cards:
+            self.assertEqual(card["lemma"], "")
+            self.assertEqual(card["word"], "")
+            self.assertEqual(len(card["encounters"]), 1)
+            self.assertTrue(card["encounters"][0]["shielded"])
+            self.assertNotIn("quote", card["encounters"][0])
+            self.assertNotIn("lexicon", card["encounters"][0])
+
+        # Querying the lemma matches only the visible encounter
+        rc_q, res_q, _ = _run_cli(
+            ["--state-file", str(self.state_path), "word-list", "--query", "pandemonium"]
+        )
+        self.assertEqual(rc_q, 0)
+        self.assertEqual(res_q["count"], 1)
+        self.assertEqual(len(res_q["words"][0]["encounters"]), 1)
+        self.assertEqual(res_q["words"][0]["encounters"][0]["bookId"], "b-sys")
+
+        # --include-spoilers merges all 3 encounters back under pandemonium cleanly
+        rc_sp, res_sp, _ = _run_cli(
+            ["--state-file", str(self.state_path), "word-list", "--include-spoilers"]
+        )
+        self.assertEqual(rc_sp, 0)
+        self.assertEqual(res_sp["count"], 1)
+        self.assertEqual(len(res_sp["words"][0]["encounters"]), 3)
+        self.assertIn(add_exh["note"]["id"], [e["noteId"] for e in res_sp["words"][0]["encounters"]])
+
 
 if __name__ == "__main__":
     unittest.main()

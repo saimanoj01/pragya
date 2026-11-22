@@ -772,10 +772,15 @@ def group_words_by_lemma(
                 "createdAt": str(n.get("createdAt") or ""),
                 "updatedAt": str(n.get("updatedAt") or ""),
             }
-        buckets.setdefault(lex["lemma"], []).append(enc)
+        # Keep unshielded encounters grouped by lemma, but isolate every redacted encounter
+        # under its own unique key so hidden future encounters never join a visible lemma
+        # card (or another hidden word's card).
+        bucket_key = f"shielded:{n['id']}" if redact else lex["lemma"]
+        buckets.setdefault(bucket_key, []).append(enc)
 
     groups: list[dict[str, Any]] = []
-    for lemma, encounters in buckets.items():
+    for bucket_key, encounters in buckets.items():
+        lemma = bucket_key
         encounters.sort(key=lambda e: e["createdAt"], reverse=True)
         visible = [e for e in encounters if not e["shielded"]]
         all_shielded = len(visible) == 0

@@ -14,6 +14,7 @@ import {
 import { focusCard, focusedCardIndex } from '../../utils/cardFocus';
 import { computeChapterDividers } from '../../utils/chapterFormat';
 import { hasOpenDialog } from '../../utils/dialogOverlay';
+import { isWordNote } from '../../utils/lexicon';
 import { isSafeHttpUrl, navigateTo } from '../../utils/navigation';
 import { noteHref } from '../../utils/noteVisibility';
 import {
@@ -63,9 +64,14 @@ export const BookDetailView: React.FC<BookDetailViewProps> = ({
   const bookNotes = useMemo(
     () =>
       notes
-        .filter(n => n.bookId === bookId && !isArchived(n))
+        .filter(
+          n =>
+            n.bookId === bookId &&
+            !isArchived(n) &&
+            (!isWordNote(n) || (highlightNoteId && (n.id === highlightNoteId || n.slug === highlightNoteId)))
+        )
         .sort((a, b) => a.pos - b.pos || a.createdAt.localeCompare(b.createdAt)),
-    [bookId, notes]
+    [bookId, highlightNoteId, notes]
   );
 
   const [revealedSlugs, setRevealedSlugs] = useState<Set<string>>(new Set());

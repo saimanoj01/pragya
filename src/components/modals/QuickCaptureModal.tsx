@@ -215,9 +215,10 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
 
   const resetEmptyFields = (nextTitle = '', nextMode: 'note' | 'word' = initialMode) => {
     const chosenBook = books.find(b => b.id === defaultBookId);
-    setCaptureMode(nextMode);
-    setBookId(defaultBookId);
-    setPos(chosenBook ? String(chosenBook.currentPos) : '0');
+    const nextPos = chosenBook ? String(chosenBook.currentPos) : '0';
+    setCaptureMode(prev => (prev === nextMode ? prev : nextMode));
+    setBookId(prev => (prev === defaultBookId ? prev : defaultBookId));
+    setPos(prev => (prev === nextPos ? prev : nextPos));
     setQuote('');
     setTakeaway('');
     setTagsRaw('');

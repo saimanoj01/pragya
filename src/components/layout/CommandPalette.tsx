@@ -18,7 +18,7 @@ import { dialogClosedByValue } from '../../utils/dialogOverlay';
 import { navigateTo } from '../../utils/navigation';
 import { isNoteSpoiler } from '../../utils/spoilerMath';
 import { isArchived } from '../../utils/archive';
-import { isWordNote } from '../../utils/lexicon';
+import { getWordLexicon } from '../../utils/lexicon';
 import { buildNoteSearchHaystack, noteHref, shieldedNoteLabel } from '../../utils/noteVisibility';
 import { hasFinePointer } from '../../utils/keyboardShortcuts';
 
@@ -222,7 +222,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
       const spoiler = isNoteSpoiler(note, book);
       // B2.2 / decisions.md #2: a shielded note shows only its position; title, slug and
       // content never reach the palette (title, keywords or the DOM test id).
-      const wordEntry = !spoiler && isWordNote(note) ? note.meta?.lexicon : undefined;
+      const wordEntry = !spoiler ? getWordLexicon(note) : null;
       const title = spoiler
         ? shieldedNoteLabel(note, book)
         : String(wordEntry?.word || note.meta?.title || note.slug || '');

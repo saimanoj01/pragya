@@ -11,7 +11,11 @@ import { CHAPTER_MAX_LENGTH, withChapterKey } from '../../utils/chapterFormat';
 import { formatWhenDoDisplay, validateDeltaForSave } from '../../utils/deltaFormat';
 import { getEditNoteDraftKey, type EditNoteDraft } from '../../utils/draftStorage';
 import { isSubmitShortcut } from '../../utils/keyboard';
-import { NOTE_CHAPTER_EDITOR_OWNED_META_KEYS } from '../../utils/metaCodecs';
+import { getWordLexicon, isWordNote, syncWordTitleOnLexiconEdit } from '../../utils/lexicon';
+import {
+  NOTE_CHAPTER_EDITOR_OWNED_META_KEYS,
+  NOTE_LEXICON_OWNED_META_KEYS,
+} from '../../utils/metaCodecs';
 import { navigateTo } from '../../utils/navigation';
 import { clampNotePos } from '../../utils/positionClamp';
 import { parseTagsCsv, serializeTagsCsv } from '../../utils/sheetCodecs';
@@ -60,7 +64,7 @@ interface EditNoteCanonical {
 function buildCanonical(note: Note): EditNoteCanonical {
   const formattedDelta = formatWhenDoDisplay(note.deltaTrigger, note.deltaAction);
   return {
-    title: note.meta?.title || '',
+    title: note.meta?.title || getWordLexicon(note)?.word || '',
     slug: note.slug,
     pos: String(note.pos),
     status: note.status,
@@ -315,6 +319,13 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
       return;
     }
 
+    const wordNote = isWordNote(note);
+    if (wordNote && !title.trim()) {
+      showToast('Word cannot be empty.', 'error');
+      return;
+    }
+    const updatedLexicon = wordNote ? syncWordTitleOnLexiconEdit(note, title) : null;
+
     const posChanged = Number(pos) !== Number(note.pos);
     const parsedPos = posChanged && book ? clampNotePos(pos, book) : Math.max(0, Number(pos) || 0);
     const normalizedPos = book
@@ -355,11 +366,12 @@ export const EditNoteModal: React.FC<EditNoteModalProps> = ({
             ...(title.trim() ? { title: title.trim() } : { title: undefined }),
             attachments: saveEditedAttachments(openedAttachmentsRef.current, attachments),
             ...(book?.kind === 'fiction' ? { isPrediction } : {}),
+            ...(updatedLexicon ? { entryKind: 'word' as const, lexicon: updatedLexicon } : {}),
           },
         },
         {
           expectedBaseUpdatedAt: baseUpdatedAt || note.updatedAt,
-          ownedMetaKeys: NOTE_CHAPTER_EDITOR_OWNED_META_KEYS,
+          ownedMetaKeys: wordNote ? NOTE_LEXICON_OWNED_META_KEYS : NOTE_CHAPTER_EDITOR_OWNED_META_KEYS,
           baseMeta: note.meta,
         }
       );

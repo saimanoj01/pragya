@@ -120,7 +120,7 @@ function PragyaShell() {
     setCaptureBookId(bookId);
     setCaptureBookSource('route');
     setCapturePrefill(null);
-    setCaptureInitialMode(mode);
+    setCaptureInitialMode(mode === 'word' ? 'word' : 'note');
     setShowCaptureModal(true);
   }
 
@@ -208,7 +208,7 @@ function PragyaShell() {
               isOfflineReadOnly={isOfflineReadOnly}
               theme={theme}
               toggleTheme={toggleTheme}
-              onOpenCapture={openGlobalCapture}
+              onOpenCapture={() => openGlobalCapture('note')}
               onOpenCommandPalette={() => setShowCommandPalette(true)}
               onOpenKeyboardHelp={() => setShowKeyboardHelp(true)}
               logout={requestLogout}
@@ -254,7 +254,7 @@ function PragyaShell() {
             isOfflineReadOnly={!isMockMode && isOfflineReadOnly}
             theme={theme}
             toggleTheme={toggleTheme}
-            onOpenCapture={openGlobalCapture}
+            onOpenCapture={() => openGlobalCapture('note')}
             onOpenCommandPalette={() => setShowCommandPalette(true)}
             onSyncNow={() => void syncNow(true)}
             onLogout={requestLogout}
