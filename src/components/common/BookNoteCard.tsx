@@ -20,6 +20,7 @@ export interface BookNoteCardProps {
   book: Book;
   idx: number;
   isFocused: boolean;
+  isHighlighted?: boolean;
   spoiler: boolean;
   revealed: boolean;
   divider?: ChapterDivider;
@@ -80,6 +81,7 @@ export const BookNoteCard: React.FC<BookNoteCardProps> = ({
   book,
   idx,
   isFocused,
+  isHighlighted = false,
   spoiler,
   revealed,
   divider,
@@ -104,7 +106,10 @@ export const BookNoteCard: React.FC<BookNoteCardProps> = ({
         </h3>
       )}
       <article
+        id={`book-note-${note.id}`}
         data-testid={`note-card-${note.slug}`}
+        data-note-id={note.id}
+        data-highlighted={isHighlighted ? 'true' : undefined}
         data-focused={isFocused ? 'true' : undefined}
         data-jk-focused={isFocused ? 'true' : undefined}
         data-jk-card={idx}
@@ -117,7 +122,11 @@ export const BookNoteCard: React.FC<BookNoteCardProps> = ({
         })}
         onFocus={() => onFocusCard(idx)}
         className={`bg-card border rounded-[14px] p-4 space-y-2.5 transition-colors focus:outline-none focus-visible:border-foreground/40 focus-visible:ring-1 focus-visible:ring-ring/40 ${
-          isFocused ? 'border-foreground/40 ring-1 ring-ring/40' : 'border-border'
+          isHighlighted
+            ? 'border-primary ring-2 ring-primary/40 bg-primary/[0.04]'
+            : isFocused
+              ? 'border-foreground/40 ring-1 ring-ring/40'
+              : 'border-border'
         }`}
       >
         <div className="flex flex-wrap items-center justify-between gap-2 text-label text-muted-foreground">

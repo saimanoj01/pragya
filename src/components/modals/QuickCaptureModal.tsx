@@ -2,6 +2,7 @@ import React, { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { BookOpen, Plus, X } from 'lucide-react';
 import type { Attachment } from '../../types/pragya';
 import { usePragya } from '../../context/PragyaContext';
+import { useCopyPrompt } from '../../hooks/useCopyPrompt';
 import { useKindlePaste } from '../../hooks/useKindlePaste';
 import { useModalDraft } from '../../hooks/useModalDraft';
 import { PartialBatchCommitError } from '../../services/storage';
@@ -18,14 +19,17 @@ import {
   type CaptureDraft,
 } from '../../utils/draftStorage';
 import { isSubmitShortcut, submitShortcutModifierLabel } from '../../utils/keyboard';
+import { buildWordLookupPrompt } from '../../utils/lexicon';
 import { captureDraftRestoredMessage } from '../../utils/modalDraft';
 import { navigateTo } from '../../utils/navigation';
 import { parseTagsCsv } from '../../utils/sheetCodecs';
+import { formatPosDisplay } from '../../utils/spoilerMath';
 import { showToast } from '../../utils/toast';
 import { AttachmentManager } from '../common/AttachmentManager';
 import { DraftRestoredBanner } from '../common/DraftRestoredBanner';
 import { KindlePasteChips } from '../common/KindlePasteChips';
 import { Modal } from '../common/Modal';
+import { PromptFallbackModal } from '../common/PromptFallbackModal';
 import {
   BTN_GHOST_LG,
   FIELD_LABEL,
@@ -35,6 +39,7 @@ import {
   MODAL_CLOSE_BTN,
 } from '../common/uiClasses';
 import { WikilinkTextarea } from '../common/WikilinkTextarea';
+import { WordCaptureFields } from '../common/WordCaptureFields';
 
 export interface QuickCaptureModalProps {
   isOpen: boolean;
@@ -48,6 +53,8 @@ export interface QuickCaptureModalProps {
   /** CD C3.3: capture for a missing `[[slug]]` — title pre-filled, the note takes this slug. */
   initialTitle?: string;
   initialSlug?: string;
+  /** v2 Lexicon: optional initial capture tab (`'note'` default or `'word'`). */
+  initialMode?: 'note' | 'word';
   onClose: () => void;
   onOpenAddBook?: () => void;
 }
@@ -58,6 +65,7 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
   initialBookSource = 'explicit',
   initialTitle,
   initialSlug,
+  initialMode = 'note',
   onClose,
   onOpenAddBook,
 }) => {
@@ -87,6 +95,7 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
     return books.find(b => b.status === 'reading')?.id || books[0]?.id || '';
   }, [books, initialBookId]);
 
+  const [captureMode, setCaptureMode] = useState<'note' | 'word'>(initialMode);
   const [bookId, setBookId] = useState(defaultBookId);
   const [pos, setPos] = useState('0');
   const [quote, setQuote] = useState('');
@@ -100,10 +109,21 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
   const [uploadingImage, setUploadingImage] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [title, setTitle] = useState('');
+  const [word, setWord] = useState('');
+  const [meaning, setMeaning] = useState('');
+  const [example, setExample] = useState('');
   const [resetTick, setResetTick] = useState(0);
 
   const formRef = useRef<HTMLFormElement>(null);
   const takeawayInputRef = useRef<HTMLTextAreaElement>(null);
+  const wordInputRef = useRef<HTMLInputElement>(null);
+
+  const { copyPrompt: copyLookupPrompt, fallbackModalProps } = useCopyPrompt({
+    successMessage: 'Lookup prompt copied',
+    fallbackTitle: 'Copy Word Lookup Prompt',
+    fallbackTestId: 'word-lookup-prompt-fallback-modal',
+    fallbackPromptLabel: 'Word lookup prompt',
+  });
 
   const selectedBook = useMemo(() => books.find(b => b.id === bookId) || null, [books, bookId]);
 
@@ -131,6 +151,9 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
       quote.trim() !== '' ||
       takeaway.trim() !== '' ||
       title.trim() !== '' ||
+      word.trim() !== '' ||
+      meaning.trim() !== '' ||
+      example.trim() !== '' ||
       tagsRaw.trim() !== '' ||
       sparLater ||
       isPrediction ||
@@ -140,12 +163,15 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
       attachments.length,
       chapterInput,
       chapterTouched,
+      example,
       isPrediction,
+      meaning,
       quote,
       sparLater,
       tagsRaw,
       takeaway,
       title,
+      word,
     ]
   );
 
@@ -162,25 +188,34 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
       chapterTouched,
       title,
       attachments,
+      captureMode,
+      word,
+      meaning,
+      example,
       updatedAt: new Date().toISOString(),
     }),
     [
       attachments,
       bookId,
+      captureMode,
       chapterInput,
       chapterTouched,
+      example,
       isPrediction,
+      meaning,
       pos,
       quote,
       sparLater,
       tagsRaw,
       takeaway,
       title,
+      word,
     ]
   );
 
-  const resetEmptyFields = (nextTitle = '') => {
+  const resetEmptyFields = (nextTitle = '', nextMode: 'note' | 'word' = initialMode) => {
     const chosenBook = books.find(b => b.id === defaultBookId);
+    setCaptureMode(nextMode);
     setBookId(defaultBookId);
     setPos(chosenBook ? String(chosenBook.currentPos) : '0');
     setQuote('');
@@ -191,6 +226,9 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
     setChapterInput('');
     setChapterTouched(false);
     setTitle(nextTitle);
+    setWord('');
+    setMeaning('');
+    setExample('');
     setAttachments([]);
     setSubmitting(false);
     resetKindleState();
@@ -211,6 +249,9 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
         savedDraft.sparLater ||
         savedDraft.isPrediction ||
         (savedDraft.title || '').trim() !== '' ||
+        (savedDraft.word || '').trim() !== '' ||
+        (savedDraft.meaning || '').trim() !== '' ||
+        (savedDraft.example || '').trim() !== '' ||
         draftAttachments(savedDraft).length > 0 ||
         Boolean(savedDraft.chapterTouched && (savedDraft.chapter || '').trim())) &&
       (!initialBookId || initialBookSource === 'route' || savedDraft.bookId === initialBookId),
@@ -219,6 +260,13 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
         ? savedDraft.bookId
         : defaultBookId;
       const resolvedBook = books.find(b => b.id === resolvedBookId);
+      setCaptureMode(
+        savedDraft.captureMode === 'word'
+          ? 'word'
+          : savedDraft.captureMode === 'note'
+            ? 'note'
+            : initialMode
+      );
       setBookId(resolvedBookId);
       setPos(savedDraft.pos || (resolvedBook ? String(resolvedBook.currentPos) : '0'));
       setQuote(savedDraft.quote || '');
@@ -231,16 +279,19 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
       setChapterInput(savedDraft.chapter || '');
       setChapterTouched(Boolean(savedDraft.chapterTouched));
       setTitle(savedDraft.title || '');
+      setWord(savedDraft.word || '');
+      setMeaning(savedDraft.meaning || '');
+      setExample(savedDraft.example || '');
       setAttachments(draftAttachments(savedDraft));
       setSubmitting(false);
       resetKindleState();
       setResetTick(t => t + 1);
     },
     onInitCanonical: () => {
-      resetEmptyFields(initialSlug ? initialTitle || '' : '');
+      resetEmptyFields(initialSlug ? initialTitle || '' : '', initialMode);
     },
     onDiscard: () => {
-      resetEmptyFields('');
+      resetEmptyFields('', initialMode);
     },
   });
 
@@ -277,33 +328,81 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
     }
   };
 
+  const handleCopyLookup = () => {
+    if (!word.trim()) return;
+    const numericPos = Math.max(0, Number(pos) || 0);
+    const posLabel = selectedBook
+      ? formatPosDisplay(numericPos, selectedBook.posUnit)
+      : numericPos > 0
+        ? `p. ${numericPos}`
+        : undefined;
+    void copyLookupPrompt(
+      buildWordLookupPrompt({
+        word: word.trim(),
+        bookTitle: selectedBook?.title,
+        author: selectedBook?.author,
+        chapter: chapterState.value || undefined,
+        posLabel,
+        quote: quote.trim() || undefined,
+      })
+    );
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!bookId) {
       showToast('Please add a book first', 'error');
       return;
     }
-    if (!takeaway.trim() && !quote.trim() && attachments.length === 0) {
+    if (captureMode === 'word') {
+      if (!word.trim()) {
+        showToast('Enter the word you want to save', 'error');
+        return;
+      }
+    } else if (!takeaway.trim() && !quote.trim() && attachments.length === 0) {
       showToast('Add a personal takeaway, verbatim quote, or attachment', 'error');
       return;
     }
     setSubmitting(true);
     try {
-      await captureNote({
-        bookId,
-        pos: Math.max(0, Number(pos) || 0),
-        quote,
-        takeaway,
-        title: title.trim() || undefined,
-        slug: initialSlug || undefined,
-        tags: parseTagsCsv(tagsRaw),
-        sparLater,
-        isPrediction: selectedBook?.kind === 'fiction' ? isPrediction : false,
-        attachments,
-        chapter: chapterState.value,
-      });
-      markSubmitted();
-      showToast(sparLater ? 'Captured to Sparring Inbox' : 'Note captured', 'success');
+      if (captureMode === 'word') {
+        const trimmedWord = word.trim();
+        await captureNote({
+          bookId,
+          pos: Math.max(0, Number(pos) || 0),
+          quote,
+          takeaway: example.trim() || meaning.trim() || '',
+          title: trimmedWord,
+          slug: initialSlug || undefined,
+          tags: parseTagsCsv(tagsRaw),
+          attachments,
+          chapter: chapterState.value,
+          entryKind: 'word',
+          lexicon: {
+            word: trimmedWord,
+            definition: meaning.trim() || undefined,
+            transferExample: example.trim() || undefined,
+          },
+        });
+        markSubmitted();
+        showToast(`Saved "${trimmedWord}" to Lexicon`, 'success');
+      } else {
+        await captureNote({
+          bookId,
+          pos: Math.max(0, Number(pos) || 0),
+          quote,
+          takeaway,
+          title: title.trim() || undefined,
+          slug: initialSlug || undefined,
+          tags: parseTagsCsv(tagsRaw),
+          sparLater,
+          isPrediction: selectedBook?.kind === 'fiction' ? isPrediction : false,
+          attachments,
+          chapter: chapterState.value,
+        });
+        markSubmitted();
+        showToast(sparLater ? 'Captured to Sparring Inbox' : 'Note captured', 'success');
+      }
       onClose();
     } catch (err) {
       if (err instanceof PartialBatchCommitError && err.committed.notes.length > 0) {
@@ -311,7 +410,9 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
         // Close + clear draft so retrying cannot append a duplicate Note row.
         markSubmitted();
         showToast(
-          'Note saved, but your reading session could not be logged. Sync later to refresh.',
+          captureMode === 'word'
+            ? 'Word saved, but your reading session could not be logged. Sync later to refresh.'
+            : 'Note saved, but your reading session could not be logged. Sync later to refresh.',
           'info'
         );
         onClose();
@@ -334,16 +435,58 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
       headingId={headingId}
       maxWidth="max-w-xl"
       mobileSheet
-      initialFocusRef={initialBookId && hasBooks ? takeawayInputRef : undefined}
+      initialFocusRef={
+        initialBookId && hasBooks
+          ? captureMode === 'word'
+            ? wordInputRef
+            : takeawayInputRef
+          : undefined
+      }
     >
-      <div className="flex items-center justify-between mb-4">
-        <div className="flex items-center gap-2">
+      <div className="flex items-center justify-between gap-2 mb-4">
+        <div className="flex items-center gap-2 min-w-0">
           <span className="text-lg leading-none" aria-hidden="true">
             🪷
           </span>
           <h2 id={headingId} className="text-title text-foreground">
             Quick Capture
           </h2>
+          {hasBooks && !initialSlug && (
+            <div
+              role="tablist"
+              aria-label="Capture mode"
+              className="ml-2 inline-flex items-center p-0.5 rounded-[9px] bg-surface2 border border-border"
+            >
+              <button
+                type="button"
+                role="tab"
+                aria-selected={captureMode === 'note'}
+                data-testid="capture-mode-note"
+                onClick={() => setCaptureMode('note')}
+                className={`h-7 px-2.5 rounded-[7px] text-label font-medium transition-colors ${
+                  captureMode === 'note'
+                    ? 'bg-card text-foreground shadow-sm border border-border/60'
+                    : 'text-muted-foreground hover:text-foreground'
+                }`}
+              >
+                Note
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={captureMode === 'word'}
+                data-testid="capture-mode-word"
+                onClick={() => setCaptureMode('word')}
+                className={`h-7 px-2.5 rounded-[7px] text-label font-medium transition-colors ${
+                  captureMode === 'word'
+                    ? 'bg-card text-foreground shadow-sm border border-border/60'
+                    : 'text-muted-foreground hover:text-foreground'
+                }`}
+              >
+                Word
+              </button>
+            </div>
+          )}
         </div>
         <button type="button" onClick={onClose} aria-label="Close" className={MODAL_CLOSE_BTN}>
           <X className="w-4 h-4" />
@@ -447,164 +590,190 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
               </div>
             </div>
 
-            <KindlePasteChips
-              kindleHint={kindleHint}
-              kindleClean={kindleClean}
-              posUnit={selectedBook?.posUnit || 'page'}
-              onApplyHint={applyKindleHint}
-              onDismissHint={dismissKindleHint}
-              onUndoClean={undoKindleClean}
-            />
-
-            <div className="space-y-1.5">
-              <label htmlFor={chapterFieldId} className={FIELD_LABEL}>
-                Chapter / Story (Optional)
-              </label>
-              <input
-                id={chapterFieldId}
-                type="text"
-                maxLength={CHAPTER_MAX_LENGTH}
-                autoComplete="off"
-                data-testid="capture-chapter-input"
-                value={chapterState.value}
-                placeholder="e.g. Ch. 3: Run · or a story title"
-                aria-describedby={chapterState.hint ? `${chapterFieldId}-hint` : undefined}
-                onChange={e => {
-                  setChapterInput(e.target.value);
+            {captureMode === 'word' ? (
+              <WordCaptureFields
+                baseId={baseId}
+                word={word}
+                onWordChange={setWord}
+                wordInputRef={wordInputRef}
+                chapterValue={chapterState.value}
+                onChapterChange={val => {
+                  setChapterInput(val);
                   setChapterTouched(true);
                 }}
-                className={INPUT}
+                chapterHintText={chapterState.hint ? CAPTURE_CHAPTER_HINTS[chapterState.hint] : undefined}
+                quote={quote}
+                onQuoteChange={setQuote}
+                meaning={meaning}
+                onMeaningChange={setMeaning}
+                example={example}
+                onExampleChange={setExample}
+                tagsRaw={tagsRaw}
+                onTagsChange={setTagsRaw}
+                onCopyLookupPrompt={handleCopyLookup}
               />
-              {chapterState.hint && (
-                <p
-                  id={`${chapterFieldId}-hint`}
-                  data-testid="capture-chapter-hint"
-                  className="text-label text-faint"
-                >
-                  {CAPTURE_CHAPTER_HINTS[chapterState.hint]}
-                </p>
-              )}
-            </div>
-
-            <div className="space-y-1.5">
-              <label htmlFor={titleFieldId} className={FIELD_LABEL}>
-                Title (Optional)
-              </label>
-              <input
-                id={titleFieldId}
-                type="text"
-                maxLength={120}
-                autoComplete="off"
-                data-testid="capture-title-input"
-                value={title}
-                onChange={e => setTitle(e.target.value)}
-                placeholder="A few words you'll recognize later"
-                aria-describedby={initialSlug ? `${titleFieldId}-slug` : undefined}
-                className={INPUT}
-              />
-              {initialSlug && (
-                <p id={`${titleFieldId}-slug`} data-testid="capture-slug-hint" className={HELPER}>
-                  This note will become <span className="font-mono">[[{initialSlug}]]</span>.
-                </p>
-              )}
-            </div>
-
-            <div className="space-y-1.5">
-              <label htmlFor={quoteFieldId} className={FIELD_LABEL}>
-                Verbatim Quote (Optional)
-              </label>
-              <textarea
-                id={quoteFieldId}
-                rows={2}
-                data-testid="capture-quote-input"
-                value={quote}
-                onPaste={e => handleTextPaste(e, 'quote', true)}
-                onChange={e => {
-                  const next = e.target.value;
-                  setQuote(next);
-                  clearFieldClean('quote');
-                  detectKindleHint(next, pos);
-                }}
-                placeholder="Quotation, excerpt, or dictation..."
-                className="w-full p-3 rounded-[10px] bg-surface2/50 border border-input text-base sm:text-body text-foreground placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-ring/40 resize-y"
-              />
-            </div>
-
-            <WikilinkTextarea
-              id={takeawayFieldId}
-              ref={takeawayInputRef}
-              rows={3}
-              dataTestId="capture-takeaway-input"
-              label={
-                <>
-                  Why I Liked It / Core Takeaway (supports [[wikilinks]]){' '}
-                  <span className="text-negative">*</span>
-                </>
-              }
-              value={takeaway}
-              onPaste={e => handleTextPaste(e, 'takeaway', !quote.trim())}
-              onValueChange={next => {
-                setTakeaway(next);
-                clearFieldClean('takeaway');
-                if (!quote.trim()) detectKindleHint(next, pos);
-              }}
-              notes={notes}
-              books={allBooks}
-              resetKey={resetTick}
-              placeholder="Why this matters, core resonance, or concrete realization in your own words..."
-              textareaClassName="w-full p-3 rounded-[10px] bg-background border border-foreground/30 text-base sm:text-body text-foreground placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-ring/50 resize-y"
-            />
-
-            <div className="flex flex-col sm:flex-row sm:items-end gap-3">
-              <div className="flex-1 space-y-1.5">
-                <label htmlFor={tagsFieldId} className={FIELD_LABEL}>
-                  Tags (CSV)
-                </label>
-                <input
-                  id={tagsFieldId}
-                  type="text"
-                  data-testid="capture-tags-input"
-                  value={tagsRaw}
-                  onChange={e => setTagsRaw(e.target.value)}
-                  placeholder="#systems, #heuristics, #favorites"
-                  className={INPUT}
+            ) : (
+              <>
+                <KindlePasteChips
+                  kindleHint={kindleHint}
+                  kindleClean={kindleClean}
+                  posUnit={selectedBook?.posUnit || 'page'}
+                  onApplyHint={applyKindleHint}
+                  onDismissHint={dismissKindleHint}
+                  onUndoClean={undoKindleClean}
                 />
-              </div>
 
-              <div className="flex flex-wrap items-center gap-4 pb-2">
-                <label
-                  htmlFor={sparFieldId}
-                  className="min-h-11 sm:min-h-0 inline-flex items-center gap-2 text-body text-foreground cursor-pointer select-none"
-                >
-                  <input
-                    id={sparFieldId}
-                    type="checkbox"
-                    data-testid="capture-spar-checkbox"
-                    checked={sparLater}
-                    onChange={e => setSparLater(e.target.checked)}
-                    className="w-4 h-4 rounded border-input accent-primary"
-                  />
-                  <span>Spar w/ AI later</span>
-                </label>
-
-                {selectedBook?.kind === 'fiction' && (
-                  <label
-                    htmlFor={predFieldId}
-                    className="min-h-11 sm:min-h-0 inline-flex items-center gap-2 text-body text-foreground cursor-pointer select-none"
-                  >
-                    <input
-                      id={predFieldId}
-                      type="checkbox"
-                      data-testid="capture-prediction-checkbox"
-                      checked={isPrediction}
-                      onChange={e => setIsPrediction(e.target.checked)}
-                      className="w-4 h-4 rounded border-input accent-primary"
-                    />
-                    <span>Fiction Prediction</span>
+                <div className="space-y-1.5">
+                  <label htmlFor={chapterFieldId} className={FIELD_LABEL}>
+                    Chapter / Story (Optional)
                   </label>
-                )}
-              </div>
-            </div>
+                  <input
+                    id={chapterFieldId}
+                    type="text"
+                    maxLength={CHAPTER_MAX_LENGTH}
+                    autoComplete="off"
+                    data-testid="capture-chapter-input"
+                    value={chapterState.value}
+                    placeholder="e.g. Ch. 3: Run · or a story title"
+                    aria-describedby={chapterState.hint ? `${chapterFieldId}-hint` : undefined}
+                    onChange={e => {
+                      setChapterInput(e.target.value);
+                      setChapterTouched(true);
+                    }}
+                    className={INPUT}
+                  />
+                  {chapterState.hint && (
+                    <p
+                      id={`${chapterFieldId}-hint`}
+                      data-testid="capture-chapter-hint"
+                      className="text-label text-faint"
+                    >
+                      {CAPTURE_CHAPTER_HINTS[chapterState.hint]}
+                    </p>
+                  )}
+                </div>
+
+                <div className="space-y-1.5">
+                  <label htmlFor={titleFieldId} className={FIELD_LABEL}>
+                    Title (Optional)
+                  </label>
+                  <input
+                    id={titleFieldId}
+                    type="text"
+                    maxLength={120}
+                    autoComplete="off"
+                    data-testid="capture-title-input"
+                    value={title}
+                    onChange={e => setTitle(e.target.value)}
+                    placeholder="A few words you'll recognize later"
+                    aria-describedby={initialSlug ? `${titleFieldId}-slug` : undefined}
+                    className={INPUT}
+                  />
+                  {initialSlug && (
+                    <p id={`${titleFieldId}-slug`} data-testid="capture-slug-hint" className={HELPER}>
+                      This note will become <span className="font-mono">[[{initialSlug}]]</span>.
+                    </p>
+                  )}
+                </div>
+
+                <div className="space-y-1.5">
+                  <label htmlFor={quoteFieldId} className={FIELD_LABEL}>
+                    Verbatim Quote (Optional)
+                  </label>
+                  <textarea
+                    id={quoteFieldId}
+                    rows={2}
+                    data-testid="capture-quote-input"
+                    value={quote}
+                    onPaste={e => handleTextPaste(e, 'quote', true)}
+                    onChange={e => {
+                      const next = e.target.value;
+                      setQuote(next);
+                      clearFieldClean('quote');
+                      detectKindleHint(next, pos);
+                    }}
+                    placeholder="Quotation, excerpt, or dictation..."
+                    className="w-full p-3 rounded-[10px] bg-surface2/50 border border-input text-base sm:text-body text-foreground placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-ring/40 resize-y"
+                  />
+                </div>
+
+                <WikilinkTextarea
+                  id={takeawayFieldId}
+                  ref={takeawayInputRef}
+                  rows={3}
+                  dataTestId="capture-takeaway-input"
+                  label={
+                    <>
+                      Why I Liked It / Core Takeaway (supports [[wikilinks]]){' '}
+                      <span className="text-negative">*</span>
+                    </>
+                  }
+                  value={takeaway}
+                  onPaste={e => handleTextPaste(e, 'takeaway', !quote.trim())}
+                  onValueChange={next => {
+                    setTakeaway(next);
+                    clearFieldClean('takeaway');
+                    if (!quote.trim()) detectKindleHint(next, pos);
+                  }}
+                  notes={notes}
+                  books={allBooks}
+                  resetKey={resetTick}
+                  placeholder="Why this matters, core resonance, or concrete realization in your own words..."
+                  textareaClassName="w-full p-3 rounded-[10px] bg-background border border-foreground/30 text-base sm:text-body text-foreground placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-ring/50 resize-y"
+                />
+
+                <div className="flex flex-col sm:flex-row sm:items-end gap-3">
+                  <div className="flex-1 space-y-1.5">
+                    <label htmlFor={tagsFieldId} className={FIELD_LABEL}>
+                      Tags (CSV)
+                    </label>
+                    <input
+                      id={tagsFieldId}
+                      type="text"
+                      data-testid="capture-tags-input"
+                      value={tagsRaw}
+                      onChange={e => setTagsRaw(e.target.value)}
+                      placeholder="#systems, #heuristics, #favorites"
+                      className={INPUT}
+                    />
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-4 pb-2">
+                    <label
+                      htmlFor={sparFieldId}
+                      className="min-h-11 sm:min-h-0 inline-flex items-center gap-2 text-body text-foreground cursor-pointer select-none"
+                    >
+                      <input
+                        id={sparFieldId}
+                        type="checkbox"
+                        data-testid="capture-spar-checkbox"
+                        checked={sparLater}
+                        onChange={e => setSparLater(e.target.checked)}
+                        className="w-4 h-4 rounded border-input accent-primary"
+                      />
+                      <span>Spar w/ AI later</span>
+                    </label>
+
+                    {selectedBook?.kind === 'fiction' && (
+                      <label
+                        htmlFor={predFieldId}
+                        className="min-h-11 sm:min-h-0 inline-flex items-center gap-2 text-body text-foreground cursor-pointer select-none"
+                      >
+                        <input
+                          id={predFieldId}
+                          type="checkbox"
+                          data-testid="capture-prediction-checkbox"
+                          checked={isPrediction}
+                          onChange={e => setIsPrediction(e.target.checked)}
+                          className="w-4 h-4 rounded border-input accent-primary"
+                        />
+                        <span>Fiction Prediction</span>
+                      </label>
+                    )}
+                  </div>
+                </div>
+              </>
+            )}
 
             <AttachmentManager
               isOpen={isOpen}
@@ -642,12 +811,13 @@ export const QuickCaptureModal: React.FC<QuickCaptureModalProps> = ({
                 data-testid="capture-submit-btn"
                 className="h-11 sm:h-10 px-5 rounded-[10px] bg-primary text-primary-foreground font-semibold text-body hover:opacity-90 disabled:opacity-50 transition-opacity"
               >
-                {submitting ? 'Saving…' : 'Save Note'}
+                {submitting ? 'Saving…' : captureMode === 'word' ? 'Save Word' : 'Save Note'}
               </button>
             </div>
           </form>
         </>
       )}
+      <PromptFallbackModal {...fallbackModalProps} />
     </Modal>
   );
 };

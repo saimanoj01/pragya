@@ -30,6 +30,7 @@ import { BookCover, REREADING_BADGE } from '../common/BookCover';
 import { BookNextStopLine } from '../common/BookNextStopLine';
 import { BookNoteCard } from '../common/BookNoteCard';
 import { BookReEntrySection } from '../common/BookReEntrySection';
+import { BookWordsStrip } from '../common/BookWordsStrip';
 import { CapstoneSection } from '../common/CapstoneSection';
 import { ConfirmDialog } from '../common/ConfirmDialog';
 import { CrossBookEchoes } from '../common/CrossBookEchoes';
@@ -40,6 +41,7 @@ import { CapstoneModal } from '../modals/CapstoneModal';
 
 export interface BookDetailViewProps {
   bookId: string;
+  highlightNoteId?: string;
   onEditBook: (book: Book) => void;
   onOpenCaptureForBook: (bookId: string) => void;
   /** CD D2.1 (Q6): `E` edits the focused note card; `D` deepens the J/K-focused note. */
@@ -49,6 +51,7 @@ export interface BookDetailViewProps {
 
 export const BookDetailView: React.FC<BookDetailViewProps> = ({
   bookId,
+  highlightNoteId,
   onEditBook,
   onOpenCaptureForBook,
   onEditNote,
@@ -67,6 +70,9 @@ export const BookDetailView: React.FC<BookDetailViewProps> = ({
 
   const [revealedSlugs, setRevealedSlugs] = useState<Set<string>>(new Set());
   const [focusedIndex, setFocusedIndex] = useState<number>(0);
+  const [activeHighlightId, setActiveHighlightId] = useState<string | null>(
+    highlightNoteId ?? null
+  );
   const jkMovedRef = useRef(false);
   const [jkTick, setJkTick] = useState(0);
   const [capstoneOpen, setCapstoneOpen] = useState<boolean>(false);
@@ -79,6 +85,27 @@ export const BookDetailView: React.FC<BookDetailViewProps> = ({
     setFocusedIndex(0);
     setCapstoneHidden(readHiddenCapstoneBooks().includes(bookId));
   }, [bookId]);
+
+  useEffect(() => {
+    if (!highlightNoteId) {
+      setActiveHighlightId(null);
+      return;
+    }
+    const idx = bookNotes.findIndex(n => n.id === highlightNoteId || n.slug === highlightNoteId);
+    if (idx < 0) {
+      setActiveHighlightId(null);
+      return;
+    }
+    const targetNote = bookNotes[idx];
+    setFocusedIndex(idx);
+    setActiveHighlightId(targetNote.id);
+    const el = document.getElementById(`book-note-${targetNote.id}`);
+    el?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    const timer = window.setTimeout(() => {
+      setActiveHighlightId(prev => (prev === targetNote.id ? null : prev));
+    }, 3200);
+    return () => window.clearTimeout(timer);
+  }, [bookNotes, highlightNoteId]);
 
   useEffect(() => {
     if (focusedIndex >= bookNotes.length && bookNotes.length > 0) {
@@ -370,6 +397,8 @@ export const BookDetailView: React.FC<BookDetailViewProps> = ({
 
       <SessionsTrail book={book} />
 
+      <BookWordsStrip book={book} notes={notes} />
+
       {/* Book Notes */}
       <section className="space-y-3">
         <h2 className="text-heading text-foreground num">Captured Notes ({bookNotes.length})</h2>
@@ -390,6 +419,7 @@ export const BookDetailView: React.FC<BookDetailViewProps> = ({
                   book={book}
                   idx={idx}
                   isFocused={idx === focusedIndex}
+                  isHighlighted={note.id === activeHighlightId}
                   spoiler={spoiler}
                   revealed={revealed}
                   divider={chapterDividers.get(idx)}

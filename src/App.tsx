@@ -146,6 +146,7 @@ function PragyaShell() {
     mainContent = (
       <BookDetailView
         bookId={route.bookId}
+        highlightNoteId={route.noteId}
         onEditBook={b => setEditingBook(b)}
         onOpenCaptureForBook={id => openQuickCapture(id)}
         onEditNote={n => setEditingNote(n)}

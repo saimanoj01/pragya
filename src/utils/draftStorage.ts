@@ -47,6 +47,11 @@ export interface CaptureDraft {
    * so Escape after an upload never orphans a Drive file. Never blobs or data URLs.
    */
   attachments?: unknown[];
+  /** v2 Lexicon (optional for older drafts). */
+  captureMode?: 'note' | 'word';
+  word?: string;
+  meaning?: string;
+  example?: string;
   updatedAt: string;
 }
 
