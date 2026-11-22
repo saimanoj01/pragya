@@ -592,9 +592,279 @@ def is_favorite_note(note: dict[str, Any]) -> bool:
     return False
 
 
+def normalize_lemma(raw: str) -> str:
+    return re.sub(r"\s+", " ", str(raw or "").strip().lower())
+
+
+def _clean_optional_text(value: Any, max_len: int | None = None) -> str | None:
+    if not isinstance(value, str):
+        return None
+    trimmed = value.strip()
+    if not trimmed:
+        return None
+    if max_len is not None and len(trimmed) > max_len:
+        clipped = trimmed[:max_len].strip()
+        return clipped or None
+    return trimmed
+
+
+def normalize_word_lexicon(
+    *,
+    word: str,
+    lemma: str | None = None,
+    pronunciation: str | None = None,
+    part_of_speech: str | None = None,
+    definition: str | None = None,
+    etymology: str | None = None,
+    transfer_example: str | None = None,
+) -> dict[str, str]:
+    clean_word = str(word or "").strip()
+    lemma_source = _clean_optional_text(lemma) or clean_word
+    out: dict[str, str] = {
+        "word": clean_word,
+        "lemma": normalize_lemma(lemma_source),
+    }
+    for key, raw, limit in (
+        ("pronunciation", pronunciation, 120),
+        ("partOfSpeech", part_of_speech, 80),
+        ("definition", definition, 1200),
+        ("etymology", etymology, 1200),
+        ("transferExample", transfer_example, 600),
+    ):
+        cleaned = _clean_optional_text(raw, limit)
+        if cleaned:
+            out[key] = cleaned
+    return out
+
+
+def is_word_note(note: dict[str, Any] | None) -> bool:
+    if not isinstance(note, dict):
+        return False
+    meta = note.get("meta")
+    return isinstance(meta, dict) and meta.get("entryKind") == "word"
+
+
+def get_word_lexicon(note: dict[str, Any] | None) -> dict[str, str] | None:
+    if not is_word_note(note):
+        return None
+    meta = (note or {}).get("meta") or {}
+    raw = meta.get("lexicon")
+    if not isinstance(raw, dict):
+        return None
+    word = str(raw.get("word") or "").strip() if isinstance(raw.get("word"), str) else ""
+    if not word:
+        return None
+    return normalize_word_lexicon(
+        word=word,
+        lemma=raw.get("lemma") if isinstance(raw.get("lemma"), str) else None,
+        pronunciation=raw.get("pronunciation") if isinstance(raw.get("pronunciation"), str) else None,
+        part_of_speech=raw.get("partOfSpeech") if isinstance(raw.get("partOfSpeech"), str) else None,
+        definition=raw.get("definition") if isinstance(raw.get("definition"), str) else None,
+        etymology=raw.get("etymology") if isinstance(raw.get("etymology"), str) else None,
+        transfer_example=raw.get("transferExample") if isinstance(raw.get("transferExample"), str) else None,
+    )
+
+
+def note_has_valid_content(note: dict[str, Any]) -> bool:
+    if is_word_note(note):
+        lex = get_word_lexicon(note)
+        return bool(lex and lex.get("word"))
+    meta = note.get("meta") or {}
+    return bool(
+        (note.get("takeaway") or "").strip()
+        or (note.get("quote") or "").strip()
+        or renderable_attachments(meta)
+    )
+
+
+def ensure_vocabulary_tag(tags: list[str]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for raw in tags:
+        trimmed = str(raw or "").strip().lower()
+        if not trimmed:
+            continue
+        canonical = trimmed if trimmed.startswith("#") else f"#{trimmed}"
+        if canonical in seen:
+            continue
+        seen.add(canonical)
+        out.append(canonical)
+    if "#vocabulary" not in seen:
+        out.append("#vocabulary")
+    return out
+
+
+def _word_richness_score(lex: dict[str, str]) -> int:
+    score = 0
+    if lex.get("definition"):
+        score += 4
+    if lex.get("etymology"):
+        score += 2
+    if lex.get("pronunciation"):
+        score += 1
+    if lex.get("partOfSpeech"):
+        score += 1
+    if lex.get("transferExample"):
+        score += 1
+    return score
+
+
+def group_words_by_lemma(
+    notes: list[dict[str, Any]],
+    books: list[dict[str, Any]],
+    *,
+    book_id: str | None = None,
+    query: str = "",
+    include_spoilers: bool = False,
+) -> tuple[list[dict[str, Any]], int]:
+    """Mirror groupWordsByLemma in src/utils/lexicon.ts (spoiler-shielded by default)."""
+    book_map = {b["id"]: b for b in books}
+    needle = (query or "").strip().lower()
+    buckets: dict[str, list[dict[str, Any]]] = {}
+    shielded_encounter_count = 0
+
+    for n in notes:
+        if is_archived(n) or not is_word_note(n):
+            continue
+        lex = get_word_lexicon(n)
+        if not lex:
+            continue
+        b = book_map.get(n.get("bookId", ""))
+        if b and is_archived(b):
+            continue
+        if book_id and n.get("bookId") != book_id:
+            continue
+
+        raw_shielded = bool(b and (is_note_spoiler(n, b) or is_sealed_prediction(n, b)))
+        redact = raw_shielded and not include_spoilers
+        if redact:
+            shielded_encounter_count += 1
+
+        unit = (b or {}).get("posUnit") or "page"
+        pos = clean_num(n.get("pos"), 0)
+        pos_display = format_pos_display(pos, unit)
+        meta = n.get("meta") or {}
+        chapter = _coerce_meta_string(meta.get("chapter")) or ""
+        if redact:
+            enc: dict[str, Any] = {
+                "noteId": n["id"],
+                "bookId": n.get("bookId") or "",
+                "bookTitle": (b or {}).get("title") or "",
+                "pos": pos,
+                "posDisplay": pos_display,
+                "shielded": True,
+                "createdAt": str(n.get("createdAt") or ""),
+                "updatedAt": str(n.get("updatedAt") or ""),
+            }
+        else:
+            enc = {
+                "noteId": n["id"],
+                "slug": n.get("slug") or n["id"],
+                "bookId": n.get("bookId") or "",
+                "bookTitle": (b or {}).get("title") or "",
+                "bookAuthor": (b or {}).get("author") or "",
+                "pos": pos,
+                "posDisplay": pos_display,
+                "chapter": chapter,
+                "shielded": False,
+                "quote": n.get("quote") or "",
+                "lexicon": lex,
+                "createdAt": str(n.get("createdAt") or ""),
+                "updatedAt": str(n.get("updatedAt") or ""),
+            }
+        buckets.setdefault(lex["lemma"], []).append(enc)
+
+    groups: list[dict[str, Any]] = []
+    for lemma, encounters in buckets.items():
+        encounters.sort(key=lambda e: e["createdAt"], reverse=True)
+        visible = [e for e in encounters if not e["shielded"]]
+        all_shielded = len(visible) == 0
+        if all_shielded:
+            if needle:
+                continue
+            groups.append(
+                {
+                    "lemma": "",
+                    "word": "",
+                    "allShielded": True,
+                    "needsDefinition": False,
+                    "latestCreatedAt": encounters[0]["createdAt"],
+                    "encounters": encounters,
+                }
+            )
+            continue
+
+        rep = sorted(
+            visible,
+            key=lambda e: (_word_richness_score(e["lexicon"]), e["createdAt"]),
+            reverse=True,
+        )[0]
+
+        def first_with(field: str) -> str | None:
+            for e in visible:
+                val = (e["lexicon"].get(field) or "").strip()
+                if val:
+                    return val
+            return None
+
+        word = rep["lexicon"]["word"]
+        pronunciation = first_with("pronunciation")
+        part_of_speech = first_with("partOfSpeech")
+        definition = first_with("definition")
+        etymology = first_with("etymology")
+        transfer_example = first_with("transferExample")
+
+        if needle:
+            haystack_parts = [
+                word,
+                lemma,
+                pronunciation or "",
+                part_of_speech or "",
+                definition or "",
+                etymology or "",
+                transfer_example or "",
+            ]
+            for e in visible:
+                haystack_parts.extend(
+                    [
+                        e.get("quote") or "",
+                        e.get("bookTitle") or "",
+                        e.get("bookAuthor") or "",
+                        e.get("chapter") or "",
+                    ]
+                )
+            if needle not in " ".join(haystack_parts).lower():
+                continue
+
+        entry: dict[str, Any] = {
+            "lemma": lemma,
+            "word": word,
+            "allShielded": False,
+            "needsDefinition": not bool(definition),
+            "latestCreatedAt": encounters[0]["createdAt"],
+            "encounters": encounters,
+        }
+        if pronunciation:
+            entry["pronunciation"] = pronunciation
+        if part_of_speech:
+            entry["partOfSpeech"] = part_of_speech
+        if definition:
+            entry["definition"] = definition
+        if etymology:
+            entry["etymology"] = etymology
+        if transfer_example:
+            entry["transferExample"] = transfer_example
+        groups.append(entry)
+
+    groups.sort(key=lambda g: (1 if g["allShielded"] else 0, g["lemma"], g["latestCreatedAt"]))
+    return groups, shielded_encounter_count
+
+
 def is_eligible_for_shuffle(
     note: dict[str, Any], book: dict[str, Any] | None, today_date: str
 ) -> bool:
+    if is_word_note(note):
+        return False
     if is_note_spoiler(note, book):
         return False
     if is_sealed_prediction(note, book):
@@ -1347,6 +1617,7 @@ def find_cross_book_echoes(
         n
         for n in all_notes
         if n.get("bookId") == book.get("id")
+        and not is_word_note(n)
         and not is_archived(n)
         and not is_note_spoiler(n, book)
         and not is_sealed_prediction(n, book)
@@ -1364,7 +1635,7 @@ def find_cross_book_echoes(
 
     echoes: list[dict[str, Any]] = []
     for cand in all_notes:
-        if cand.get("bookId") == book.get("id") or is_archived(cand):
+        if cand.get("bookId") == book.get("id") or is_word_note(cand) or is_archived(cand):
             continue
         cand_book = book_map.get(cand.get("bookId", ""))
         if not cand_book or is_archived(cand_book):
@@ -1421,7 +1692,7 @@ def select_daily_collision_pair(
     book_map = {b["id"]: b for b in books}
     eligible: list[dict[str, Any]] = []
     for n in notes:
-        if is_archived(n):
+        if is_word_note(n) or is_archived(n):
             continue
         b = book_map.get(n.get("bookId", ""))
         if not b or is_archived(b):
@@ -1473,7 +1744,7 @@ def find_bridge_candidates(
     book_map = {b["id"]: b for b in books}
     eligible: list[tuple[dict[str, Any], dict[str, Any], list[str]]] = []
     for n in notes:
-        if is_archived(n):
+        if is_word_note(n) or is_archived(n):
             continue
         b = book_map.get(n.get("bookId", ""))
         if not b or is_archived(b):
@@ -3512,6 +3783,7 @@ def build_notes_summary(
         n
         for n in notes
         if n.get("bookId") == book.get("id")
+        and not is_word_note(n)
         and n.get("status") in ("saved", "atomic")
         and not is_archived(n)
     ]
@@ -4552,12 +4824,12 @@ def cmd_note_update(args: argparse.Namespace, backend: WorkspaceBackend) -> dict
         and not (updated.get("deltaTrigger") or updated.get("deltaAction"))
     ):
         raise CliError("Provide a WHEN trigger or DO action to activate a Behavioral Delta.")
-    if not (
-        (updated.get("takeaway") or "").strip()
-        or (updated.get("quote") or "").strip()
-        or renderable_attachments(meta)
-    ):
-        raise CliError("A note needs a takeaway, a quote, or an attachment.")
+    if not note_has_valid_content(updated):
+        raise CliError(
+            "A word note needs meta.lexicon.word; regular notes need a takeaway, a quote, or an attachment."
+            if is_word_note(updated)
+            else "A note needs a takeaway, a quote, or an attachment."
+        )
 
     updated["updatedAt"] = now_iso_utc()
     force = bool(getattr(args, "force", False))
@@ -4565,6 +4837,231 @@ def cmd_note_update(args: argparse.Namespace, backend: WorkspaceBackend) -> dict
     result: dict[str, Any] = {"note": updated}
     result.update(archive_extras)
     return result
+
+
+def cmd_word_add(args: argparse.Namespace, backend: WorkspaceBackend) -> dict[str, Any]:
+    """Capture a contextual vocabulary word entry in Notes!A:R (`meta.entryKind = 'word'`)."""
+    raw_word = (getattr(args, "word", None) or "").strip()
+    if not raw_word:
+        raise CliError("--word is required and cannot be empty.")
+
+    ws = backend.load_workspace()
+    book = resolve_book(ws["books"], args.book)
+    if is_archived(book):
+        raise CliError(
+            f"Book \"{book.get('title', '')}\" is archived. Restore it first with "
+            f"`book-update --book {book.get('id')} --unarchive`, then add words."
+        )
+
+    now_iso = now_iso_utc()
+    pos_provided = getattr(args, "pos", None) is not None
+    incoming_pos = (
+        clamp_note_pos(args.pos, book)
+        if pos_provided
+        else float(book.get("currentPos") or 0)
+    )
+    normalized_pos = compute_normalized_pos(
+        incoming_pos, float(book.get("totalPos") or 0), book.get("posUnit") or "page"
+    )
+
+    lexicon = normalize_word_lexicon(
+        word=raw_word,
+        lemma=getattr(args, "lemma", None),
+        pronunciation=getattr(args, "pronunciation", None),
+        part_of_speech=getattr(args, "part_of_speech", None),
+        definition=getattr(args, "definition", None),
+        etymology=getattr(args, "etymology", None),
+        transfer_example=getattr(args, "example", None),
+    )
+
+    quote = (getattr(args, "quote", None) or "").strip()
+    takeaway = lexicon.get("transferExample") or lexicon.get("definition") or ""
+    slug_override = (getattr(args, "slug", None) or "").strip()
+    slug_seed = slug_override or lexicon["word"]
+    slug = generate_unique_slug(slug_seed, taken_slugs(ws["notes"]))
+
+    meta: dict[str, Any] = {
+        "title": lexicon["word"],
+        "attachments": [],
+        "links": [],
+        "entryKind": "word",
+        "lexicon": lexicon,
+    }
+    chapter = _chapter_arg(getattr(args, "chapter", None))
+    if chapter is None:
+        at_bookmark = (not pos_provided) or clean_num(incoming_pos) == clean_num(
+            float(book.get("currentPos") or 0)
+        )
+        inherited = _coerce_meta_string((book.get("meta") or {}).get("currentChapter"))
+        if at_bookmark and inherited:
+            meta["chapter"] = inherited
+    elif chapter:
+        meta["chapter"] = chapter
+
+    tags = ensure_vocabulary_tag(parse_tags_csv(getattr(args, "tags", None) or ""))
+    note = {
+        "id": str(uuid.uuid4()),
+        "slug": slug,
+        "bookId": book["id"],
+        "createdAt": now_iso,
+        "updatedAt": now_iso,
+        "pos": clean_num(incoming_pos),
+        "normalizedPos": normalized_pos,
+        "status": "saved",
+        "source": "agent",
+        "tags": tags,
+        "quote": quote,
+        "takeaway": takeaway,
+        "contextMechanism": "",
+        "critique": "",
+        "deltaTrigger": "",
+        "deltaAction": "",
+        "deltaStatus": "none",
+        "meta": meta,
+    }
+    backend.save_note(note)
+
+    updated_book = book
+    changed = False
+    rejected_backward = False
+    saved_session: dict[str, Any] | None = None
+    force = bool(getattr(args, "force", False))
+
+    if pos_provided:
+        updated_book, changed, rejected_backward, prev_pos, next_pos = apply_bookmark_advance(
+            book,
+            incoming_pos,
+            manual_override=bool(getattr(args, "force_pos", False)),
+            now_iso=now_iso,
+        )
+        if changed:
+            backend.save_book(
+                updated_book,
+                expected_base_updated_at=(book.get("meta") or {}).get("updatedAt"),
+                force=force,
+            )
+            sess, _ = upsert_coalesced_session(
+                ws["sessions"],
+                book_id=book["id"],
+                prev_pos=prev_pos,
+                next_pos=next_pos,
+                now_iso=now_iso,
+                manual_override=bool(getattr(args, "force_pos", False)),
+            )
+            saved_session = backend.save_session(sess)
+
+    return {
+        "note": note,
+        "book": updated_book,
+        "session": saved_session,
+        "bookmarkChanged": changed,
+        "rejectedBackward": rejected_backward,
+    }
+
+
+def cmd_word_list(args: argparse.Namespace, backend: WorkspaceBackend) -> dict[str, Any]:
+    """List contextual vocabulary words grouped by lemma (spoiler-shielded by default)."""
+    ws = backend.load_workspace()
+    target_book = resolve_book(ws["books"], args.book) if getattr(args, "book", None) else None
+    query = getattr(args, "query", None) or ""
+    include_spoilers = bool(getattr(args, "include_spoilers", False))
+
+    words, shielded_count = group_words_by_lemma(
+        ws["notes"],
+        ws["books"],
+        book_id=target_book["id"] if target_book else None,
+        query=query,
+        include_spoilers=include_spoilers,
+    )
+    return {
+        "count": len(words),
+        "encounterCount": sum(len(g["encounters"]) for g in words),
+        "shieldedCount": shielded_count,
+        "words": words,
+    }
+
+
+WORD_UPDATE_FIELDS = (
+    "word",
+    "lemma",
+    "pronunciation",
+    "part_of_speech",
+    "definition",
+    "etymology",
+    "example",
+    "quote",
+    "chapter",
+    "tags",
+)
+
+
+def cmd_word_update(args: argparse.Namespace, backend: WorkspaceBackend) -> dict[str, Any]:
+    """Backfill or update Lexicon metadata on a word note while preserving unknown meta keys."""
+    if all(getattr(args, f, None) is None for f in WORD_UPDATE_FIELDS):
+        raise CliError(
+            "Provide at least one field to update "
+            "(e.g. --definition, --etymology, --example, --pronunciation, --part-of-speech, --quote)."
+        )
+
+    ws = backend.load_workspace()
+    note = resolve_note(ws["notes"], args.note)
+    if not is_word_note(note):
+        raise CliError(
+            f"Note '{note.get('slug') or note.get('id')}' is not a word note (meta.entryKind != 'word')."
+        )
+
+    existing_lex = get_word_lexicon(note) or {"word": str((note.get("meta") or {}).get("title") or "").strip(), "lemma": ""}
+    next_word = existing_lex.get("word") or ""
+    if getattr(args, "word", None) is not None:
+        cleaned_word = args.word.strip()
+        if not cleaned_word:
+            raise CliError("--word cannot be empty.")
+        next_word = cleaned_word
+    if not next_word:
+        raise CliError("Word note is missing a word; pass --word.")
+
+    next_lemma = existing_lex.get("lemma")
+    if getattr(args, "lemma", None) is not None:
+        next_lemma = args.lemma.strip() or next_word
+    elif getattr(args, "word", None) is not None:
+        next_lemma = next_word
+
+    def pick(arg_name: str, lex_key: str) -> str | None:
+        val = getattr(args, arg_name, None)
+        if val is not None:
+            return val
+        return existing_lex.get(lex_key)
+
+    next_lex = normalize_word_lexicon(
+        word=next_word,
+        lemma=next_lemma,
+        pronunciation=pick("pronunciation", "pronunciation"),
+        part_of_speech=pick("part_of_speech", "partOfSpeech"),
+        definition=pick("definition", "definition"),
+        etymology=pick("etymology", "etymology"),
+        transfer_example=pick("example", "transferExample"),
+    )
+
+    updated = json.loads(json.dumps(note))
+    meta = updated.setdefault("meta", {})
+    meta["entryKind"] = "word"
+    meta["lexicon"] = next_lex
+    meta["title"] = next_lex["word"]
+
+    if getattr(args, "quote", None) is not None:
+        updated["quote"] = args.quote.strip()
+    if getattr(args, "example", None) is not None or getattr(args, "definition", None) is not None:
+        updated["takeaway"] = next_lex.get("transferExample") or next_lex.get("definition") or ""
+    chapter = _chapter_arg(getattr(args, "chapter", None))
+    if chapter is not None:
+        _apply_chapter(meta, "chapter", chapter)
+    if getattr(args, "tags", None) is not None:
+        updated["tags"] = ensure_vocabulary_tag(parse_tags_csv(args.tags))
+
+    updated["updatedAt"] = now_iso_utc()
+    force = bool(getattr(args, "force", False))
+    backend.save_note(updated, expected_base_updated_at=note.get("updatedAt"), force=force)
+    return {"note": updated}
 
 
 def _build_spoiler_safe_questions(book: dict[str, Any]) -> list[str]:
@@ -6708,6 +7205,7 @@ def cmd_salon(args: argparse.Namespace, backend: WorkspaceBackend) -> dict[str, 
 
     weekly_captures: list[dict[str, Any]] = []
     pending_ocr_note_ids: list[str] = []
+    pending_word_note_ids: list[str] = []
 
     for n in notes:
         if is_archived(n):
@@ -6716,6 +7214,12 @@ def cmd_salon(args: argparse.Namespace, backend: WorkspaceBackend) -> dict[str, 
         if not b or is_archived(b):
             continue
         if is_note_spoiler(n, b) or is_sealed_prediction(n, b):
+            continue
+
+        if is_word_note(n):
+            lex = get_word_lexicon(n)
+            if lex and not (lex.get("definition") or "").strip():
+                pending_word_note_ids.append(n["id"])
             continue
 
         created_day = to_local_date_key(n.get("createdAt"))
@@ -6729,6 +7233,7 @@ def cmd_salon(args: argparse.Namespace, backend: WorkspaceBackend) -> dict[str, 
 
     weekly_captures.sort(key=lambda item: (item["updatedAt"], item["id"]), reverse=True)
     pending_ocr_note_ids.sort()
+    pending_word_note_ids.sort()
 
     # Books with an existing linked Companion Doc that have syncable unshielded content.
     doc_candidates: list[tuple[str, str, dict[str, Any], int]] = []
@@ -6826,6 +7331,7 @@ def cmd_salon(args: argparse.Namespace, backend: WorkspaceBackend) -> dict[str, 
         "weeklyCapturesCount": len(weekly_captures),
         "weeklyCaptures": weekly_captures,
         "pendingOcrNoteIds": pending_ocr_note_ids,
+        "pendingWordNoteIds": pending_word_note_ids,
         "unsyncedDocBooks": unsynced_doc_books,
         "bridgeCandidates": bridge_candidates,
         "collisionPair": collision_pair,
@@ -7028,6 +7534,41 @@ def build_parser() -> argparse.ArgumentParser:
     p_nlink.add_argument("--one-way", action="store_true", help="Only update --note without updating --to.")
     p_nlink.add_argument("--include-spoilers", "--reveal", dest="include_spoilers", action="store_true", help="Allow linking spoiler-shielded or sealed-prediction notes.")
 
+    # 1b3. word-add / word-list / word-update (Lexicon)
+    p_wadd = sub.add_parser("word-add", parents=[common], help="Capture a contextual vocabulary word in Notes!A:R (`meta.entryKind = 'word'`).")
+    p_wadd.add_argument("--book", required=True, help="Book UUID or title.")
+    p_wadd.add_argument("--word", required=True, help="Word or short phrase encountered while reading.")
+    p_wadd.add_argument("--lemma", default=None, help="Optional canonical base lemma (defaults to lowercase word).")
+    p_wadd.add_argument("--pos", default=None, type=float, help="Optional position in book units (defaults to book currentPos).")
+    p_wadd.add_argument("--chapter", default=None, help="Note chapter (default: inherit book currentChapter at the bookmark).")
+    p_wadd.add_argument("--quote", default="", help="Sentence or scene passage from the book.")
+    p_wadd.add_argument("--definition", default=None, help="Plain-English definition (sense used in context).")
+    p_wadd.add_argument("--etymology", default=None, help="Brief root history / origin.")
+    p_wadd.add_argument("--example", default=None, help="One transfer example sentence in your own voice.")
+    p_wadd.add_argument("--pronunciation", default=None, help="Phonetic or IPA pronunciation.")
+    p_wadd.add_argument("--part-of-speech", dest="part_of_speech", default=None, help="Part of speech (noun, verb, adj., ...).")
+    p_wadd.add_argument("--slug", default=None, help="Optional custom wikilink slug (defaults to slugified word).")
+    p_wadd.add_argument("--tags", default="", help="Comma-separated #tags (#vocabulary is always included).")
+    p_wadd.add_argument("--force-pos", action="store_true", help="Override monotonic bookmark ceiling when advancing.")
+
+    p_wlist = sub.add_parser("word-list", parents=[common], help="List Lexicon vocabulary grouped by lemma (spoiler-shielded by default).")
+    p_wlist.add_argument("--book", default=None, help="Filter by book UUID or title.")
+    p_wlist.add_argument("--query", default="", help="Case-insensitive filter over word, definition, etymology, example, quote, or book.")
+    p_wlist.add_argument("--include-spoilers", "--reveal", dest="include_spoilers", action="store_true", help="Include word encounters ahead of an unfinished book's bookmark.")
+
+    p_wupd = sub.add_parser("word-update", parents=[common], help="Backfill or edit Lexicon metadata on a word note.")
+    p_wupd.add_argument("--note", required=True, help="Word note UUID, slug, or alias.")
+    p_wupd.add_argument("--word", default=None, help="Updated surface word.")
+    p_wupd.add_argument("--lemma", default=None, help="Updated grouping lemma.")
+    p_wupd.add_argument("--pronunciation", default=None, help="Phonetic / IPA pronunciation (empty clears).")
+    p_wupd.add_argument("--part-of-speech", dest="part_of_speech", default=None, help="Part of speech (empty clears).")
+    p_wupd.add_argument("--definition", default=None, help="Plain-English definition (empty clears).")
+    p_wupd.add_argument("--etymology", default=None, help="Brief etymology / roots (empty clears).")
+    p_wupd.add_argument("--example", default=None, help="Transfer example sentence (empty clears).")
+    p_wupd.add_argument("--quote", default=None, help="Scene passage quote.")
+    p_wupd.add_argument("--chapter", default=None, help="Note chapter (empty clears).")
+    p_wupd.add_argument("--tags", default=None, help="Comma-separated #tags (#vocabulary is preserved).")
+
     # 1c. delta-status
     p_dstat = sub.add_parser("delta-status", parents=[common], help="View active/paused/graduated Behavioral Deltas (5-cap) or transition a note's deltaStatus.")
     p_dstat.add_argument("--note", default=None, help="Note UUID, slug, or alias to transition (requires --status).")
@@ -7128,6 +7669,9 @@ def main(argv: list[str] | None = None, runner: Callable[[list[str]], tuple[int,
         "note-get": cmd_note_get,
         "note-update": cmd_note_update,
         "note-link": cmd_note_link,
+        "word-add": cmd_word_add,
+        "word-list": cmd_word_list,
+        "word-update": cmd_word_update,
         "delta-status": cmd_delta_status,
         "progress": cmd_progress,
         "capture": cmd_capture,
