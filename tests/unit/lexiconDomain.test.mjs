@@ -1,0 +1,499 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import module from 'node:module';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+
+if (typeof module.registerHooks === 'function') {
+  module.registerHooks({
+    resolve(specifier, context, nextResolve) {
+      if (
+        (specifier.startsWith('./') || specifier.startsWith('../')) &&
+        !path.extname(specifier) &&
+        context.parentURL
+      ) {
+        const parentPath = fileURLToPath(context.parentURL);
+        const parentDir = path.dirname(parentPath);
+        for (const ext of ['.ts', '.tsx', '.mjs', '.js']) {
+          const candidate = path.resolve(parentDir, `${specifier}${ext}`);
+          if (fs.existsSync(candidate)) {
+            return nextResolve(pathToFileURL(candidate).href, context);
+          }
+        }
+      }
+      return nextResolve(specifier, context);
+    },
+  });
+}
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const repoRoot = path.resolve(__dirname, '../..');
+const load = rel => import(pathToFileURL(path.join(repoRoot, rel)).href);
+
+const lexiconMod = await load('src/utils/lexicon.ts');
+const navigationMod = await load('src/utils/navigation.ts');
+const navLinksMod = await load('src/utils/navLinks.ts');
+const shuffleMod = await load('src/utils/takeawayShuffle.ts');
+const crossBookMod = await load('src/utils/crossBookSynthesis.ts');
+const capstoneMod = await load('src/utils/capstonePrompt.ts');
+const mutationsMod = await load('src/context/pragyaMutations.ts');
+const metaCodecsMod = await load('src/utils/metaCodecs.ts');
+const sheetCodecsMod = await load('src/utils/sheetCodecs.ts');
+
+const {
+  buildWordLookupPrompt,
+  ensureVocabularyTag,
+  getLexiconStrollStatus,
+  getWordEncountersForBook,
+  getWordLexicon,
+  groupWordsByLemma,
+  isWordNote,
+  normalizeWordLexicon,
+  noteHasValidContent,
+  selectLexiconStroll,
+} = lexiconMod;
+const { isRestorableAppRoute, parseHash } = navigationMod;
+const { navAriaCurrent } = navLinksMod;
+const { isStructurallyEligibleForShuffle, selectTakeawayShuffle } = shuffleMod;
+const { findCrossBookEchoes, selectDailyCollisionPair } = crossBookMod;
+const { capstoneEligibleNotes } = capstoneMod;
+const { planCaptureWithAdvance, planQuickCaptureNote } = mutationsMod;
+const { normalizeNoteMeta } = metaCodecsMod;
+const { noteToRow, rowToNote } = sheetCodecsMod;
+
+function makeBook(overrides = {}) {
+  const currentPos = overrides.currentPos ?? 142;
+  const totalPos = overrides.totalPos ?? 218;
+  const status = overrides.status ?? 'reading';
+  const posUnit = overrides.posUnit ?? 'page';
+  const normalizedPos =
+    overrides.normalizedPos ??
+    (status === 'finished' ? 1 : posUnit === 'percent' ? currentPos / 100 : totalPos > 0 ? currentPos / totalPos : 0);
+  return {
+    id: 'book-1',
+    title: 'Thinking in Systems',
+    author: 'Donella Meadows',
+    format: 'physical',
+    kind: 'nonfiction',
+    status,
+    currentPos,
+    totalPos,
+    posUnit,
+    normalizedPos,
+    docUrl: '',
+    tags: ['#systems'],
+    meta: { updatedAt: '2026-10-01T00:00:00.000Z' },
+    ...overrides,
+  };
+}
+
+function makeNote(overrides = {}) {
+  return {
+    id: 'note-1',
+    slug: 'note-1',
+    bookId: 'book-1',
+    createdAt: '2026-10-01T10:00:00.000Z',
+    updatedAt: '2026-10-01T10:00:00.000Z',
+    pos: 40,
+    normalizedPos: 40 / 218,
+    status: 'saved',
+    source: 'app',
+    tags: ['#systems'],
+    quote: 'A sample passage.',
+    takeaway: 'A sample takeaway.',
+    contextMechanism: '',
+    critique: '',
+    deltaTrigger: '',
+    deltaAction: '',
+    deltaStatus: 'none',
+    meta: { attachments: [], links: [] },
+    ...overrides,
+  };
+}
+
+function makeWordNote(lex, overrides = {}) {
+  const lexicon = normalizeWordLexicon(lex);
+  return makeNote({
+    id: `word-${lexicon.lemma}-${overrides.pos ?? 40}`,
+    slug: lexicon.lemma,
+    tags: ['#vocabulary'],
+    quote: 'The system drifted into oscillation.',
+    takeaway: lexicon.transferExample ?? lexicon.definition ?? '',
+    ...overrides,
+    meta: {
+      title: lexicon.word,
+      attachments: [],
+      links: [],
+      entryKind: 'word',
+      lexicon,
+      ...(overrides.meta ?? {}),
+    },
+  });
+}
+
+test('Lexicon domain: isWordNote, getWordLexicon, normalization, and word-note validity', () => {
+  const regular = makeNote();
+  assert.equal(isWordNote(regular), false);
+  assert.equal(getWordLexicon(regular), null);
+  assert.equal(noteHasValidContent(regular), true);
+
+  const bareWord = makeWordNote(
+    { word: '  Pandemonium  ' },
+    { quote: '', takeaway: '' }
+  );
+  assert.equal(isWordNote(bareWord), true);
+  assert.equal(noteHasValidContent(bareWord), true);
+  const parsed = getWordLexicon(bareWord);
+  assert.deepEqual(parsed, {
+    word: 'Pandemonium',
+    lemma: 'pandemonium',
+  });
+
+  const malformed = makeNote({
+    quote: '',
+    takeaway: '',
+    meta: { attachments: [], links: [], entryKind: 'word' },
+  });
+  assert.equal(isWordNote(malformed), true);
+  assert.equal(getWordLexicon(malformed), null);
+  assert.equal(noteHasValidContent(malformed), false);
+
+  const emptyRegular = makeNote({ quote: '', takeaway: '' });
+  assert.equal(noteHasValidContent(emptyRegular), false);
+
+  assert.deepEqual(ensureVocabularyTag(['#systems', 'Philosophy', 'vocabulary']), [
+    '#systems',
+    '#philosophy',
+    '#vocabulary',
+  ]);
+});
+
+test('Lexicon domain: metaCodecs and sheetCodecs preserve entryKind and lexicon verbatim', () => {
+  const book = makeBook();
+  const note = makeWordNote({
+    word: 'Oscillation',
+    lemma: 'oscillation',
+    pronunciation: '/ˌɒs.ɪˈleɪ.ʃən/',
+    partOfSpeech: 'noun',
+    definition: 'Back-and-forth variation around an equilibrium point.',
+    etymology: 'Latin oscillare, to swing.',
+    transferExample: 'Hiring freezes triggered a two-year oscillation.',
+  });
+
+  const row = noteToRow(note);
+  const roundTripped = rowToNote(row);
+  assert.equal(roundTripped.meta.entryKind, 'word');
+  assert.deepEqual(roundTripped.meta.lexicon, note.meta.lexicon);
+
+  const normalizedMeta = normalizeNoteMeta({
+    ...roundTripped.meta,
+    customCompanionFlag: 'keep-me',
+  });
+  assert.equal(normalizedMeta.entryKind, 'word');
+  assert.equal(normalizedMeta.customCompanionFlag, 'keep-me');
+  assert.equal(getWordLexicon({ meta: normalizedMeta })?.definition, note.meta.lexicon?.definition);
+  assert.equal(getWordEncountersForBook(book, [roundTripped]).length, 1);
+});
+
+test('Lexicon domain: groupWordsByLemma groups multiple encounters and honors spoiler shield', () => {
+  const b1 = makeBook({ id: 'b1', title: 'Thinking in Systems', currentPos: 142, totalPos: 218 });
+  const b2 = makeBook({ id: 'b2', title: 'Exhalation', currentPos: 168, totalPos: 352, kind: 'fiction' });
+
+  const w1 = makeWordNote(
+    { word: 'Oscillation', lemma: 'oscillation' },
+    {
+      id: 'w1',
+      bookId: 'b1',
+      pos: 55,
+      normalizedPos: 55 / 218,
+      createdAt: '2026-10-02T10:00:00.000Z',
+      quote: 'Delays produce oscillation in stock levels.',
+      meta: { chapter: 'Ch. 2' },
+    }
+  );
+  const w2 = makeWordNote(
+    {
+      word: 'oscillations',
+      lemma: 'oscillation',
+      definition: 'Repeated swinging between opposing states.',
+      etymology: 'From Latin oscillum, a swing.',
+    },
+    {
+      id: 'w2',
+      bookId: 'b2',
+      pos: 90,
+      normalizedPos: 90 / 352,
+      createdAt: '2026-10-05T10:00:00.000Z',
+      quote: 'Tiny mechanical oscillations marked time.',
+    }
+  );
+  const spoilerWord = makeWordNote(
+    {
+      word: 'Tautology',
+      lemma: 'tautology',
+      definition: 'Needless repetition of the same idea.',
+    },
+    {
+      id: 'w3',
+      bookId: 'b2',
+      pos: 260,
+      normalizedPos: 260 / 352,
+      createdAt: '2026-10-06T10:00:00.000Z',
+      quote: 'A late-book spoiler line.',
+    }
+  );
+  const archivedWord = makeWordNote(
+    { word: 'Obsolete', lemma: 'obsolete' },
+    {
+      id: 'w4',
+      bookId: 'b1',
+      pos: 20,
+      normalizedPos: 20 / 218,
+      meta: { archivedAt: '2026-10-07T00:00:00.000Z' },
+    }
+  );
+
+  const groups = groupWordsByLemma([w1, w2, spoilerWord, archivedWord], [b1, b2]);
+  assert.equal(groups.length, 2);
+
+  // Unshielded group sorts first cleanly; shielded-only sorts last with redacted text.
+  const osc = groups[0];
+  assert.equal(osc.lemma, 'oscillation');
+  assert.equal(osc.encounters.length, 2);
+  assert.equal(osc.definition, 'Repeated swinging between opposing states.');
+  assert.equal(osc.allShielded, false);
+
+  const hidden = groups[1];
+  assert.equal(hidden.allShielded, true);
+  assert.equal(hidden.word, '');
+  assert.equal(hidden.lemma, '');
+  assert.equal(hidden.definition, undefined);
+  assert.equal(hidden.encounters[0].shielded, true);
+  assert.equal(hidden.encounters[0].quote, '');
+  assert.equal(hidden.encounters[0].posLabel, 'p. 260');
+
+  // Search query must never leak shielded future words
+  const searchLeakCheck = groupWordsByLemma([w1, w2, spoilerWord], [b1, b2], {
+    query: 'tautology',
+  });
+  assert.equal(searchLeakCheck.length, 0);
+
+  // includeSpoilers reveals it for companion CLI
+  const withSpoilers = groupWordsByLemma([spoilerWord], [b1, b2], {
+    includeSpoilers: true,
+  });
+  assert.equal(withSpoilers[0].word, 'Tautology');
+  assert.equal(withSpoilers[0].encounters[0].shielded, false);
+});
+
+test('Lexicon domain: D8 excludes word notes from Shuffle, Collision, Cross-Book Echoes, and Capstone', () => {
+  const b1 = makeBook({ id: 'b1', title: 'Book One', currentPos: 200, totalPos: 200, status: 'finished' });
+  const b2 = makeBook({ id: 'b2', title: 'Book Two', currentPos: 150, totalPos: 200, status: 'reading' });
+
+  const regular1 = makeNote({
+    id: 'n1',
+    slug: 'n1',
+    bookId: 'b1',
+    tags: ['#systems', '#feedback'],
+    createdAt: '2026-09-01T10:00:00.000Z',
+    takeaway: 'Delays in feedback loops destabilize systems.',
+    meta: { attachments: [], links: ['n2'] },
+  });
+  const regular2 = makeNote({
+    id: 'n2',
+    slug: 'n2',
+    bookId: 'b2',
+    tags: ['#systems', '#feedback'],
+    createdAt: '2026-09-02T10:00:00.000Z',
+    takeaway: 'Control depends on timely measurement.',
+    meta: { attachments: [], links: [] },
+  });
+
+  const word1 = makeWordNote(
+    {
+      word: 'Homeostasis',
+      definition: 'Self-regulating stability in a complex system.',
+      transferExample: 'Sleep enforces metabolic homeostasis.',
+    },
+    {
+      id: 'w1',
+      bookId: 'b1',
+      pos: 50,
+      normalizedPos: 0.25,
+      createdAt: '2026-09-01T10:00:00.000Z',
+      tags: ['#systems', '#vocabulary', '#favorite'],
+    }
+  );
+  const word2 = makeWordNote(
+    {
+      word: 'Equilibrium',
+      definition: 'Balance between opposing forces.',
+      transferExample: 'Markets rarely stay in static equilibrium.',
+    },
+    {
+      id: 'w2',
+      bookId: 'b2',
+      pos: 60,
+      normalizedPos: 0.3,
+      createdAt: '2026-09-01T10:00:00.000Z',
+      tags: ['#systems', '#vocabulary', '#favorite'],
+    }
+  );
+
+  // Shuffle exclusion
+  assert.equal(isStructurallyEligibleForShuffle(word1, b1, '2026-10-15'), false);
+  const shuffled = selectTakeawayShuffle([word1, word2], [b1, b2], '2026-10-15');
+  assert.deepEqual(shuffled, []);
+
+  // Collision exclusion (word notes cannot form collision pairs; regular1+regular2 pairs cleanly when word notes exist)
+  assert.equal(selectDailyCollisionPair([word1, word2], [b1, b2], '2026-10-15'), null);
+  assert.equal(selectDailyCollisionPair([regular1, word2], [b1, b2], '2026-10-15'), null);
+  const regularPair = selectDailyCollisionPair(
+    [regular1, regular2, word1, word2],
+    [b1, b2],
+    '2026-10-15'
+  );
+  assert.equal(regularPair?.pairKey, 'n1::n2');
+  assert.equal(regularPair?.totalCandidates, 1);
+
+  // Cross-book echoes exclusion (returns regular2 but never word2)
+  const echoes = findCrossBookEchoes(b1, [regular1, regular2, word1, word2], [b1, b2]);
+  assert.deepEqual(
+    echoes.map(e => e.note.id),
+    ['n2']
+  );
+
+  // Capstone exclusion
+  const cap = capstoneEligibleNotes(b1, [regular1, word1]);
+  assert.deepEqual(
+    cap.map(n => n.id),
+    ['n1']
+  );
+});
+
+test('Lexicon domain: selectLexiconStroll picks 1-2 unshielded >=1-day words deterministically and honors reviewed today', () => {
+  const b1 = makeBook({ id: 'b1', currentPos: 120, totalPos: 200 });
+  const wFresh = makeWordNote(
+    { word: 'FreshWord', definition: 'Created today.' },
+    { id: 'w-fresh', bookId: 'b1', pos: 10, normalizedPos: 0.05, createdAt: '2026-10-15T09:00:00.000Z' }
+  );
+  const wSpoiler = makeWordNote(
+    { word: 'FutureWord', definition: 'Ahead of bookmark.' },
+    { id: 'w-spoiler', bookId: 'b1', pos: 180, normalizedPos: 0.9, createdAt: '2026-10-10T09:00:00.000Z' }
+  );
+  const wReady1 = makeWordNote(
+    { word: 'Oscillation', definition: 'Swinging back and forth.' },
+    { id: 'w-1', bookId: 'b1', pos: 30, normalizedPos: 0.15, createdAt: '2026-10-13T09:00:00.000Z' }
+  );
+  const wReady2 = makeWordNote(
+    { word: 'Pandemonium', definition: 'Wild and noisy disorder.' },
+    { id: 'w-2', bookId: 'b1', pos: 60, normalizedPos: 0.3, createdAt: '2026-10-12T09:00:00.000Z' }
+  );
+  const wReady3 = makeWordNote(
+    { word: 'Ephemeral', definition: 'Lasting for a very short time.' },
+    { id: 'w-3', bookId: 'b1', pos: 80, normalizedPos: 0.4, createdAt: '2026-10-11T09:00:00.000Z' }
+  );
+
+  const notes = [wFresh, wSpoiler, wReady1, wReady2, wReady3];
+  const pickA = selectLexiconStroll(notes, [b1], '2026-10-15', 2);
+  const pickB = selectLexiconStroll(notes, [b1], '2026-10-15', 2);
+  assert.equal(pickA.length, 2);
+  assert.deepEqual(
+    pickA.map(p => p.note.id),
+    pickB.map(p => p.note.id)
+  );
+  assert.ok(!pickA.some(p => p.note.id === 'w-fresh' || p.note.id === 'w-spoiler'));
+
+  // Marking one reviewed today excludes it from today's stroll and advances pool
+  const reviewedFirst = notes.map(n =>
+    n.id === pickA[0].note.id
+      ? { ...n, meta: { ...n.meta, lastReviewedAt: '2026-10-15T12:00:00.000Z' } }
+      : n
+  );
+  const afterReview = getLexiconStrollStatus(reviewedFirst, [b1], '2026-10-15', 2);
+  assert.equal(afterReview.totalPoolCount, 3);
+  assert.equal(afterReview.freshTodayCount, 1);
+  assert.equal(afterReview.reviewedTodayCount, 1);
+  assert.equal(afterReview.items.length, 2);
+  assert.ok(!afterReview.items.some(p => p.note.id === pickA[0].note.id));
+});
+
+test('Lexicon routing & capture planner: parseHash, navAriaCurrent, planQuickCaptureNote', () => {
+  assert.deepEqual(parseHash('#/lexicon'), { view: 'lexicon', raw: '#/lexicon' });
+  assert.equal(isRestorableAppRoute('#/lexicon'), true);
+  assert.equal(navAriaCurrent('lexicon', 'lexicon'), 'page');
+  assert.equal(navAriaCurrent('notes', 'lexicon'), undefined);
+
+  const bookRoute = parseHash('#/book/book-1?note=note-99');
+  assert.deepEqual(bookRoute, {
+    view: 'book',
+    bookId: 'book-1',
+    noteId: 'note-99',
+    raw: '#/book/book-1?note=note-99',
+  });
+  assert.equal(isRestorableAppRoute('#/book/book-1?note=note-99'), true);
+
+  const book = makeBook({ currentPos: 50, totalPos: 200 });
+  const planned = planQuickCaptureNote(
+    {
+      bookId: book.id,
+      pos: 62,
+      quote: 'A scene of pandemonium broke out.',
+      takeaway: '',
+      tags: ['systems'],
+      chapter: 'Part I',
+      entryKind: 'word',
+      lexicon: {
+        word: 'Pandemonium',
+        definition: 'Wild uproar.',
+      },
+    },
+    book,
+    [],
+    '2026-10-15T08:00:00.000Z',
+    'uuid-word-1'
+  );
+  assert.equal(planned.status, 'saved');
+  assert.equal(planned.slug, 'pandemonium');
+  assert.equal(planned.meta.title, 'Pandemonium');
+  assert.equal(planned.meta.entryKind, 'word');
+  assert.deepEqual(planned.meta.lexicon, {
+    word: 'Pandemonium',
+    lemma: 'pandemonium',
+    definition: 'Wild uproar.',
+  });
+  assert.equal(planned.takeaway, 'Wild uproar.');
+  assert.ok(planned.tags.includes('#vocabulary'));
+
+  const batch = planCaptureWithAdvance(
+    {
+      bookId: book.id,
+      pos: 62,
+      takeaway: '',
+      tags: [],
+      entryKind: 'word',
+      lexicon: { word: 'Liminal' },
+    },
+    book,
+    [planned],
+    [],
+    '2026-10-15T09:00:00.000Z'
+  );
+  assert.equal(batch.advance?.changed, true);
+  assert.equal(batch.newNote.slug, 'liminal');
+  assert.equal(batch.newNote.takeaway, '');
+  assert.equal(noteHasValidContent(batch.newNote), true);
+
+  const prompt = buildWordLookupPrompt({
+    word: 'Oscillation',
+    bookTitle: 'Thinking in Systems',
+    author: 'Donella Meadows',
+    chapter: 'Ch. 2',
+    posLabel: 'p. 55',
+    quote: 'Delays cause oscillation.',
+  });
+  assert.match(prompt, /Look up the word "Oscillation"/);
+  assert.match(prompt, /Thinking in Systems/);
+  assert.match(prompt, /Delays cause oscillation\./);
+});

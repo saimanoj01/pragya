@@ -102,6 +102,15 @@ export function buildNoteSearchHaystack(
         // CD C3.4: Layer-2 delta fields and old slugs (revealed notes only).
         str(note.deltaTrigger),
         str(note.deltaAction),
+        ...(note.meta?.entryKind === 'word' && note.meta?.lexicon
+          ? [
+              str(note.meta.lexicon.word),
+              str(note.meta.lexicon.lemma),
+              str(note.meta.lexicon.definition),
+              str(note.meta.lexicon.etymology),
+              str(note.meta.lexicon.transferExample),
+            ]
+          : []),
         ...noteAliases(note),
         ...safe,
       ];

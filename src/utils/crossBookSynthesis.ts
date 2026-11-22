@@ -97,6 +97,7 @@ export function findCrossBookEchoes(
   const bookNotes = allNotes.filter(
     n =>
       n.bookId === book.id &&
+      n.meta?.entryKind !== 'word' &&
       !isArchived(n) &&
       !isNoteSpoiler(n, book) &&
       !isSealedPrediction(n, book)
@@ -116,6 +117,7 @@ export function findCrossBookEchoes(
   const echoes: CrossBookEcho[] = [];
   for (const cand of allNotes) {
     if (cand.bookId === book.id) continue;
+    if (cand.meta?.entryKind === 'word') continue;
     if (isArchived(cand)) continue;
     const candBook = bookMap.get(cand.bookId);
     if (!candBook || isArchived(candBook)) continue;
@@ -202,6 +204,7 @@ export function selectDailyCollisionPair(
   const bookMap = new Map(books.map(b => [b.id, b] as const));
   const eligible = notes
     .filter(n => {
+      if (n.meta?.entryKind === 'word') return false;
       if (isArchived(n)) return false;
       const b = bookMap.get(n.bookId);
       if (!b || isArchived(b)) return false;

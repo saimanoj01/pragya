@@ -30,6 +30,11 @@ import { normalizeTagList } from '../utils/sheetCodecs';
 import { computeNormalizedPos } from '../utils/spoilerMath';
 import { addSlugAlias, generateUniqueSlug, takenSlugs } from '../utils/wikilinks';
 import { normalizeBookContextValue } from '../utils/readingMomentum';
+import {
+  ensureVocabularyTag,
+  normalizeWordLexicon,
+  type WordLexiconInput,
+} from '../utils/lexicon';
 
 /**
  * Pure, Node-testable mutation planners extracted from PragyaContext (CD Batch 7 D3.2).
@@ -71,6 +76,10 @@ export interface QuickCaptureInput {
   chapter?: string;
   /** CD C3.3: capture for a missing `[[slug]]` — the note takes this slug when it's free. */
   slug?: string;
+  /** v2 Lexicon: when `'word'`, creates a contextual vocabulary note row. */
+  entryKind?: 'word';
+  /** v2 Lexicon: structured lexicon fields when `entryKind === 'word'`. */
+  lexicon?: WordLexiconInput;
 }
 
 export interface UpdateNoteOptions {
@@ -396,9 +405,24 @@ export function planQuickCaptureNote(
     .filter((a): a is Extract<Attachment, { type: 'link' | 'doc' }> => a.type !== 'image')
     .map(a => a.url);
 
+  const isWord = input.entryKind === 'word';
+  const normalizedLexicon = isWord && input.lexicon
+    ? normalizeWordLexicon(input.lexicon)
+    : undefined;
+
+  const effectiveTitle = isWord
+    ? normalizedLexicon?.word || (input.title || '').trim()
+    : (input.title || '').trim();
+  const effectiveTakeaway = isWord
+    ? input.takeaway.trim() ||
+      normalizedLexicon?.transferExample ||
+      normalizedLexicon?.definition ||
+      ''
+    : input.takeaway.trim();
+
   const slugSource =
-    (input.title || '').trim() ||
-    input.takeaway.trim().split(/\s+/).slice(0, 6).join(' ') ||
+    effectiveTitle ||
+    effectiveTakeaway.split(/\s+/).slice(0, 6).join(' ') ||
     (input.quote || '').trim().split(/\s+/).slice(0, 6).join(' ') ||
     `${book.title} p${pos}`;
 
@@ -408,6 +432,8 @@ export function planQuickCaptureNote(
     takenSlugs([...existingNotes])
   );
   const chapter = normalizeChapterInput(input.chapter);
+  const baseTags = normalizeTagList(input.tags || []);
+  const tags = isWord ? ensureVocabularyTag(baseTags) : baseTags;
 
   return {
     id,
@@ -417,22 +443,27 @@ export function planQuickCaptureNote(
     updatedAt: nowIso,
     pos,
     normalizedPos,
-    status: input.sparLater ? 'inbox' : 'saved',
+    status: isWord ? 'saved' : input.sparLater ? 'inbox' : 'saved',
     source: 'app',
-    tags: normalizeTagList(input.tags || []),
+    tags,
     quote: (input.quote || '').trim(),
-    takeaway: input.takeaway.trim(),
+    takeaway: effectiveTakeaway,
     contextMechanism: '',
     critique: '',
     deltaTrigger: '',
     deltaAction: '',
     deltaStatus: 'none',
     meta: {
-      ...(input.title?.trim() ? { title: input.title.trim() } : {}),
+      ...(effectiveTitle ? { title: effectiveTitle } : {}),
       attachments,
       links,
-      ...(book.kind === 'fiction' && input.isPrediction ? { isPrediction: true } : {}),
+      ...(!isWord && book.kind === 'fiction' && input.isPrediction
+        ? { isPrediction: true }
+        : {}),
       ...(chapter ? { chapter } : {}),
+      ...(isWord && normalizedLexicon
+        ? { entryKind: 'word' as const, lexicon: normalizedLexicon }
+        : {}),
     },
   };
 }

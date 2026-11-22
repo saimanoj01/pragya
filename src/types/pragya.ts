@@ -88,6 +88,16 @@ export type Attachment =
       url: string;
     };
 
+export interface WordLexicon {
+  word: string;
+  lemma: string;
+  pronunciation?: string;
+  partOfSpeech?: string;
+  definition?: string;
+  etymology?: string;
+  transferExample?: string;
+}
+
 export interface NoteMetaJson {
   title?: string;
   /**
@@ -119,6 +129,10 @@ export interface NoteMetaJson {
   relatedSlugs?: string[];
   /** v2: optional 1-line bridge reasons keyed by target slug (<= 240 chars), read via `getNoteBridgeNotes()`. */
   bridgeNotes?: Record<string, string>;
+  /** v2 Lexicon: marks a Note row as a contextual vocabulary entry (`'word'`). */
+  entryKind?: 'word';
+  /** v2 Lexicon: structured word metadata when `entryKind === 'word'`. */
+  lexicon?: WordLexicon;
   /** Unknown keys (e.g. written by the CLI/skill) are preserved verbatim on round-trip. */
   [extraKey: string]: unknown;
 }

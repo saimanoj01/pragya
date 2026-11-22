@@ -448,6 +448,7 @@ export function buildReEntryPrompt(
     .filter(
       n =>
         n.bookId === book.id &&
+        n.meta?.entryKind !== 'word' &&
         !isArchived(n) &&
         !isNoteSpoiler(n, book) &&
         !isSealedPrediction(n, book) &&

@@ -1,7 +1,7 @@
 import type React from 'react';
 import { navigateTo, type PragyaView } from './navigation';
 
-export type NavDestination = 'shelf' | 'notes' | 'practice' | 'settings';
+export type NavDestination = 'shelf' | 'notes' | 'practice' | 'lexicon' | 'settings';
 
 /**
  * CD D2.2 / ux_spec_cd §D.3.3: `aria-current` for a primary destination. The exact page gets

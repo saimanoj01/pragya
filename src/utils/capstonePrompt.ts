@@ -38,6 +38,7 @@ export function capstoneEligibleNotes(book: Book, notes: Note[]): Note[] {
   return notes.filter(
     n =>
       n.bookId === book.id &&
+      n.meta?.entryKind !== 'word' &&
       !isArchived(n) && // QA-27 / R1#2: CLI build_notes_summary parity
       (n.status === 'saved' || n.status === 'atomic') &&
       (finished || !(isNoteSpoiler(n, book) || isSealedPrediction(n, book)))

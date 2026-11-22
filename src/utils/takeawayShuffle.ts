@@ -48,7 +48,7 @@ export function isFavoriteNote(note: Note): boolean {
   });
 }
 
-function fnv1aHash(input: string): number {
+export function fnv1aHash(input: string): number {
   let hash = 0x811c9dc5;
   for (let i = 0; i < input.length; i += 1) {
     hash ^= input.charCodeAt(i);
@@ -63,6 +63,7 @@ export function isStructurallyEligibleForShuffle(
   todayDate: string
 ): boolean {
   if (isArchived(note)) return false;
+  if (note.meta?.entryKind === 'word') return false;
   if (isNoteSpoiler(note, book)) return false;
   if (isSealedPrediction(note, book)) return false;
   if (!note.takeaway?.trim() && !note.quote?.trim()) return false;

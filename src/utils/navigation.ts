@@ -1,13 +1,21 @@
-export type PragyaView = 'shelf' | 'book' | 'notes' | 'note' | 'practice' | 'settings';
+export type PragyaView =
+  | 'shelf'
+  | 'book'
+  | 'notes'
+  | 'note'
+  | 'practice'
+  | 'lexicon'
+  | 'settings';
 
 export interface PragyaRoute {
   view: PragyaView;
   bookId?: string;
   noteSlug?: string;
+  noteId?: string;
   raw: string;
 }
 
-const ROUTE_PREFIXES = ['shelf', 'book/', 'notes', 'note/', 'practice', 'settings'];
+const ROUTE_PREFIXES = ['shelf', 'book/', 'notes', 'note/', 'practice', 'lexicon', 'settings'];
 
 export function isOAuthCallbackHash(hash: string): boolean {
   const h = hash || '';
@@ -58,7 +66,9 @@ export function parseHash(hashValue?: string): PragyaRoute {
   }
 
   const withoutHash = raw.startsWith('#') ? raw.slice(1) : raw;
-  const [pathOnly] = withoutHash.split('?');
+  const qIndex = withoutHash.indexOf('?');
+  const pathOnly = qIndex >= 0 ? withoutHash.slice(0, qIndex) : withoutHash;
+  const queryString = qIndex >= 0 ? withoutHash.slice(qIndex + 1) : '';
   const normalized = pathOnly.replace(/^\/+/, '').replace(/\/+$/, '');
   if (!normalized) {
     return { view: 'shelf', raw };
@@ -71,7 +81,14 @@ export function parseHash(hashValue?: string): PragyaRoute {
     return { view: 'shelf', raw };
   }
   if (head === 'book' && segments[1]) {
-    return { view: 'book', bookId: safeDecode(segments[1]), raw };
+    const params = queryString ? new URLSearchParams(queryString) : null;
+    const rawNoteId = params?.get('note')?.trim() || undefined;
+    return {
+      view: 'book',
+      bookId: safeDecode(segments[1]),
+      ...(rawNoteId ? { noteId: rawNoteId } : {}),
+      raw,
+    };
   }
   if (head === 'notes') {
     return { view: 'notes', raw };
@@ -81,6 +98,9 @@ export function parseHash(hashValue?: string): PragyaRoute {
   }
   if (head === 'practice') {
     return { view: 'practice', raw };
+  }
+  if (head === 'lexicon') {
+    return { view: 'lexicon', raw };
   }
   if (head === 'settings') {
     return { view: 'settings', raw };
@@ -113,7 +133,7 @@ export function isRestorableAppRoute(hash: string | null | undefined): hash is s
   if (hash.length > 512) return false;
   const withoutHash = hash.slice(2).split('?')[0];
   const head = withoutHash.split('/')[0]?.toLowerCase() || '';
-  return ['shelf', 'book', 'notes', 'note', 'practice', 'settings'].includes(head);
+  return ['shelf', 'book', 'notes', 'note', 'practice', 'lexicon', 'settings'].includes(head);
 }
 
 /** Resolve the post-login landing hash from a stored pre-login route. */

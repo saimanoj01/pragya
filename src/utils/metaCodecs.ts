@@ -377,6 +377,12 @@ export const BOOK_QUESTIONS_OWNED_META_KEYS: readonly string[] = ['readingQuesti
 export const BOOK_NEXT_STOP_OWNED_META_KEYS: readonly string[] = ['nextStop', 'updatedAt'];
 /** v2 note bridge actions (CollisionCard / NoteDetailView unlink): only relatedSlugs + bridgeNotes. */
 export const NOTE_BRIDGES_OWNED_META_KEYS: readonly string[] = ['relatedSlugs', 'bridgeNotes'];
+/** v2 Lexicon note edits (entryKind + lexicon, preserving unknown meta keys). */
+export const NOTE_LEXICON_OWNED_META_KEYS: readonly string[] = [
+  ...NOTE_CHAPTER_EDITOR_OWNED_META_KEYS,
+  'entryKind',
+  'lexicon',
+];
 
 /** Key-order-insensitive JSON for deep-equality checks. */
 function stableJson(value: unknown): string {
