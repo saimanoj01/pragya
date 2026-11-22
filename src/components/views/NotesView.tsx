@@ -43,6 +43,7 @@ import { useDeleteForever } from '../../hooks/useDeleteForever';
 import { ConfirmDialog } from '../common/ConfirmDialog';
 import { archivedDateLabel, onlyArchived, withoutArchived } from '../../utils/archive';
 import { hasOpenDialog } from '../../utils/dialogOverlay';
+import { isWordNote } from '../../utils/lexicon';
 import { ChapterPosChip } from '../common/ChapterPosChip';
 
 /** CD C3.4: scroll + focused card per notes hash, restored on Back (sessionStorage). */
@@ -66,9 +67,15 @@ export const NotesView: React.FC<NotesViewProps> = ({
   const { books, notes: allNotes } = usePragyaData();
   const { restoreNoteFromArchive } = useArchiveActions();
   const { requestDeleteNote, dialogProps: deleteDialogProps } = useDeleteForever();
+  // D8: contextual vocabulary notes live in #/lexicon rather than cluttering the default Notes stream.
+  const ideaNotes = useMemo(() => allNotes.filter(n => !isWordNote(n)), [allNotes]);
   // C1.1: archived notes leave the stream, counts and search; they live behind the pill.
-  const notes = useMemo(() => withoutArchived(allNotes), [allNotes]);
-  const archivedNotes = useMemo(() => onlyArchived(allNotes), [allNotes]);
+  const notes = useMemo(() => withoutArchived(ideaNotes), [ideaNotes]);
+  const archivedNotes = useMemo(() => onlyArchived(ideaNotes), [ideaNotes]);
+  const wordCount = useMemo(
+    () => withoutArchived(allNotes).filter(n => isWordNote(n)).length,
+    [allNotes]
+  );
 
   // CD C3.4: state lives in the hash query (`#/notes?q=…&tag=…&book=…&filter=…&sort=…`).
   const [qs, setQs] = useState<NotesQueryState>(readHashState);
@@ -401,15 +408,31 @@ export const NotesView: React.FC<NotesViewProps> = ({
           </p>
         </div>
 
-        <button
-          type="button"
-          data-testid="notes-quick-capture-btn"
-          onClick={onOpenCapture}
-          className="h-11 sm:h-10 px-4 rounded-full bg-primary text-primary-foreground text-body font-semibold hover:opacity-90 transition-opacity whitespace-nowrap shrink-0 inline-flex items-center gap-1.5"
-        >
-          <Plus className="w-4 h-4" />
-          <span>Quick Capture</span>
-        </button>
+        <div className="flex items-center gap-2 shrink-0">
+          {wordCount > 0 && (
+            <a
+              href="#/lexicon"
+              data-testid="notes-lexicon-link"
+              onClick={e => {
+                if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
+                e.preventDefault();
+                navigateTo('#/lexicon');
+              }}
+              className="h-11 sm:h-10 px-3.5 rounded-full bg-surface2 border border-border text-label font-semibold text-foreground hover:bg-secondary transition-colors inline-flex items-center whitespace-nowrap"
+            >
+              Lexicon ({wordCount}) →
+            </a>
+          )}
+          <button
+            type="button"
+            data-testid="notes-quick-capture-btn"
+            onClick={onOpenCapture}
+            className="h-11 sm:h-10 px-4 rounded-full bg-primary text-primary-foreground text-body font-semibold hover:opacity-90 transition-opacity whitespace-nowrap inline-flex items-center gap-1.5"
+          >
+            <Plus className="w-4 h-4" />
+            <span>Quick Capture</span>
+          </button>
+        </div>
       </div>
 
       {/* Search & Filters */}

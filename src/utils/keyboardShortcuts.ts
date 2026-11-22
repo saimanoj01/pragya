@@ -34,7 +34,10 @@ export const KEYBOARD_SHORTCUTS: ShortcutSection[] = [
       { keys: [k(MOD_KEY), k('K')], action: 'Open search & commands' },
       { keys: [k('N')], action: 'New capture (uses the current book on a book or note page)' },
       { keys: [k('R')], action: 'Sync now' },
-      { keys: [k('G'), t('then'), k('S'), t('/'), k('N'), t('/'), k('P')], action: 'Go to Shelf / Notes / Practice' },
+      {
+        keys: [k('G'), t('then'), k('S'), t('/'), k('N'), t('/'), k('P'), t('/'), k('W')],
+        action: 'Go to Shelf / Notes / Practice / Lexicon',
+      },
       { keys: [k('Esc')], action: 'Close dialog · back from a book or note page' },
       { keys: [k('?')], action: 'Show this list' },
     ],

@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   BookOpen,
+  BookOpenText,
   FileText,
   Plus,
   Target,
@@ -163,7 +164,7 @@ export const BottomNav: React.FC<BottomNavProps> = ({
             aria-expanded={showMoreMenu}
             onClick={() => setShowMoreMenu(prev => !prev)}
             className={`min-h-11 min-w-11 flex flex-col items-center justify-center flex-1 py-1 rounded-[8px] text-label font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40 ${
-              showMoreMenu || currentView === 'settings'
+              showMoreMenu || currentView === 'settings' || currentView === 'lexicon'
                 ? 'text-foreground'
                 : 'text-muted-foreground hover:text-foreground'
             }`}
@@ -228,6 +229,20 @@ export const BottomNav: React.FC<BottomNavProps> = ({
                   {modLabel}K
                 </kbd>
               </button>
+
+              <a
+                href="#/lexicon"
+                data-testid="drawer-nav-lexicon"
+                aria-current={navAriaCurrent('lexicon', currentView)}
+                onClick={e => {
+                  setShowMoreMenu(false);
+                  handleNavLinkClick(e, '#/lexicon');
+                }}
+                className="min-h-11 flex items-center gap-2.5 p-3 rounded-[10px] bg-surface2/60 hover:bg-surface2 border border-border text-label font-semibold text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
+              >
+                <BookOpenText className="w-4 h-4 shrink-0" />
+                <span>Lexicon</span>
+              </a>
 
               <a
                 href="#/settings"

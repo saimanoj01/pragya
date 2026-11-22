@@ -23,6 +23,7 @@ import { resolveCaptureBookId } from './utils/captureContext';
 import { BookDetailView } from './components/views/BookDetailView';
 import { NoteDetailView } from './components/views/NoteDetailView';
 import { PracticeView } from './components/views/PracticeView';
+import { LexiconView } from './components/views/LexiconView';
 import { AddBookModal } from './components/modals/AddBookModal';
 import { EditBookModal } from './components/modals/EditBookModal';
 import { QuickCaptureModal } from './components/modals/QuickCaptureModal';
@@ -50,6 +51,7 @@ function PragyaShell() {
   const [captureBookId, setCaptureBookId] = useState<string | null>(null);
   const [captureBookSource, setCaptureBookSource] = useState<'explicit' | 'route'>('explicit');
   const [capturePrefill, setCapturePrefill] = useState<{ initialTitle: string; initialSlug: string } | null>(null);
+  const [captureInitialMode, setCaptureInitialMode] = useState<'note' | 'word'>('note');
   const [showAddBookModal, setShowAddBookModal] = useState(false);
   const [editingBook, setEditingBook] = useState<Book | null>(null);
   const [deepeningNote, setDeepeningNote] = useState<Note | null>(null);
@@ -101,21 +103,24 @@ function PragyaShell() {
 
   const openQuickCapture = (
     bookId: string | null = null,
-    prefill: { initialTitle: string; initialSlug: string } | null = null
+    prefill: { initialTitle: string; initialSlug: string } | null = null,
+    mode: 'note' | 'word' = 'note'
   ) => {
     setCaptureBookId(bookId);
     setCaptureBookSource('explicit');
     setCapturePrefill(prefill);
+    setCaptureInitialMode(mode);
     setShowCaptureModal(true);
   };
 
   // CD C4.3: Sidebar / FAB / palette / `N` keep the book you're looking at (book page, or
   // the open note's book) as a soft preselect.
-  function openGlobalCapture() {
+  function openGlobalCapture(mode: 'note' | 'word' = 'note') {
     const bookId = resolveCaptureBookId(route, notes, books);
     setCaptureBookId(bookId);
     setCaptureBookSource('route');
     setCapturePrefill(null);
+    setCaptureInitialMode(mode);
     setShowCaptureModal(true);
   }
 
@@ -164,6 +169,8 @@ function PragyaShell() {
     );
   } else if (route.view === 'practice') {
     mainContent = <PracticeView />;
+  } else if (route.view === 'lexicon') {
+    mainContent = <LexiconView onOpenWordCapture={() => openGlobalCapture('word')} />;
   } else {
     mainContent = (
       <ShelfView
@@ -260,6 +267,7 @@ function PragyaShell() {
             initialBookSource={captureBookSource}
             initialTitle={capturePrefill?.initialTitle}
             initialSlug={capturePrefill?.initialSlug}
+            initialMode={captureInitialMode}
             onClose={() => setShowCaptureModal(false)}
             onOpenAddBook={() => setShowAddBookModal(true)}
           />
@@ -294,7 +302,8 @@ function PragyaShell() {
             onClose={() => setShowCommandPalette(false)}
             books={books}
             notes={notes}
-            onOpenCapture={openGlobalCapture}
+            onOpenCapture={() => openGlobalCapture('note')}
+            onOpenWordCapture={() => openGlobalCapture('word')}
             onToggleTheme={toggleTheme}
             onSyncNow={() => void syncNow(true)}
             onOpenKeyboardHelp={() => setShowKeyboardHelp(true)}

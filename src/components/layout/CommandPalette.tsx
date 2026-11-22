@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from 
 import {
   Search,
   BookOpen,
+  BookOpenText,
   FileText,
   Target,
   Settings,
@@ -17,6 +18,7 @@ import { dialogClosedByValue } from '../../utils/dialogOverlay';
 import { navigateTo } from '../../utils/navigation';
 import { isNoteSpoiler } from '../../utils/spoilerMath';
 import { isArchived } from '../../utils/archive';
+import { isWordNote } from '../../utils/lexicon';
 import { buildNoteSearchHaystack, noteHref, shieldedNoteLabel } from '../../utils/noteVisibility';
 import { hasFinePointer } from '../../utils/keyboardShortcuts';
 
@@ -26,6 +28,7 @@ export interface CommandPaletteProps {
   books: Book[];
   notes: Note[];
   onOpenCapture: () => void;
+  onOpenWordCapture?: () => void;
   onToggleTheme: () => void;
   onSyncNow: () => void;
   /** CD D2.1: `Keyboard Shortcuts` command (subtitle `?`). */
@@ -56,6 +59,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
   books,
   notes,
   onOpenCapture,
+  onOpenWordCapture,
   onToggleTheme,
   onSyncNow,
   onOpenKeyboardHelp,
@@ -110,6 +114,19 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
         keywords: ['capture', 'new', 'note', 'quote'],
         action: onOpenCapture,
       },
+      ...(onOpenWordCapture
+        ? [
+            {
+              id: 'capture-word',
+              title: 'Capture Word',
+              subtitle: 'Save an unfamiliar or resonant word to your Lexicon',
+              category: 'Actions' as const,
+              icon: BookOpenText,
+              keywords: ['word', 'lexicon', 'vocabulary', 'define', 'capture'],
+              action: onOpenWordCapture,
+            },
+          ]
+        : []),
       {
         id: 'go-shelf',
         title: 'Go to Shelf',
@@ -136,6 +153,15 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
         icon: Target,
         keywords: ['practice', 'deltas', 'shuffle'],
         action: () => navigateTo('#/practice'),
+      },
+      {
+        id: 'go-lexicon',
+        title: 'Go to Lexicon',
+        subtitle: 'Vocabulary met in books, grouped by lemma (G then W)',
+        category: 'Views',
+        icon: BookOpenText,
+        keywords: ['lexicon', 'vocabulary', 'words', 'glossary'],
+        action: () => navigateTo('#/lexicon'),
       },
       {
         id: 'go-settings',
@@ -196,17 +222,21 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
       const spoiler = isNoteSpoiler(note, book);
       // B2.2 / decisions.md #2: a shielded note shows only its position; title, slug and
       // content never reach the palette (title, keywords or the DOM test id).
+      const wordEntry = !spoiler && isWordNote(note) ? note.meta?.lexicon : undefined;
       const title = spoiler
         ? shieldedNoteLabel(note, book)
-        : String(note.meta?.title || note.slug || '');
+        : String(wordEntry?.word || note.meta?.title || note.slug || '');
+      const plainSubtitle = wordEntry
+        ? `${book?.title || 'Book'} · ${wordEntry.definition || note.quote || 'Lexicon word'}`
+        : `${book?.title || 'Book'} · ${note.takeaway || note.quote}`;
       list.push({
         id: spoiler ? `note-shielded-${note.id}` : `note-${note.slug}`,
         title,
         subtitle: spoiler
           ? `${book?.title || 'Book'} · Spoiler Shielded`
-          : `${book?.title || 'Book'} · ${note.takeaway || note.quote}`.slice(0, 90),
+          : plainSubtitle.slice(0, 90),
         category: 'Notes',
-        icon: FileText,
+        icon: wordEntry ? BookOpenText : FileText,
         keywords: spoiler
           ? [buildNoteSearchHaystack(note, book)]
           : [
@@ -214,6 +244,8 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
               String(note.slug || '').toLowerCase(),
               String(note.takeaway || '').toLowerCase(),
               String(note.quote || '').toLowerCase(),
+              ...(wordEntry?.definition ? [wordEntry.definition.toLowerCase()] : []),
+              ...(wordEntry?.etymology ? [wordEntry.etymology.toLowerCase()] : []),
               ...(Array.isArray(note.tags) ? note.tags : []).map(t => String(t).toLowerCase()),
             ],
         action: () => navigateTo(noteHref(note, book)),
@@ -221,7 +253,17 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
     }
 
     return list;
-  }, [isOpen, bookMap, books, notes, onOpenCapture, onOpenKeyboardHelp, onSyncNow, onToggleTheme]);
+  }, [
+    isOpen,
+    bookMap,
+    books,
+    notes,
+    onOpenCapture,
+    onOpenKeyboardHelp,
+    onOpenWordCapture,
+    onSyncNow,
+    onToggleTheme,
+  ]);
 
   const { groupedItems, flatItems } = useMemo(() => {
     if (!isOpen) return { groupedItems: [], flatItems: [] as CommandItem[] };

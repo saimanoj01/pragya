@@ -113,6 +113,11 @@ export function useKeyboardShortcuts({
           navigateTo('#/practice');
           return;
         }
+        if (key === 'w') {
+          e.preventDefault();
+          navigateTo('#/lexicon');
+          return;
+        }
       }
 
       if (key === 'g') {

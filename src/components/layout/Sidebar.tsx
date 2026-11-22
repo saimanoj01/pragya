@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { motion } from 'framer-motion';
 import {
   BookOpen,
+  BookOpenText,
   FileText,
   Target,
   Settings,
@@ -66,7 +67,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   }, [collapsed]);
 
   const navItems: Array<{
-    id: 'shelf' | 'notes' | 'practice' | 'settings';
+    id: 'shelf' | 'notes' | 'practice' | 'lexicon' | 'settings';
     label: string;
     icon: React.ComponentType<{ className?: string }>;
     route: string;
@@ -92,6 +93,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
       icon: Target,
       route: '#/practice',
       isActive: currentView === 'practice',
+    },
+    {
+      id: 'lexicon',
+      label: 'Lexicon',
+      icon: BookOpenText,
+      route: '#/lexicon',
+      isActive: currentView === 'lexicon',
     },
     {
       id: 'settings',

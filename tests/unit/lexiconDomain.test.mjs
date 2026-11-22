@@ -497,3 +497,43 @@ test('Lexicon routing & capture planner: parseHash, navAriaCurrent, planQuickCap
   assert.match(prompt, /Thinking in Systems/);
   assert.match(prompt, /Delays cause oscillation\./);
 });
+
+const demoSeedMod = await load('src/data/demoSeed.ts');
+const shortcutsMod = await load('src/utils/keyboardShortcuts.ts');
+const { createDemoSeed } = demoSeedMod;
+const { KEYBOARD_SHORTCUTS, shortcutKeysText } = shortcutsMod;
+
+test('Lexicon demoSeed & shortcuts: seeded words exercise unshielded, incomplete, and spoiler-shielded cases', () => {
+  const seed = createDemoSeed(new Date('2026-11-15T12:00:00.000Z'));
+  const wordNotes = seed.notes.filter(isWordNote);
+  assert.equal(wordNotes.length, 3);
+
+  const groups = groupWordsByLemma(seed.notes, seed.books);
+  assert.equal(groups.length, 3);
+
+  const visible = groups.filter(g => !g.allShielded);
+  const shielded = groups.filter(g => g.allShielded);
+  assert.equal(visible.length, 2);
+  assert.equal(shielded.length, 1);
+
+  assert.deepEqual(
+    visible.map(g => g.lemma),
+    ['homeostasis', 'oscillation']
+  );
+  assert.equal(visible.find(g => g.lemma === 'homeostasis')?.needsDefinition, true);
+  assert.equal(visible.find(g => g.lemma === 'oscillation')?.needsDefinition, false);
+  assert.equal(shielded[0].word, '');
+  assert.equal(shielded[0].encounters[0].posLabel, 'p. 284');
+
+  // Demo seed word ahead of bookmark must stay hidden from Shuffle, Echoes, Collision, Capstone
+  assert.deepEqual(selectTakeawayShuffle(seed.notes, seed.books, '2026-11-15').filter(isWordNote), []);
+
+  // Shortcut registry preserves the 7 exact section titles and documents G then S / N / P / W
+  assert.deepEqual(
+    KEYBOARD_SHORTCUTS.map(s => s.title),
+    ['Anywhere', 'Notes list', 'Book page', 'Note page', 'Practice', 'In forms', 'Search & images']
+  );
+  const goRow = KEYBOARD_SHORTCUTS[0].rows.find(r => r.action.includes('Lexicon'));
+  assert.ok(goRow);
+  assert.equal(shortcutKeysText(goRow.keys, 'Linux'), 'G then S / N / P / W');
+});
