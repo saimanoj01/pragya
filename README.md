@@ -57,6 +57,7 @@ VITE_BASE_PATH='/pragya/' npm run build
    - `email`
    - `profile`
 4. Set `VITE_GOOGLE_CLIENT_ID` in `.env.local` (or enter it in the Settings / Login screen runtime override persisted to `pragya_google_client_id`).
+5. **(Optional — Stay Signed In on Android/iOS PWA):** Deploy the zero-dependency stateless Cloudflare Worker in [`workers/oauth-proxy/`](./workers/oauth-proxy/README.md) and set `VITE_GOOGLE_AUTH_PROXY_URL` (or paste your Worker URL in Login / Settings) to switch to OAuth 2.0 Authorization Code + PKCE with silent background token renewal.
 
 ---
 
@@ -158,4 +159,4 @@ npm run test:e2e
 
 ## GitHub Pages Deployment
 
-Push to `main` to trigger `.github/workflows/deploy.yml`, which builds with `VITE_BASE_PATH='/pragya/'` and `VITE_GOOGLE_CLIENT_ID` from repository secrets (`Settings -> Secrets and variables -> Actions`) and deploys `./dist` to GitHub Pages.
+Push to `main` to trigger `.github/workflows/deploy.yml`, which builds with `VITE_BASE_PATH='/pragya/'`, `VITE_GOOGLE_CLIENT_ID`, and optional `VITE_GOOGLE_AUTH_PROXY_URL` from repository secrets (`Settings -> Secrets and variables -> Actions`) and deploys `./dist` to GitHub Pages.

@@ -5,6 +5,7 @@ import { Modal } from '../common/Modal';
 export interface SessionExpiredModalProps {
   isOpen: boolean;
   onReconnect: () => void;
+  onSwitchAccount?: () => void;
   onContinueDemo: () => void;
   onClose: () => void;
 }
@@ -12,6 +13,7 @@ export interface SessionExpiredModalProps {
 export const SessionExpiredModal: React.FC<SessionExpiredModalProps> = ({
   isOpen,
   onReconnect,
+  onSwitchAccount,
   onContinueDemo,
   onClose,
 }) => {
@@ -57,6 +59,16 @@ export const SessionExpiredModal: React.FC<SessionExpiredModalProps> = ({
           >
             Continue in Demo Mode
           </button>
+          {onSwitchAccount && (
+            <button
+              type="button"
+              data-testid="session-switch-account-btn"
+              onClick={onSwitchAccount}
+              className="w-full min-h-11 sm:min-h-8 text-label text-muted-foreground hover:text-foreground transition-colors"
+            >
+              Switch Google account
+            </button>
+          )}
         </div>
       </div>
     </Modal>

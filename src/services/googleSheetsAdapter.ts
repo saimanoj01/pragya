@@ -636,6 +636,14 @@ export class GoogleSheetsAdapter implements StorageAdapter {
       return null;
     };
 
+    // Offline cached-boot short-circuit: serve the IndexedDB cache immediately without
+    // attempting token refresh or network calls (so an expired 1-hour access token on a
+    // flight/subway stays readable instead of firing onUnauthorized).
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+      const offline = offlineFallback();
+      if (offline) return offline;
+    }
+
     // Drive modifiedTime fast-reload cache check
     if (
       !forceRefresh &&

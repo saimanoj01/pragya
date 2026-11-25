@@ -318,7 +318,11 @@ function PragyaShell() {
         onClose={() => setShowSessionExpiredModal(false)}
         onReconnect={() => {
           setShowSessionExpiredModal(false);
-          void login();
+          void login({ reconnect: true });
+        }}
+        onSwitchAccount={() => {
+          setShowSessionExpiredModal(false);
+          void login({ switchAccount: true });
         }}
         onContinueDemo={() => {
           setShowSessionExpiredModal(false);

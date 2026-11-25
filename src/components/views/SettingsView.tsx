@@ -22,6 +22,7 @@ import { useTheme } from '../../context/ThemeContext';
 import { readPreImportBackupAsync, type PreImportBackup } from '../../utils/importSafety';
 import { buildSnapshot, validateSnapshotPayload } from '../../utils/snapshot';
 import { showToast } from '../../utils/toast';
+import { normalizeAuthProxyUrl } from '../../utils/oauthProxy';
 import { OAuthSetupGuide } from '../common/OAuthSetupGuide';
 import { ConfirmDialog } from '../common/ConfirmDialog';
 import { ImportConfirmModal } from '../modals/ImportConfirmModal';
@@ -33,7 +34,16 @@ export interface SettingsViewProps {
 }
 
 export const SettingsView: React.FC<SettingsViewProps> = ({ onLogout }) => {
-  const { user, isMockMode, googleClientId, saveGoogleClientId, logout } = useAuth();
+  const {
+    user,
+    isMockMode,
+    googleClientId,
+    authProxyUrl,
+    hasPersistentSession,
+    saveGoogleClientId,
+    saveGoogleAuthProxyUrl,
+    logout,
+  } = useAuth();
   const [confirmAction, setConfirmAction] = useState<'reset-demo' | 'restore-backup' | null>(null);
   const {
     books,
@@ -52,12 +62,14 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onLogout }) => {
   const { theme, toggleTheme } = useTheme();
 
   const [clientIdDraft, setClientIdDraft] = useState(googleClientId || '');
+  const [authProxyDraft, setAuthProxyDraft] = useState(authProxyUrl || '');
   const [showSetupGuide, setShowSetupGuide] = useState(false);
   const [pendingSnapshot, setPendingSnapshot] = useState<PragyaSnapshot | null>(null);
   const [restoringBackup, setRestoringBackup] = useState(false);
   const [preImportBackup, setPreImportBackup] = useState<PreImportBackup | null>(null);
   const importInputRef = useRef<HTMLInputElement>(null);
   const clientIdInputId = useId();
+  const authProxyInputId = useId();
   const lastBackupScopeRef = useRef<string>(`${isMockMode}:${user?.email || ''}`);
 
   useEffect(() => {
@@ -79,6 +91,25 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onLogout }) => {
     e.preventDefault();
     saveGoogleClientId(clientIdDraft);
     showToast('Google Client ID updated', 'success');
+  };
+
+  const handleSaveAuthProxyUrl = (e: React.FormEvent) => {
+    e.preventDefault();
+    const trimmed = authProxyDraft.trim();
+    if (!trimmed) {
+      saveGoogleAuthProxyUrl('');
+      setAuthProxyDraft('');
+      showToast('Auth Proxy URL cleared', 'success');
+      return;
+    }
+    const normalized = normalizeAuthProxyUrl(trimmed);
+    if (!normalized) {
+      showToast('Auth Proxy URL must be a valid https:// URL', 'error');
+      return;
+    }
+    saveGoogleAuthProxyUrl(normalized);
+    setAuthProxyDraft(normalized);
+    showToast('Auth Proxy URL updated — sign in once to activate auto-refresh', 'success');
   };
 
   const handleExportSnapshot = () => {
@@ -163,6 +194,14 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onLogout }) => {
                     Offline · Cached Read-Only
                   </span>
                 )}
+                {!isMockMode && hasPersistentSession && (
+                  <span
+                    data-testid="settings-persistent-auth-badge"
+                    className="px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide rounded-md bg-positive/15 border border-positive/30 text-positive"
+                  >
+                    Auto-Refresh Active
+                  </span>
+                )}
               </div>
               <p className="text-label text-muted-foreground truncate">
                 {isMockMode
@@ -231,34 +270,71 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onLogout }) => {
         )}
       </section>
 
-      {/* Google OAuth Client ID */}
-      <section className="bg-card border border-border rounded-[14px] p-5 space-y-3">
-        <div>
-          <label htmlFor={clientIdInputId} className="text-heading text-foreground block">
-            Google OAuth Client ID
-          </label>
-          <p className="text-label text-muted-foreground mt-0.5">
-            Optional runtime override persisted to localStorage (&lsquo;pragya_google_client_id&rsquo;).
-          </p>
+      {/* Google OAuth Client ID & Auth Proxy */}
+      <section className="bg-card border border-border rounded-[14px] p-5 space-y-4">
+        <div className="space-y-3">
+          <div>
+            <label htmlFor={clientIdInputId} className="text-heading text-foreground block">
+              Google OAuth Client ID
+            </label>
+            <p className="text-label text-muted-foreground mt-0.5">
+              Optional runtime override persisted to localStorage (&lsquo;pragya_google_client_id&rsquo;).
+            </p>
+          </div>
+          <form onSubmit={handleSaveClientId} className="flex flex-col sm:flex-row gap-2">
+            <input
+              id={clientIdInputId}
+              type="text"
+              enterKeyHint="done"
+              data-testid="settings-client-id-input"
+              value={clientIdDraft}
+              onChange={e => setClientIdDraft(e.target.value)}
+              placeholder="your-client-id.apps.googleusercontent.com"
+              className="flex-1 h-11 sm:h-10 px-3 rounded-[10px] bg-background border border-input text-base sm:text-body text-foreground placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-ring/40"
+            />
+            <button
+              type="submit"
+              className="h-11 sm:h-10 px-4 rounded-[10px] bg-surface2 hover:bg-secondary border border-border text-body font-medium text-foreground whitespace-nowrap"
+            >
+              Save Client ID
+            </button>
+          </form>
         </div>
-        <form onSubmit={handleSaveClientId} className="flex flex-col sm:flex-row gap-2">
-          <input
-            id={clientIdInputId}
-            type="text"
-            enterKeyHint="done"
-            data-testid="settings-client-id-input"
-            value={clientIdDraft}
-            onChange={e => setClientIdDraft(e.target.value)}
-            placeholder="your-client-id.apps.googleusercontent.com"
-            className="flex-1 h-11 sm:h-10 px-3 rounded-[10px] bg-background border border-input text-base sm:text-body text-foreground placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-ring/40"
-          />
-          <button
-            type="submit"
-            className="h-11 sm:h-10 px-4 rounded-[10px] bg-surface2 hover:bg-secondary border border-border text-body font-medium text-foreground whitespace-nowrap"
-          >
-            Save Client ID
-          </button>
-        </form>
+
+        <div className="space-y-3 pt-3 border-t border-border/60">
+          <div>
+            <label htmlFor={authProxyInputId} className="text-heading text-foreground block">
+              Auth Proxy URL (Stay Signed In on Mobile PWA)
+            </label>
+            <p className="text-label text-muted-foreground mt-0.5">
+              Optional stateless Cloudflare Worker URL (&lsquo;pragya_google_auth_proxy_url&rsquo;)
+              that silently refreshes 1-hour Google tokens in the background.
+            </p>
+          </div>
+          <form onSubmit={handleSaveAuthProxyUrl} className="flex flex-col sm:flex-row gap-2">
+            <input
+              id={authProxyInputId}
+              type="text"
+              inputMode="url"
+              autoCapitalize="none"
+              autoCorrect="off"
+              spellCheck={false}
+              enterKeyHint="done"
+              data-testid="settings-auth-proxy-input"
+              value={authProxyDraft}
+              onChange={e => setAuthProxyDraft(e.target.value)}
+              placeholder="https://pragya-oauth-proxy.<you>.workers.dev"
+              className="flex-1 h-11 sm:h-10 px-3 rounded-[10px] bg-background border border-input text-base sm:text-body text-foreground placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-ring/40"
+            />
+            <button
+              type="submit"
+              data-testid="settings-auth-proxy-save-btn"
+              className="h-11 sm:h-10 px-4 rounded-[10px] bg-surface2 hover:bg-secondary border border-border text-body font-medium text-foreground whitespace-nowrap"
+            >
+              Save Proxy URL
+            </button>
+          </form>
+        </div>
 
         <div className="pt-1">
           <button

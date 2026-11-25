@@ -61,6 +61,7 @@ jobs:
       - name: Build production bundle
         env:
           VITE_GOOGLE_CLIENT_ID: ${{ secrets.VITE_GOOGLE_CLIENT_ID }}
+          VITE_GOOGLE_AUTH_PROXY_URL: ${{ secrets.VITE_GOOGLE_AUTH_PROXY_URL }}
           VITE_BASE_PATH: '/pragya/'
         run: npm run build
 

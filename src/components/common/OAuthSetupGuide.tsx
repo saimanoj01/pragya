@@ -103,8 +103,16 @@ export const OAuthSetupGuide: React.FC<OAuthSetupGuideProps> = ({ compact = fals
           ).
         </li>
         <li>
-          <strong className="text-foreground">Testing Mode:</strong> Add your Google account under
-          OAuth Consent Screen &rarr; Test Users.
+          <strong className="text-foreground">Testing vs. Published:</strong> In Testing mode, add
+          your Google account under Test Users (refresh tokens expire after 7 days). Click{' '}
+          <strong className="text-foreground">Publish App</strong> on the Audience screen to keep
+          personal mobile PWA sessions active indefinitely.
+        </li>
+        <li>
+          <strong className="text-foreground">Stay Signed In (Mobile PWA):</strong> Deploy{' '}
+          <code className="font-mono">workers/oauth-proxy/</code> to Cloudflare Workers (free tier)
+          and set <code className="font-mono">VITE_GOOGLE_AUTH_PROXY_URL</code> or paste the Worker
+          URL above so 1-hour access tokens renew silently in the background.
         </li>
         <li>
           <strong className="text-foreground">Why drive.readonly:</strong> Used to read{' '}

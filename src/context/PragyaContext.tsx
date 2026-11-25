@@ -214,7 +214,7 @@ export const PragyaProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     isMockMode,
     user,
     getGoogleToken,
-    refreshGoogleTokenSilent,
+    refreshGoogleTokenDetailed,
     triggerSessionExpired,
   } = useAuth();
 
@@ -250,17 +250,20 @@ export const PragyaProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       {
         refreshToken: async () => {
           if (!isAdapterStillActive()) return null;
-          const refreshed = await refreshGoogleTokenSilent({
+          const outcome = await refreshGoogleTokenDetailed({
             force: true,
             expectedEmailOverride: ownerEmail,
           });
           if (!isAdapterStillActive()) return null;
-          return refreshed;
+          if (!outcome.accessToken && outcome.networkError) {
+            throw new TypeError('Failed to fetch');
+          }
+          return outcome.accessToken;
         },
       }
     );
     return instance;
-  }, [isMockMode, userEmail, getGoogleToken, triggerSessionExpired, refreshGoogleTokenSilent]);
+  }, [isMockMode, userEmail, getGoogleToken, triggerSessionExpired, refreshGoogleTokenDetailed]);
 
   const [books, setBooks] = useState<Book[]>([]);
   const [notes, setNotes] = useState<Note[]>([]);

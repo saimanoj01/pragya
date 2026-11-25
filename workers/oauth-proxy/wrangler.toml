@@ -1,0 +1,17 @@
+name = "pragya-oauth-proxy"
+main = "src/index.mjs"
+compatibility_date = "2026-11-01"
+
+[vars]
+# Comma-separated list of exact origins permitted to call this Worker.
+# Replace with your own GitHub Pages / custom domain origin(s) before deploying.
+ALLOWED_ORIGINS = "https://saimanoj01.github.io,http://localhost:3000"
+
+# Optional comma-separated list of exact authorized redirect URIs.
+# When omitted, any https:// redirect URI matching ALLOWED_ORIGINS (plus http://localhost) is accepted.
+# ALLOWED_REDIRECT_URIS = "https://saimanoj01.github.io/pragya/,http://localhost:3000/"
+
+# Secrets (set via `npx wrangler secret put <NAME>` — NEVER commit to git):
+#   GOOGLE_CLIENT_ID      - Your GCP Web OAuth Client ID
+#   GOOGLE_CLIENT_SECRET  - Your GCP Web OAuth Client Secret
+#   TOKEN_CIPHER_KEY      - 32-byte base64 key (`openssl rand -base64 32`)

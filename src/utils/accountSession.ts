@@ -9,6 +9,7 @@ import { COLLISION_SKIP_KEY } from './crossBookSynthesis';
 import { LAST_DELETE_BACKUP_KEY } from './deletePlan';
 import { flushIdbQueue, idbClear, idbDelete } from './idbStore';
 import { clearPreImportBackup } from './importSafety';
+import { GOOGLE_SEALED_REFRESH_KEY } from './oauthProxy';
 
 /** Persisted Google profile (also read by AuthContext). */
 export const GOOGLE_USER_STORAGE_KEY = 'pragya_google_user';
@@ -24,6 +25,7 @@ export function clearPerAccountLocalData(): void {
   void idbDelete(SHEETS_CACHE_STORAGE_KEY);
   localStorage.removeItem(MEDIA_FOLDER_ID_STORAGE_KEY);
   localStorage.removeItem(SPREADSHEET_ID_STORAGE_KEY);
+  localStorage.removeItem(GOOGLE_SEALED_REFRESH_KEY);
   clearAllDrafts();
   clearPreImportBackup();
   // CD7: also clear the entire IndexedDB cache kv store so no per-account cache/backup lingers.

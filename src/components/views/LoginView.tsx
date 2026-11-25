@@ -3,18 +3,29 @@ import { Moon, Sun, KeyRound, ChevronDown, ChevronUp } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { useTheme } from '../../context/ThemeContext';
 import { showToast } from '../../utils/toast';
+import { normalizeAuthProxyUrl } from '../../utils/oauthProxy';
 import { OAuthSetupGuide } from '../common/OAuthSetupGuide';
 
 export const LoginView: React.FC = () => {
-  const { googleClientId, googleClientIdExists, saveGoogleClientId, login, loginAsMock, isLoading } =
-    useAuth();
+  const {
+    googleClientId,
+    googleClientIdExists,
+    authProxyUrl,
+    saveGoogleClientId,
+    saveGoogleAuthProxyUrl,
+    login,
+    loginAsMock,
+    isLoading,
+  } = useAuth();
   const { theme, toggleTheme } = useTheme();
 
   const [showClientConfig, setShowClientConfig] = useState(!googleClientIdExists);
   const [showMissingClientPrompt, setShowMissingClientPrompt] = useState(false);
   const [clientIdDraft, setClientIdDraft] = useState(googleClientId || '');
+  const [authProxyDraft, setAuthProxyDraft] = useState(authProxyUrl || '');
   const clientIdInputRef = useRef<HTMLInputElement>(null);
   const clientIdFieldId = useId();
+  const authProxyFieldId = useId();
 
   const handleSaveClientId = (e: React.FormEvent) => {
     e.preventDefault();
@@ -26,6 +37,25 @@ export const LoginView: React.FC = () => {
       clientIdDraft.trim() ? 'Google Client ID saved' : 'Custom Google Client ID cleared',
       'success'
     );
+  };
+
+  const handleSaveAuthProxyUrl = (e: React.FormEvent) => {
+    e.preventDefault();
+    const trimmed = authProxyDraft.trim();
+    if (!trimmed) {
+      saveGoogleAuthProxyUrl('');
+      setAuthProxyDraft('');
+      showToast('Custom Auth Proxy URL cleared', 'success');
+      return;
+    }
+    const normalized = normalizeAuthProxyUrl(trimmed);
+    if (!normalized) {
+      showToast('Auth Proxy URL must be a valid https:// URL', 'error');
+      return;
+    }
+    saveGoogleAuthProxyUrl(normalized);
+    setAuthProxyDraft(normalized);
+    showToast('Auth Proxy URL saved', 'success');
   };
 
   const handleGoogleSignIn = async () => {
@@ -152,11 +182,59 @@ export const LoginView: React.FC = () => {
                 </div>
               </form>
 
+              <form
+                onSubmit={handleSaveAuthProxyUrl}
+                className="space-y-2 pt-2 border-t border-border/50"
+              >
+                <label
+                  htmlFor={authProxyFieldId}
+                  className="block text-[11px] font-medium text-foreground"
+                >
+                  Auth Proxy URL (Optional — Stay Signed In on Mobile PWA)
+                </label>
+                <input
+                  id={authProxyFieldId}
+                  type="text"
+                  inputMode="url"
+                  autoCapitalize="none"
+                  autoCorrect="off"
+                  spellCheck={false}
+                  enterKeyHint="done"
+                  data-testid="auth-proxy-url-input"
+                  value={authProxyDraft}
+                  onChange={e => setAuthProxyDraft(e.target.value)}
+                  placeholder="https://pragya-oauth-proxy.<you>.workers.dev"
+                  className="w-full h-11 sm:h-9 px-3 rounded-[8px] bg-background border border-input text-base sm:text-label text-foreground placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-ring/40"
+                />
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[11px] text-muted-foreground">
+                    Refreshes 1-hour tokens silently without popups.
+                  </span>
+                  <button
+                    type="submit"
+                    data-testid="auth-proxy-url-save-btn"
+                    className="h-11 sm:h-8 px-3 rounded-[8px] bg-surface2 border border-border hover:bg-secondary text-label font-medium text-foreground transition-colors whitespace-nowrap"
+                  >
+                    Save Proxy
+                  </button>
+                </div>
+              </form>
+
               <OAuthSetupGuide compact />
             </div>
           )}
         </div>
       </div>
+
+      <footer className="mt-5 flex items-center justify-center gap-3 text-[11px] text-muted-foreground">
+        <a href="./privacy.html" className="hover:text-foreground transition-colors">
+          Privacy Policy
+        </a>
+        <span aria-hidden="true">&middot;</span>
+        <a href="./terms.html" className="hover:text-foreground transition-colors">
+          Terms of Service
+        </a>
+      </footer>
     </div>
   );
 };
